@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from instascope_scraper.browser import browser_session
-from instascope_scraper.types import ProxyConfig, ScrapedPost, ScrapeResult
+from instascope_scraper.types import ProxyConfig, ScrapedPost, ScrapeResult, proxy_to_httpx_url
 
 
 class ScrapeError(Exception):
@@ -249,8 +249,11 @@ def _expected_posts_count(user: dict[str, Any]) -> int:
 
 def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
     """True when we've collected essentially the full public timeline."""
+    if not posts:
+        return False
     if posts_count <= 0:
-        return bool(posts)
+        # Unknown total — never treat the first profile-card page (~12) as complete.
+        return len(posts) > 12
     # Allow tiny mismatch (deleted/hidden posts between count and feed).
     return len(posts) >= max(posts_count - 2, 1) or len(posts) >= posts_count
 
@@ -539,7 +542,7 @@ async def _scrape_live(
     try:
         from instascope_scraper.http_profile import fetch_web_profile_http
 
-        proxy_url = proxy.server if proxy else os.getenv("SCRAPE_PROXY_URL") or None
+        proxy_url = proxy_to_httpx_url(proxy)
         http_json = await fetch_web_profile_http(username, proxy=proxy_url)
         user = _user_from_web_profile(http_json) if http_json else None
         if user:
@@ -652,7 +655,7 @@ async def _scrape_live(
 
         result: ScrapeResult | None = http_result
         if user_payload:
-            proxy_url = proxy.server if proxy else os.getenv("SCRAPE_PROXY_URL") or None
+            proxy_url = proxy_to_httpx_url(proxy)
             if not bool(user_payload.get("is_private")):
                 try:
                     all_posts = await _expand_all_posts(username, user_payload, proxy_url=proxy_url)

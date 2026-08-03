@@ -36,6 +36,36 @@ def parse_proxy_url(proxy_url: str | None) -> ProxyConfig | None:
     )
 
 
+def proxy_to_httpx_url(proxy: ProxyConfig | None, *, fallback_env: bool = True) -> str | None:
+    """Rebuild a full proxy URL (with auth) for httpx clients.
+
+    Playwright uses split fields; httpx wants http://user:pass@host:port.
+    """
+    import os
+    from urllib.parse import quote
+
+    if proxy and proxy.server:
+        if proxy.username is not None and proxy.password is not None:
+            user = quote(proxy.username, safe="")
+            pwd = quote(proxy.password, safe="")
+            # server is scheme://host:port
+            rest = proxy.server.split("://", 1)[-1]
+            scheme = proxy.server.split("://", 1)[0] if "://" in proxy.server else "http"
+            return f"{scheme}://{user}:{pwd}@{rest}"
+        if "@" in proxy.server:
+            return proxy.server
+        # server without auth — prefer full env URL if present
+        if fallback_env:
+            env = (os.getenv("SCRAPE_PROXY_URL") or "").strip()
+            if env:
+                return env
+        return proxy.server
+    if fallback_env:
+        env = (os.getenv("SCRAPE_PROXY_URL") or "").strip()
+        return env or None
+    return None
+
+
 @dataclass
 class ScrapedPost:
     ig_post_id: str
