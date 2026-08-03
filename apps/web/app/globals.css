@@ -1,0 +1,177 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f3efe8;
+  --bg-elevated: #ffffff;
+  --fg: #1c1917;
+  --muted: #78716c;
+  --border: rgba(28, 25, 23, 0.08);
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.04);
+  --shadow-md: 0 10px 30px -18px rgba(28, 25, 23, 0.18);
+  --shadow-card: 0 8px 24px -16px rgba(28, 25, 23, 0.14);
+}
+
+@layer base {
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.011em;
+  }
+
+  ::selection {
+    background: rgba(79, 70, 229, 0.16);
+  }
+
+  a { color: inherit; text-decoration: none; }
+}
+
+/* Dark mode — applied from Settings */
+html.dark {
+  --bg: #1c1917;
+  --bg-elevated: #292524;
+  --fg: #fafaf9;
+  --muted: #a8a29e;
+  --border: rgba(250, 250, 249, 0.1);
+  --accent: #a5b4fc;
+  --accent-soft: #312e81;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 10px 30px -18px rgba(0, 0, 0, 0.55);
+  --shadow-card: 0 8px 24px -16px rgba(0, 0, 0, 0.5);
+}
+
+html.dark body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+html.dark .bg-cream,
+html.dark .min-h-screen.bg-cream {
+  background: #1c1917 !important;
+}
+
+html.dark header {
+  background: rgba(28, 25, 23, 0.88) !important;
+  border-color: rgba(250, 250, 249, 0.08) !important;
+}
+
+html.dark .bg-white,
+html.dark .soft-card,
+html.dark [class*="rounded-[22px]"].bg-white {
+  background: #292524 !important;
+  color: #fafaf9;
+}
+
+html.dark .text-stone-900,
+html.dark .text-fg {
+  color: #fafaf9 !important;
+}
+
+html.dark .text-stone-500,
+html.dark .text-stone-600,
+html.dark .text-muted {
+  color: #a8a29e !important;
+}
+
+html.dark .border-stone-200\/70,
+html.dark .border-border {
+  border-color: rgba(250, 250, 249, 0.1) !important;
+}
+
+html.dark .bg-\[\#f3efe8\],
+html.dark .pastel-card {
+  background: #44403c !important;
+}
+
+html.dark .pill-nav {
+  color: #a8a29e;
+}
+
+html.dark .table-premium th {
+  background: #292524;
+  color: #a8a29e;
+}
+
+html.dark .table-premium td {
+  border-color: rgba(250, 250, 249, 0.08);
+}
+
+@layer components {
+  .eyebrow {
+    @apply text-[11px] font-medium text-stone-500;
+  }
+
+  .page-title {
+    font-family: var(--font-display), sans-serif;
+    @apply text-[1.75rem] md:text-[1.9rem] font-semibold tracking-[-0.03em] text-stone-900;
+  }
+
+  .soft-card {
+    @apply rounded-[22px] bg-white;
+    box-shadow: var(--shadow-card);
+  }
+
+  .pastel-card {
+    @apply rounded-[22px] p-5 relative overflow-hidden;
+    box-shadow: var(--shadow-card);
+  }
+
+  .stat-value {
+    font-family: var(--font-display), sans-serif;
+    @apply text-[1.85rem] font-semibold tracking-[-0.04em] tabular-nums text-stone-900;
+  }
+
+  .pill-nav {
+    @apply rounded-full px-4 py-2 text-sm font-medium transition;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium;
+  }
+
+  .badge-pink { @apply badge bg-[#fce7f3] text-[#be185d]; }
+  .badge-purple { @apply badge bg-[#ede9fe] text-[#6d28d9]; }
+  .badge-blue { @apply badge bg-[#e0f2fe] text-[#0369a1]; }
+  .badge-orange { @apply badge bg-[#ffedd5] text-[#c2410c]; }
+  .badge-green { @apply badge bg-[#d1fae5] text-[#047857]; }
+
+  .skeleton {
+    @apply rounded-[22px] bg-stone-200/70 animate-pulse;
+  }
+
+  .table-premium {
+    @apply w-full text-sm;
+  }
+  .table-premium thead th {
+    @apply pb-3 pt-1 text-left text-[11px] font-medium text-stone-400;
+  }
+  .table-premium tbody tr {
+    @apply border-t border-stone-100 transition-colors;
+  }
+  .table-premium tbody tr:hover {
+    @apply bg-stone-50/80;
+  }
+  .table-premium tbody td {
+    @apply py-3.5 align-middle;
+  }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}

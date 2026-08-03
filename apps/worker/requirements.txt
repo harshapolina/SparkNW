@@ -1,0 +1,5 @@
+celery[redis]==5.4.0
+redis==5.2.1
+playwright==1.49.1
+instascope-shared @ file:///app/packages/python-shared
+instascope-scraper @ file:///app/scraper

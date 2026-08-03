@@ -1,0 +1,248 @@
+"""Pydantic API schemas."""
+
+from datetime import datetime
+from typing import Any, Optional
+
+from pydantic import BaseModel, EmailStr, Field, HttpUrl
+
+
+# ── Auth ──────────────────────────────────────────────
+
+
+class SignupRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: EmailStr
+    name: str
+    avatar_url: Optional[str] = None
+    created_at: datetime
+
+
+class AuthResponse(BaseModel):
+    user: UserResponse
+    tokens: TokenResponse
+
+
+# ── Profiles ──────────────────────────────────────────
+
+
+class AddProfileRequest(BaseModel):
+    url: str = Field(min_length=5, description="Instagram profile URL or @username")
+
+
+class ProfileResponse(BaseModel):
+    id: str
+    username: str
+    full_name: Optional[str] = None
+    bio: Optional[str] = None
+    website: Optional[str] = None
+    avatar_url: Optional[str] = None
+    is_verified: bool = False
+    profile_url: str
+    followers: int = 0
+    following: int = 0
+    posts_count: int = 0
+    avg_likes: float = 0.0
+    avg_views: float = 0.0
+    avg_comments: float = 0.0
+    engagement_rate: float = 0.0
+    growth_pct_today: float = 0.0
+    is_private: bool = False
+    is_business: bool = False
+    category: Optional[str] = None
+    highlight_reel_count: int = 0
+    follower_following_ratio: float = 0.0
+    insights: dict[str, Any] = Field(default_factory=dict)
+    status: str
+    last_scraped_at: Optional[datetime] = None
+    last_success_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProfileListResponse(BaseModel):
+    items: list[ProfileResponse]
+    total: int
+    page: int
+    page_size: int
+
+
+class BulkIdsRequest(BaseModel):
+    ids: list[str] = Field(min_length=1)
+
+
+class BulkImportRequest(BaseModel):
+    urls: list[str] = Field(min_length=1, max_length=2000)
+    scrape_now: bool = True
+
+
+class BulkImportItemResult(BaseModel):
+    url: str
+    username: Optional[str] = None
+    status: str
+    message: Optional[str] = None
+    profile_id: Optional[str] = None
+
+
+class BulkImportResponse(BaseModel):
+    imported: int
+    skipped: int
+    failed: int
+    scraping: bool
+    items: list[BulkImportItemResult]
+
+
+class BulkExportRequest(BaseModel):
+    ids: Optional[list[str]] = None
+
+
+# ── Posts / Snapshots ─────────────────────────────────
+
+
+class PostResponse(BaseModel):
+    id: str
+    profile_id: str
+    ig_post_id: str
+    shortcode: str
+    media_type: str
+    caption: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    permalink: Optional[str] = None
+    likes: int = 0
+    comments: int = 0
+    views: int = 0
+    posted_at: Optional[datetime] = None
+
+
+class SnapshotResponse(BaseModel):
+    id: str
+    profile_id: str
+    snapshot_date: str
+    followers: int
+    following: int
+    posts_count: int
+    avg_likes: float
+    avg_views: float
+    avg_comments: float
+    engagement_rate: float
+    followers_growth: int
+    followers_growth_pct: float
+
+
+# ── Jobs / Notifications ──────────────────────────────
+
+
+class JobResponse(BaseModel):
+    id: str
+    profile_id: Optional[str] = None
+    job_type: str
+    status: str
+    attempts: int
+    error_message: Optional[str] = None
+    created_at: datetime
+    finished_at: Optional[datetime] = None
+
+
+class NotificationResponse(BaseModel):
+    id: str
+    profile_id: Optional[str] = None
+    type: str
+    title: str
+    body: str
+    is_read: bool
+    created_at: datetime
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+# ── Analytics / Overview ──────────────────────────────
+
+
+class OverviewStats(BaseModel):
+    total_profiles: int
+    profiles_updated_today: int
+    failed_updates: int
+    average_engagement: float
+    average_followers: float
+    average_views: float
+    average_likes: float
+    follower_growth_today: int
+
+
+class SeriesPoint(BaseModel):
+    date: str
+    value: float
+
+
+class NamedValue(BaseModel):
+    name: str
+    value: float
+
+
+class OverviewCharts(BaseModel):
+    followers_over_time: list[SeriesPoint]
+    posts_per_day: list[SeriesPoint]
+    content_types: list[NamedValue]
+    posting_heatmap: list[dict[str, Any]]
+
+
+class OverviewResponse(BaseModel):
+    stats: OverviewStats
+    charts: OverviewCharts
+    recent_updates: list[ProfileResponse]
+
+
+class ProfileAnalyticsResponse(BaseModel):
+    followers_trend: list[SeriesPoint]
+    views_trend: list[SeriesPoint]
+    likes_trend: list[SeriesPoint]
+    comments_trend: list[SeriesPoint]
+    posting_frequency: float
+    average_engagement: float
+    best_posting_day: Optional[str] = None
+    best_posting_hour: Optional[int] = None
+    growth_pct: float
+
+
+class MessageResponse(BaseModel):
+    message: str
+
+
+class SettingsResponse(BaseModel):
+    dark_mode: bool
+    follower_growth_notify_pct: float
+    notify_followers_down: bool
+    notify_scrape_failed: bool
+    notify_engagement_spike: bool
+    engagement_spike_pct: float
+    timezone: str
+
+
+class SettingsUpdateRequest(BaseModel):
+    dark_mode: Optional[bool] = None
+    follower_growth_notify_pct: Optional[float] = None
+    notify_followers_down: Optional[bool] = None
+    notify_scrape_failed: Optional[bool] = None
+    notify_engagement_spike: Optional[bool] = None
+    engagement_spike_pct: Optional[float] = None
+    timezone: Optional[str] = None

@@ -1,0 +1,105 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # Optional local Mongo — omit if using Atlas (set MONGODB_URI in .env)
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    profiles:
+      - local-mongo
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.api
+    env_file:
+      - .env
+    environment:
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017}
+      MONGODB_DB: ${MONGODB_DB:-instascope}
+      LIVE_SCRAPE: ${LIVE_SCRAPE:-1}
+      SCRAPE_STRICT: ${SCRAPE_STRICT:-1}
+      SCRAPE_DELAY_SECONDS: ${SCRAPE_DELAY_SECONDS:-2}
+      SCRAPE_MAX_POSTS: ${SCRAPE_MAX_POSTS:-0}
+      SCRAPE_POSTS_PAGE_SIZE: ${SCRAPE_POSTS_PAGE_SIZE:-50}
+      SCRAPE_PAGE_DELAY_SECONDS: ${SCRAPE_PAGE_DELAY_SECONDS:-0.6}
+      SCRAPE_ENRICH_MAX: ${SCRAPE_ENRICH_MAX:-0}
+      SCRAPE_ENRICH_DELAY_SECONDS: ${SCRAPE_ENRICH_DELAY_SECONDS:-0.9}
+      SCRAPE_PROXY_URL: ${SCRAPE_PROXY_URL:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+    volumes:
+      - ./packages/python-shared:/app/packages/python-shared
+      - ./apps/api:/app/apps/api
+      - ./scraper:/app/scraper
+
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.worker
+    env_file:
+      - .env
+    environment:
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017}
+      MONGODB_DB: ${MONGODB_DB:-instascope}
+      LIVE_SCRAPE: ${LIVE_SCRAPE:-1}
+      SCRAPE_STRICT: ${SCRAPE_STRICT:-1}
+      SCRAPE_DELAY_SECONDS: ${SCRAPE_DELAY_SECONDS:-2}
+      SCRAPE_MAX_POSTS: ${SCRAPE_MAX_POSTS:-0}
+      SCRAPE_POSTS_PAGE_SIZE: ${SCRAPE_POSTS_PAGE_SIZE:-50}
+      SCRAPE_PAGE_DELAY_SECONDS: ${SCRAPE_PAGE_DELAY_SECONDS:-0.6}
+      SCRAPE_ENRICH_MAX: ${SCRAPE_ENRICH_MAX:-0}
+      SCRAPE_ENRICH_DELAY_SECONDS: ${SCRAPE_ENRICH_DELAY_SECONDS:-0.9}
+      SCRAPE_PROXY_URL: ${SCRAPE_PROXY_URL:-}
+    depends_on:
+      - redis
+      - api
+    volumes:
+      - ./packages/python-shared:/app/packages/python-shared
+      - ./scraper:/app/scraper
+      - ./apps/worker:/app/apps/worker
+
+  beat:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.worker
+    command: celery -A celery_app.celery_app beat --loglevel=INFO
+    env_file:
+      - .env
+    environment:
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017}
+      MONGODB_DB: ${MONGODB_DB:-instascope}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      - redis
+      - worker
+    working_dir: /app/apps/worker
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    profiles:
+      - full
+
+volumes:
+  redis_data:
+  mongo_data:
