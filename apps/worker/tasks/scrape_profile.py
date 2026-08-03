@@ -11,7 +11,7 @@ from instascope_shared.db.mongodb import close_db, connect_db
 from instascope_shared.models import Job, JobStatus, Profile, ProfileStatus
 from instascope_shared.services.scrape_pipeline import apply_scrape_result, mark_scrape_failed
 from instascope_scraper.profile import ScrapeError, scrape_profile
-from instascope_scraper.types import ProxyConfig
+from instascope_scraper.types import parse_proxy_url
 
 
 def _run(coro):
@@ -38,9 +38,7 @@ async def _scrape(job_id: str, profile_id: str) -> dict:
         job.attempts += 1
         await job.save()
 
-        proxy = None
-        if settings.scrape_proxy_url:
-            proxy = ProxyConfig(server=settings.scrape_proxy_url)
+        proxy = parse_proxy_url(settings.scrape_proxy_url)
 
         try:
             result = await scrape_profile(

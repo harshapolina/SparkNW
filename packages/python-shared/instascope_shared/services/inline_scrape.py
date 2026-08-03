@@ -8,7 +8,7 @@ from instascope_shared.core.config import get_settings
 from instascope_shared.models import Job, JobStatus, JobType, Profile
 from instascope_shared.services.scrape_pipeline import apply_scrape_result, mark_scrape_failed
 from instascope_scraper.profile import ScrapeError, scrape_profile
-from instascope_scraper.types import ProxyConfig
+from instascope_scraper.types import parse_proxy_url
 
 
 async def scrape_profile_inline(profile: Profile) -> Job:
@@ -24,9 +24,7 @@ async def scrape_profile_inline(profile: Profile) -> Job:
     )
     await job.insert()
 
-    proxy = None
-    if settings.scrape_proxy_url:
-        proxy = ProxyConfig(server=settings.scrape_proxy_url)
+    proxy = parse_proxy_url(settings.scrape_proxy_url)
 
     try:
         result = await scrape_profile(

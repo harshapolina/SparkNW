@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
+from urllib.parse import unquote, urlparse
 
 
 @dataclass
@@ -11,6 +12,28 @@ class ProxyConfig:
     server: str
     username: Optional[str] = None
     password: Optional[str] = None
+
+
+def parse_proxy_url(proxy_url: str | None) -> ProxyConfig | None:
+    """Parse http://user:pass@host:port into Playwright-friendly ProxyConfig.
+
+    Playwright needs server (scheme://host:port) separate from username/password.
+    Passwords may be URL-encoded (e.g. ~ as %7E).
+    """
+    if not proxy_url or not str(proxy_url).strip():
+        return None
+    parsed = urlparse(proxy_url.strip())
+    if not parsed.hostname:
+        return None
+    port = parsed.port
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    scheme = parsed.scheme or "http"
+    return ProxyConfig(
+        server=f"{scheme}://{parsed.hostname}:{port}",
+        username=unquote(parsed.username) if parsed.username else None,
+        password=unquote(parsed.password) if parsed.password else None,
+    )
 
 
 @dataclass

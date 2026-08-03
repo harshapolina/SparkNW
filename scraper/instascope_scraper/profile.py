@@ -11,7 +11,6 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Any, Optional
-from urllib.parse import urlparse
 
 from instascope_scraper.browser import browser_session
 from instascope_scraper.types import ProxyConfig, ScrapedPost, ScrapeResult
@@ -752,15 +751,17 @@ async def scrape_profile(
         # Explicit opt-out only
         raise ScrapeError("LIVE_SCRAPE=0 — enable LIVE_SCRAPE=1 for real scraping")
 
-    proxy_url = os.getenv("SCRAPE_PROXY_URL") or None
-    if proxy is None and proxy_url:
-        parsed = urlparse(proxy_url)
-        server = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-        proxy = ProxyConfig(
-            server=server,
-            username=parsed.username,
-            password=parsed.password,
-        )
+    if proxy is None:
+        from instascope_scraper.types import parse_proxy_url
+
+        proxy = parse_proxy_url(os.getenv("SCRAPE_PROXY_URL") or None)
+    elif proxy.server and "@" in proxy.server:
+        # Caller passed a full http://user:pass@host:port as server only
+        from instascope_scraper.types import parse_proxy_url
+
+        parsed = parse_proxy_url(proxy.server)
+        if parsed:
+            proxy = parsed
 
     last_err: Exception | None = None
     attempts = int(os.getenv("SCRAPE_MAX_RETRIES", "3"))
