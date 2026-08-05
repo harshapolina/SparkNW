@@ -46,9 +46,16 @@ def _parse_count(raw: str | int | float | None) -> int:
 
 def _media_type_from_node(node: dict[str, Any]) -> str:
     typename = (node.get("__typename") or node.get("product_type") or "").lower()
-    if "sidecar" in typename or node.get("edge_sidecar_to_children"):
+    mt = node.get("media_type")
+    if mt == 8 or "sidecar" in typename or node.get("edge_sidecar_to_children") or node.get("carousel_media"):
         return "carousel"
-    if "video" in typename or node.get("is_video") or typename in {"clips", "reel", "reels"}:
+    if (
+        mt == 2
+        or "video" in typename
+        or node.get("is_video")
+        or typename in {"clips", "reel", "reels"}
+        or node.get("product_type") == "clips"
+    ):
         if node.get("product_type") == "clips" or "reel" in typename:
             return "reel"
         return "video"
@@ -131,18 +138,20 @@ def _post_from_node(node: dict[str, Any]) -> ScrapedPost | None:
         or node.get("thumbnail_src")
         or (node.get("image_versions2") or {}).get("candidates", [{}])[0].get("url")
     )
+    media_type = _media_type_from_node(node)
+    path = "reel" if media_type == "reel" else "p"
     return ScrapedPost(
         ig_post_id=post_id or shortcode,
         shortcode=shortcode,
-        media_type=_media_type_from_node(node),
+        media_type=media_type,
         caption=_caption_from_node(node),
         thumbnail_url=thumb,
-        permalink=f"https://www.instagram.com/p/{shortcode}/",
+        permalink=f"https://www.instagram.com/{path}/{shortcode}/",
         likes=likes,
         comments=comments,
         views=views,
         posted_at=posted_at,
-        is_video=bool(node.get("is_video") or views > 0),
+        is_video=bool(node.get("is_video") or media_type in {"video", "reel"} or views > 0),
         accessibility_caption=node.get("accessibility_caption"),
     )
 
@@ -551,6 +560,103 @@ async def _scroll_collect_all_posts(page, *, posts_count: int, existing: list[Sc
     return merged
 
 
+async def _paginate_feed_in_browser(
+    page,
+    *,
+    user_id: str,
+    expected_count: int,
+    existing: list[ScrapedPost],
+) -> list[ScrapedPost]:
+    """Paginate /api/v1/feed/user/{id}/ inside the browser (uses real IG cookies).
+
+    This is the reliable path when standalone httpx feed calls only return the
+    first profile-card page (~12 posts).
+    """
+    from instascope_scraper.http_profile import _max_posts
+
+    limit = _max_posts()
+    if expected_count > 0:
+        limit = min(limit, expected_count)
+
+    merged = list(existing)
+    seen = {p.shortcode for p in merged}
+    max_id: str | None = None
+    more = True
+    stagnant = 0
+    pages = 0
+    delay = float(os.getenv("SCRAPE_PAGE_DELAY_SECONDS") or "0.75")
+    page_size = 12
+    max_pages = max(40, (limit // page_size) + 20)
+
+    while more and len(merged) < limit and stagnant < 5 and pages < max_pages:
+        pages += 1
+        if pages > 1:
+            await asyncio.sleep(delay)
+
+        payload = await page.evaluate(
+            """async ({ userId, maxId, count }) => {
+              const q = new URLSearchParams({ count: String(count) });
+              if (maxId) q.set('max_id', String(maxId));
+              const paths = [
+                `/api/v1/feed/user/${userId}/?${q.toString()}`,
+                `https://www.instagram.com/api/v1/feed/user/${userId}/?${q.toString()}`,
+              ];
+              for (const url of paths) {
+                try {
+                  const res = await fetch(url, {
+                    credentials: 'include',
+                    headers: {
+                      'X-IG-App-ID': '936619743392459',
+                      'X-ASBD-ID': '129477',
+                      'X-Requested-With': 'XMLHttpRequest',
+                      'Accept': '*/*',
+                    },
+                  });
+                  if (!res.ok) continue;
+                  const json = await res.json();
+                  if (json && (json.items || json.status === 'ok')) return json;
+                } catch (e) {}
+              }
+              return { __error: true, items: [], more_available: false };
+            }""",
+            {"userId": str(user_id), "maxId": max_id, "count": page_size},
+        )
+
+        if not isinstance(payload, dict) or payload.get("__error"):
+            stagnant += 1
+            continue
+
+        items = payload.get("items") or []
+        more = bool(payload.get("more_available"))
+        next_max = payload.get("next_max_id")
+        max_id = str(next_max) if next_max is not None else None
+
+        added = 0
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            post = _post_from_node(item)
+            if not post or post.shortcode in seen:
+                continue
+            seen.add(post.shortcode)
+            merged.append(post)
+            added += 1
+            if len(merged) >= limit:
+                break
+
+        if added == 0:
+            stagnant += 1
+        else:
+            stagnant = 0
+
+        if not max_id:
+            break
+        if expected_count > 0 and len(merged) >= expected_count:
+            break
+
+    return merged
+
+
 async def _scrape_live(
     username: str,
     *,
@@ -558,7 +664,7 @@ async def _scrape_live(
     proxy: Optional[ProxyConfig],
     delay: float,
 ) -> ScrapeResult:
-    # 1) Fast path: public web_profile_info over HTTP (real JSON) + full pagination
+    # 1) Fast path: public web_profile_info over HTTP (metrics + first ~12 posts)
     http_result: ScrapeResult | None = None
     try:
         from instascope_scraper.http_profile import fetch_web_profile_http
@@ -567,7 +673,7 @@ async def _scrape_live(
         http_json = await fetch_web_profile_http(username, proxy=proxy_url)
         user = _user_from_web_profile(http_json) if http_json else None
         if user:
-            # Expand beyond the first ~12 posts Instagram returns on the profile card
+            # Try HTTP pagination, but NEVER trust it as final if still ~12 of many
             if not bool(user.get("is_private")):
                 try:
                     all_posts = await _expand_all_posts(username, user, proxy_url=proxy_url)
@@ -577,23 +683,21 @@ async def _scrape_live(
             else:
                 http_result = _result_from_user(username, user)
 
-            # Only return early when we truly have the full timeline (or private).
-            # Never treat the profile-card page (~12) as complete.
-            if http_result and (
-                http_result.is_private
-                or _posts_complete(http_result.posts, http_result.posts_count)
-            ):
-                # Still need Playwright if engagement fields are empty on public posts
+            # Only skip browser when timeline is truly complete (or private / tiny account)
+            if http_result and http_result.is_private:
+                http_result.raw = {
+                    **(http_result.raw or {}),
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "posts_scraped": len(http_result.posts),
+                    "path": "http_private",
+                }
+                return http_result
+            if http_result and _posts_complete(http_result.posts, http_result.posts_count):
                 needs_enrich = (
-                    not http_result.is_private
-                    and http_result.posts
+                    http_result.posts
                     and all(p.likes == 0 and p.comments == 0 for p in http_result.posts[: min(6, len(http_result.posts))])
                 )
-                if not needs_enrich and (
-                    http_result.is_private
-                    or len(http_result.posts) > 12
-                    or http_result.posts_count <= 12
-                ):
+                if not needs_enrich and len(http_result.posts) > 12:
                     http_result.raw = {
                         **(http_result.raw or {}),
                         "scraped_at": datetime.now(timezone.utc).isoformat(),
@@ -601,7 +705,15 @@ async def _scrape_live(
                         "path": "http_full",
                     }
                     return http_result
-            # Incomplete timeline → fall through to Playwright scroll + network capture
+                if not needs_enrich and http_result.posts_count <= 12:
+                    http_result.raw = {
+                        **(http_result.raw or {}),
+                        "scraped_at": datetime.now(timezone.utc).isoformat(),
+                        "posts_scraped": len(http_result.posts),
+                        "path": "http_full_small",
+                    }
+                    return http_result
+            # Incomplete → Playwright browser feed pagination (required)
     except Exception:
         http_result = None
 
@@ -623,6 +735,7 @@ async def _scrape_live(
         await context.set_extra_http_headers(
             {
                 "Accept-Language": "en-US,en;q=0.9",
+                "X-IG-App-ID": "936619743392459",
             }
         )
         page = await context.new_page()
@@ -635,7 +748,6 @@ async def _scrape_live(
                 if "web_profile_info" in u or "/api/v1/users/web_profile_info" in u:
                     captured.append(await response.json())
                     return
-                # Capture paginated GraphQL / feed payloads while scrolling
                 if "graphql/query" in u or "/api/v1/feed/user/" in u:
                     try:
                         payload = await response.json()
@@ -654,13 +766,12 @@ async def _scrape_live(
         page.on("response", on_response)
 
         response = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        await asyncio.sleep(max(delay, 1.5))
+        await asyncio.sleep(max(delay, 2.0))
 
         if response and response.status == 404:
             await context.close()
             raise ScrapeError(f"Profile @{username} not found", unavailable=True)
 
-        # Dismiss cookie banner if present
         for label in ("Allow all cookies", "Allow essential and optional cookies", "Accept"):
             try:
                 btn = page.get_by_role("button", name=re.compile(label, re.I))
@@ -671,7 +782,6 @@ async def _scrape_live(
             except Exception:
                 pass
 
-        # Prefer intercepted payload, then explicit API call, then HTTP result
         user_payload = None
         for raw in captured:
             user_payload = _user_from_web_profile(raw) or user_payload
@@ -682,25 +792,12 @@ async def _scrape_live(
 
         result: ScrapeResult | None = http_result
         if user_payload:
-            proxy_url = proxy_to_httpx_url(proxy)
-            if not bool(user_payload.get("is_private")):
-                try:
-                    all_posts = await _expand_all_posts(username, user_payload, proxy_url=proxy_url)
-                    expanded = _result_from_user(username, user_payload, posts_override=all_posts)
-                    # Keep the larger of HTTP vs browser-path expansions
-                    if not result or len(expanded.posts) >= len(result.posts):
-                        result = expanded
-                except Exception:
-                    if not result:
-                        result = _result_from_user(username, user_payload)
-            elif not result:
-                result = _result_from_user(username, user_payload)
-
-        meta_desc = await page.locator('meta[name="description"]').get_attribute("content")
-        og_image = await page.locator('meta[property="og:image"]').get_attribute("content")
-        og_title = await page.locator('meta[property="og:title"]').get_attribute("content")
-
-        if not result:
+            seeded = list(result.posts) if result and result.posts else None
+            result = _result_from_user(username, user_payload, posts_override=seeded)
+        elif not result:
+            meta_desc = await page.locator('meta[name="description"]').get_attribute("content")
+            og_image = await page.locator('meta[property="og:image"]').get_attribute("content")
+            og_title = await page.locator('meta[property="og:title"]').get_attribute("content")
             result = _result_from_meta(
                 username, meta_desc=meta_desc, og_image=og_image, og_title=og_title
             )
@@ -714,22 +811,28 @@ async def _scrape_live(
                 )
             raise ScrapeError("Could not extract real profile data from Instagram")
 
-        # Fill avatar/name from OG if missing
+        og_image = await page.locator('meta[property="og:image"]').get_attribute("content")
+        og_title = await page.locator('meta[property="og:title"]').get_attribute("content")
         if not result.avatar_url and og_image:
             result.avatar_url = og_image
         if not result.full_name and og_title:
             result.full_name = og_title.split("(")[0].strip() or result.full_name
 
-        # Scroll the grid until we have every public post (not just the first ~12)
-        if not result.is_private and not _posts_complete(result.posts, result.posts_count):
+        user_id = result.ig_user_id or (str(user_payload.get("id") or user_payload.get("pk") or "") if user_payload else "")
+
+        # PRIMARY: paginate feed API inside the browser (real cookies + proxy)
+        if not result.is_private and user_id and not _posts_complete(result.posts, result.posts_count):
             try:
-                result.posts = await _scroll_collect_all_posts(
-                    page, posts_count=result.posts_count, existing=result.posts
+                result.posts = await _paginate_feed_in_browser(
+                    page,
+                    user_id=user_id,
+                    expected_count=result.posts_count,
+                    existing=result.posts,
                 )
             except Exception:
                 pass
 
-        # Merge any media nodes captured from network during load + scroll
+        # Merge network-captured nodes
         if media_nodes and not result.is_private:
             seen = {p.shortcode for p in result.posts}
             for node in media_nodes:
@@ -738,25 +841,69 @@ async def _scrape_live(
                     result.posts.append(post)
                     seen.add(post.shortcode)
 
+        # SECONDARY: DOM scroll for any remaining shortcodes
+        if not result.is_private and not _posts_complete(result.posts, result.posts_count):
+            try:
+                result.posts = await _scroll_collect_all_posts(
+                    page, posts_count=result.posts_count, existing=result.posts
+                )
+            except Exception:
+                pass
+
+        # THIRD: HTTP expand again using cookies from the browser session (export cookies)
+        if not result.is_private and not _posts_complete(result.posts, result.posts_count) and user_payload:
+            try:
+                proxy_url = proxy_to_httpx_url(proxy)
+                more_posts = await _expand_all_posts(username, user_payload, proxy_url=proxy_url)
+                seen = {p.shortcode for p in result.posts}
+                for p in more_posts:
+                    if p.shortcode not in seen:
+                        result.posts.append(p)
+                        seen.add(p.shortcode)
+            except Exception:
+                pass
+
         if not result.posts:
             dom_posts = await _extract_posts_from_dom(page)
             if dom_posts:
                 result.posts = dom_posts
 
-        # Fill missing likes/comments/views — cap enrich time on huge profiles via env
+        # Enrich only posts still missing engagement (feed items usually have counts)
         if result.posts and not result.is_private:
-            needs_enrich = any(
-                (p.likes == 0 and p.comments == 0)
-                or ((p.media_type in {"reel", "video"} or p.is_video) and p.views < 10)
+            missing = [
+                p
                 for p in result.posts
-            )
-            if needs_enrich:
-                result.posts = await _enrich_posts(page, result.posts)
+                if (p.likes == 0 and p.comments == 0)
+                or ((p.media_type in {"reel", "video"} or p.is_video) and p.views < 10)
+            ]
+            enrich_cap_env = int(os.getenv("SCRAPE_ENRICH_MAX") or "0")
+            if enrich_cap_env <= 0:
+                enrich_cap = min(len(missing), 40)
+            else:
+                enrich_cap = min(enrich_cap_env, len(missing))
+            if missing and enrich_cap > 0:
+                to_enrich = missing[:enrich_cap]
+                enrich_codes = {p.shortcode for p in to_enrich}
+                prioritized = to_enrich + [p for p in result.posts if p.shortcode not in enrich_codes]
+                enriched = await _enrich_posts(page, prioritized, limit=enrich_cap)
+                by_code = {p.shortcode: p for p in enriched}
+                result.posts = [by_code.get(p.shortcode, p) for p in result.posts]
 
         await context.close()
 
         if result.followers <= 0 and result.posts_count <= 0 and not result.posts:
             raise ScrapeError("Scraped profile returned empty metrics")
+
+        # Do NOT accept profile-card-only scrapes as success for large accounts
+        if (
+            not result.is_private
+            and result.posts_count > 12
+            and len(result.posts) <= 12
+        ):
+            raise ScrapeError(
+                f"Incomplete timeline: only {len(result.posts)}/{result.posts_count} posts "
+                f"(Instagram pagination blocked). Check SCRAPE_PROXY_URL / Decodo."
+            )
 
         result.raw = {
             **(result.raw or {}),
