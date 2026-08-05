@@ -396,7 +396,7 @@ async def fetch_all_media_nodes(
             # If that returns only duplicates, advance using last seed media id.
             tried_seed_jump = False
 
-            while more and _still_short(len(out), limit=limit, expected_count=expected_count) and stagnant < 6 and pages < max_pages:
+            while more and _still_short(len(out), limit=limit, expected_count=expected_count) and stagnant < 10 and pages < max_pages:
                 pages += 1
                 await asyncio.sleep(delay if pages > 1 else 0.15)
                 feed = await _feed_user_page(

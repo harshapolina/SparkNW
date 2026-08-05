@@ -281,13 +281,8 @@ def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
     if posts_count <= 0:
         # Unknown total — never treat the first profile-card page (~12) as complete.
         return got > 12
-    # Allow small mismatch (deleted/hidden posts between count and feed).
-    if got >= max(posts_count - 2, 1) or got >= posts_count:
-        return True
-    # Near-complete is good enough for ACTIVE (IG count can drift)
-    if posts_count >= 20 and got >= int(posts_count * 0.9):
-        return True
-    return False
+    # Must reach Instagram's count (allow 1–2 deleted/hidden drift).
+    return got >= max(posts_count - 2, 1) or got >= posts_count
 
 
 def _is_first_page_only(posts: list[ScrapedPost], posts_count: int) -> bool:
@@ -297,65 +292,95 @@ def _is_first_page_only(posts: list[ScrapedPost], posts_count: int) -> bool:
     return len(posts) <= 12
 
 
+def _posts_from_nodes(nodes: list[dict[str, Any]]) -> list[ScrapedPost]:
+    posts: list[ScrapedPost] = []
+    seen: set[str] = set()
+    for node in nodes:
+        post = _post_from_node(node)
+        if not post or post.shortcode in seen:
+            continue
+        seen.add(post.shortcode)
+        posts.append(post)
+    return posts
+
+
+def _merge_posts(base: list[ScrapedPost], extra: list[ScrapedPost]) -> list[ScrapedPost]:
+    seen = {p.shortcode for p in base}
+    out = list(base)
+    for p in extra:
+        if p.shortcode in seen:
+            continue
+        seen.add(p.shortcode)
+        out.append(p)
+    return out
+
+
 async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: str | None) -> list[ScrapedPost]:
-    """Paginate Instagram timeline until all (or max) posts are collected."""
+    """Paginate until scraped posts reach Instagram posts_count (not just first ~12)."""
     from instascope_scraper.http_profile import _timeline_from_user, fetch_all_media_nodes
 
     user_id = str(user.get("id") or user.get("pk") or "")
     if not user_id:
-        # Fall back to first-page only
-        result = _result_from_user(username, user)
-        return result.posts
+        return _result_from_user(username, user).posts
 
     expected = _expected_posts_count(user)
     initial_nodes, cursor, has_next = _timeline_from_user(user)
-    seed_nodes = initial_nodes
-    all_nodes = await fetch_all_media_nodes(
-        username,
-        user_id=user_id,
-        initial_nodes=seed_nodes,
-        initial_cursor=cursor,
-        initial_has_next=has_next,
-        expected_count=expected,
-        proxy=proxy_url,
-    )
+    posts = _posts_from_nodes(initial_nodes)
 
-    posts: list[ScrapedPost] = []
-    seen: set[str] = set()
-    for node in all_nodes:
-        post = _post_from_node(node)
-        if not post:
-            continue
-        if post.shortcode in seen:
-            continue
-        seen.add(post.shortcode)
-        posts.append(post)
-
-    # If residential proxy stalled on the first card (~12), retry once without proxy
-    if (
-        proxy_url
-        and expected > 12
-        and len(posts) <= 12
-        and os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0"
-    ):
-        try:
-            direct_nodes = await fetch_all_media_nodes(
-                username,
-                user_id=user_id,
-                initial_nodes=seed_nodes,
-                initial_cursor=cursor,
-                initial_has_next=has_next,
-                expected_count=expected,
-                proxy=None,
+    def _seed_nodes_from_posts(items: list[ScrapedPost]) -> list[dict[str, Any]]:
+        """Re-seed pagination from posts we already have (continue past page 1)."""
+        seed: list[dict[str, Any]] = []
+        for p in items:
+            seed.append(
+                {
+                    "code": p.shortcode,
+                    "shortcode": p.shortcode,
+                    "id": p.ig_post_id,
+                    "pk": p.ig_post_id,
+                }
             )
-            for node in direct_nodes:
-                post = _post_from_node(node)
-                if not post or post.shortcode in seen:
-                    continue
-                seen.add(post.shortcode)
-                posts.append(post)
-        except Exception:
-            pass
+        return seed
+
+    # Keep going until we hit posts_count (or exhaust rounds).
+    # Alternate proxy ↔ direct so residential stalls don't freeze at page 1.
+    rounds = max(1, int(os.getenv("SCRAPE_EXPAND_ROUNDS") or "6"))
+    proxy_cycle: list[str | None] = [proxy_url]
+    if proxy_url and os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0":
+        proxy_cycle.append(None)
+
+    for round_i in range(rounds):
+        if expected > 0 and _posts_complete(posts, expected):
+            break
+        if expected <= 0 and len(posts) > 12:
+            break
+
+        progressed = False
+        for pxy in proxy_cycle:
+            if expected > 0 and _posts_complete(posts, expected):
+                break
+            try:
+                seed = initial_nodes if (round_i == 0 and not posts) else _seed_nodes_from_posts(posts)
+                all_nodes = await fetch_all_media_nodes(
+                    username,
+                    user_id=user_id,
+                    initial_nodes=seed,
+                    initial_cursor=cursor if round_i == 0 else None,
+                    initial_has_next=True if expected > len(posts) else has_next,
+                    expected_count=expected,
+                    proxy=pxy,
+                )
+                before = len(posts)
+                posts = _merge_posts(posts, _posts_from_nodes(all_nodes))
+                if len(posts) > before:
+                    progressed = True
+            except Exception:
+                continue
+
+        if expected > 0 and _posts_complete(posts, expected):
+            break
+        if not progressed and round_i >= 1:
+            break
+        await asyncio.sleep(0.8 + round_i * 0.6)
 
     # HTTP media-info pass for reel play counts (before browser enrich)
     try:
@@ -1121,13 +1146,18 @@ async def _scrape_live(
     proxy: Optional[ProxyConfig],
     delay: float,
 ) -> ScrapeResult:
-    # 1) Fast path: public web_profile_info over HTTP (metrics + posts via feed API)
+    # 1) Fast path: public web_profile_info over HTTP — paginate until posts_count
     http_result: ScrapeResult | None = None
     try:
         from instascope_scraper.http_profile import fetch_web_profile_http
 
         proxy_url = proxy_to_httpx_url(proxy)
         http_json = await fetch_web_profile_http(username, proxy=proxy_url)
+        # If proxy fails profile card, try direct once
+        if not http_json and proxy_url and os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0":
+            http_json = await fetch_web_profile_http(username, proxy=None)
+            proxy_url = None
+
         user = _user_from_web_profile(http_json) if http_json else None
         if user:
             if not bool(user.get("is_private")):
@@ -1142,8 +1172,7 @@ async def _scrape_live(
             if http_result and http_result.is_private:
                 return _finalize_result(http_result, path="http_private")
 
-            # CRITICAL: full timeline via HTTP → success immediately.
-            # Do NOT send to browser (proxy tunnel failures were flipping these to failed).
+            # Full timeline via HTTP → success immediately (no browser).
             if http_result and _posts_complete(http_result.posts, http_result.posts_count):
                 return _finalize_result(http_result, path="http_full")
     except Exception:
@@ -1151,13 +1180,34 @@ async def _scrape_live(
 
     # 2) Browser path only when HTTP timeline is still short
     try:
-        return await _scrape_live_browser(
+        result = await _scrape_live_browser(
             username,
             headless=headless,
             proxy=proxy,
             delay=delay,
             http_result=http_result,
         )
+        # If browser still short, force one more HTTP expand toward posts_count
+        if (
+            result
+            and not result.is_private
+            and not _posts_complete(result.posts, result.posts_count)
+            and result.ig_user_id
+        ):
+            try:
+                from instascope_scraper.http_profile import fetch_web_profile_http
+
+                proxy_url = proxy_to_httpx_url(proxy)
+                http_json = await fetch_web_profile_http(username, proxy=proxy_url)
+                user = _user_from_web_profile(http_json) if http_json else None
+                if user:
+                    more = await _expand_all_posts(username, user, proxy_url=proxy_url)
+                    result.posts = _merge_posts(result.posts, more)
+                    if _posts_complete(result.posts, result.posts_count):
+                        return _finalize_result(result, path="http_after_browser")
+            except Exception:
+                pass
+        return result
     except Exception as exc:
         # Prefer any HTTP result that beat the first card page
         if http_result and not _is_first_page_only(http_result.posts, http_result.posts_count):
@@ -1172,7 +1222,6 @@ async def _scrape_live(
             try:
                 from instascope_scraper.http_profile import fetch_web_profile_http
 
-                # Try with proxy, then direct
                 for use_proxy in (proxy_to_httpx_url(proxy), None):
                     try:
                         http_json = await fetch_web_profile_http(username, proxy=use_proxy)
@@ -1181,8 +1230,10 @@ async def _scrape_live(
                             continue
                         posts = await _expand_all_posts(username, user, proxy_url=use_proxy)
                         result = _result_from_user(username, user, posts_override=posts)
-                        if not _is_first_page_only(result.posts, result.posts_count):
+                        if _posts_complete(result.posts, result.posts_count):
                             return _finalize_result(result, path="http_after_tunnel_fail")
+                        if not _is_first_page_only(result.posts, result.posts_count):
+                            return _finalize_result(result, path="http_after_tunnel_partial")
                     except Exception:
                         continue
             except Exception:
@@ -1394,19 +1445,17 @@ async def _scrape_live_browser(
         if not _result_is_usable(result):
             raise ScrapeError("Scraped profile returned empty metrics")
 
-        # Only hard-fail the true first-card trap (~12 posts). Anything beyond that is ACTIVE.
-        if not result.is_private and _is_first_page_only(result.posts, result.posts_count):
-            # Prefer HTTP seed if somehow better
+        # Must reach Instagram posts_count — never accept first-card-only (~12).
+        if not result.is_private and not _posts_complete(result.posts, result.posts_count):
             if http_result and len(http_result.posts) > len(result.posts):
-                result = http_result
-            if _is_first_page_only(result.posts, result.posts_count):
+                result.posts = list(http_result.posts)
+            if not _posts_complete(result.posts, result.posts_count):
                 raise ScrapeError(
                     f"Incomplete timeline: only {len(result.posts)}/{result.posts_count} posts "
-                    f"(Instagram pagination blocked). Check SCRAPE_PROXY_URL / Decodo."
+                    f"(pagination still short — will retry)."
                 )
 
-        path = "browser_full" if _posts_complete(result.posts, result.posts_count) else "browser_partial_ok"
-        return _finalize_result(result, path=path)
+        return _finalize_result(result, path="browser_full")
 
 
 async def scrape_profile(
@@ -1459,8 +1508,6 @@ async def scrape_profile(
 def _humanize_scrape_error(err: BaseException | str) -> str:
     raw = str(err)
     low = raw.lower()
-    if "get_pymongo_collection" in low:
-        return "Temporary database write issue during scrape (fixed — please Refresh again)."
     if "err_tunnel" in low or "tunnel_connection" in low:
         return (
             "Proxy tunnel failed while opening Instagram. "
