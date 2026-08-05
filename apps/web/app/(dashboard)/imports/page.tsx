@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckSquare,
   FileSpreadsheet,
@@ -26,6 +26,8 @@ type Row = {
   username: string;
   student: SheetStudent;
   selected: boolean;
+  isDuplicateInFile?: boolean;
+  isAlreadyTracked?: boolean;
 };
 
 type BulkImportResponse = {
@@ -39,14 +41,20 @@ type BulkImportResponse = {
 
 type SourceTab = "upload" | "sheet" | "paste";
 
-function parseMatrix(matrix: string[][]): Row[] {
-  return parseSheetMatrix(matrix).map((r, i) => ({
-    id: `${r.username}-${i}`,
-    raw: r.url,
-    username: r.username,
-    student: r.student,
-    selected: true,
-  }));
+function parseMatrix(matrix: string[][], existingUsernames: Set<string>): Row[] {
+  return parseSheetMatrix(matrix).map((r, i) => {
+    const usernameNorm = r.username.toLowerCase();
+    const isAlreadyTracked = existingUsernames.has(usernameNorm);
+    return {
+      id: `${r.username}-${i}`,
+      raw: r.url,
+      username: r.username,
+      student: r.student,
+      selected: !r.isDuplicateInFile && !isAlreadyTracked,
+      isDuplicateInFile: r.isDuplicateInFile,
+      isAlreadyTracked,
+    };
+  });
 }
 
 function googleSheetToCsvUrl(input: string): string | null {
@@ -65,6 +73,7 @@ export default function ImportsPage() {
   const qc = useQueryClient();
   const fileRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<SourceTab>("upload");
+  const [previewTab, setPreviewTab] = useState<"import" | "duplicates">("import");
   const [rows, setRows] = useState<Row[]>([]);
   const [paste, setPaste] = useState("");
   const [sheetUrl, setSheetUrl] = useState("");
@@ -75,15 +84,38 @@ export default function ImportsPage() {
   const [loadingSheet, setLoadingSheet] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
-  const selected = useMemo(() => rows.filter((r) => r.selected), [rows]);
+  const { data: allProfiles } = useQuery({
+    queryKey: ["all-profiles-list"],
+    queryFn: () => api<{ items: { username: string }[] }>("/profiles?page_size=1000"),
+  });
+
+  const existingUsernames = useMemo(() => {
+    return new Set(allProfiles?.items.map((p) => p.username.toLowerCase()) || []);
+  }, [allProfiles]);
+
+  const { toImport, duplicates } = useMemo(() => {
+    const toImport: Row[] = [];
+    const duplicates: Row[] = [];
+    rows.forEach((r) => {
+      if (r.isDuplicateInFile || r.isAlreadyTracked) {
+        duplicates.push(r);
+      } else {
+        toImport.push(r);
+      }
+    });
+    return { toImport, duplicates };
+  }, [rows]);
+
+  const selected = useMemo(() => toImport.filter((r) => r.selected), [toImport]);
   const selectedCount = selected.length;
-  const allSelected = rows.length > 0 && rows.every((r) => r.selected);
+  const allSelected = toImport.length > 0 && toImport.every((r) => r.selected);
 
   function applyRows(next: Row[], sourceLabel?: string) {
     setRows(next);
     setResult("");
     setError(next.length ? "" : "No Instagram usernames found in that sheet.");
     if (sourceLabel && next.length) setFileName(sourceLabel);
+    setPreviewTab("import"); // auto switch to import tab on load
   }
 
   function handleFile(file: File) {
@@ -100,7 +132,7 @@ export default function ImportsPage() {
           const wb = XLSX.read(data, { type: "array" });
           const sheet = wb.Sheets[wb.SheetNames[0]];
           const matrix = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, defval: "" }) as string[][];
-          applyRows(parseMatrix(matrix), file.name);
+          applyRows(parseMatrix(matrix, existingUsernames), file.name);
         } catch {
           setError("Could not read that Excel file.");
         }
@@ -112,7 +144,7 @@ export default function ImportsPage() {
     Papa.parse(file, {
       complete: (res) => {
         const matrix = (res.data as string[][]).filter((r) => r.some((c) => String(c || "").trim()));
-        applyRows(parseMatrix(matrix), file.name);
+        applyRows(parseMatrix(matrix, existingUsernames), file.name);
       },
       error: () => setError("Could not parse that CSV file."),
     });
@@ -124,7 +156,7 @@ export default function ImportsPage() {
       .map((l) => l.trim())
       .filter(Boolean);
     const matrix = lines.map((l) => l.split("\t").map((c) => c.trim()));
-    applyRows(parseMatrix(matrix), "Pasted from sheet");
+    applyRows(parseMatrix(matrix, existingUsernames), "Pasted from sheet");
   }
 
   async function loadFromGoogleSheet() {
@@ -145,7 +177,7 @@ export default function ImportsPage() {
       const text = await res.text();
       const parsed = Papa.parse<string[]>(text, { header: false });
       const matrix = (parsed.data as string[][]).filter((r) => r.some((c) => String(c || "").trim()));
-      applyRows(parseMatrix(matrix), "Google Sheet");
+      applyRows(parseMatrix(matrix, existingUsernames), "Google Sheet");
     } catch {
       setError("Failed to load Google Sheet. Check sharing settings and try again.");
     } finally {
@@ -363,9 +395,9 @@ export default function ImportsPage() {
             <div>
               <div className="text-sm font-semibold tracking-tight">Preview</div>
               <p className="text-xs text-stone-500">
-                <span className="tabular font-medium text-stone-800">{rows.length}</span> unique
+                <span className="tabular font-medium text-stone-800">{toImport.length}</span> to import
                 {" · "}
-                <span className="tabular font-medium text-stone-800">{selectedCount}</span> selected
+                <span className="tabular font-medium text-stone-800">{duplicates.length}</span> duplicates
               </p>
             </div>
             {fileName && rows.length > 0 && (
@@ -378,8 +410,17 @@ export default function ImportsPage() {
             <Button
               size="sm"
               variant="secondary"
-              disabled={!rows.length}
-              onClick={() => setRows((prev) => prev.map((r) => ({ ...r, selected: !allSelected })))}
+              disabled={!toImport.length || previewTab !== "import"}
+              onClick={() => {
+                const targetSelected = !allSelected;
+                setRows((prev) =>
+                  prev.map((r) => {
+                    const isDup = r.isDuplicateInFile || r.isAlreadyTracked;
+                    if (isDup) return r;
+                    return { ...r, selected: targetSelected };
+                  })
+                );
+              }}
             >
               {allSelected ? <CheckSquare size={14} /> : <Square size={14} />}
               {allSelected ? "Deselect" : "Select all"}
@@ -388,7 +429,7 @@ export default function ImportsPage() {
               <Trash2 size={14} /> Clear
             </Button>
             <Button
-              disabled={!selectedCount || importAll.isPending}
+              disabled={!selectedCount || importAll.isPending || previewTab !== "import"}
               onClick={() => importAll.mutate()}
               className="min-w-[132px]"
             >
@@ -403,6 +444,35 @@ export default function ImportsPage() {
             </Button>
           </div>
         </div>
+
+        {rows.length > 0 && (
+          <div className="flex border-b border-stone-100 bg-stone-50/50 px-5 py-2.5 gap-4">
+            <button
+              type="button"
+              onClick={() => setPreviewTab("import")}
+              className={cn(
+                "pb-1 text-xs font-semibold uppercase tracking-wider transition border-b-2",
+                previewTab === "import"
+                  ? "border-stone-900 text-stone-900"
+                  : "border-transparent text-stone-400 hover:text-stone-600"
+              )}
+            >
+              Ready to Import ({toImport.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setPreviewTab("duplicates")}
+              className={cn(
+                "pb-1 text-xs font-semibold uppercase tracking-wider transition border-b-2",
+                previewTab === "duplicates"
+                  ? "border-stone-900 text-stone-900"
+                  : "border-transparent text-stone-400 hover:text-stone-600"
+              )}
+            >
+              Duplicates / Tracked ({duplicates.length})
+            </button>
+          </div>
+        )}
 
         {progress && (
           <div className="border-b border-stone-100 px-5 py-3">
@@ -438,9 +508,9 @@ export default function ImportsPage() {
                   { n: "03", t: "Import all", d: "Scrape starts live" },
                 ].map((s) => (
                   <div key={s.n} className="rounded-2xl bg-[#f3efe8] px-3 py-4 text-left">
-                    <div className="text-[10px] font-semibold tracking-wider text-stone-400">{s.n}</div>
-                    <div className="mt-1 text-xs font-semibold text-stone-800">{s.t}</div>
-                    <div className="mt-0.5 text-[10px] leading-snug text-stone-500">{s.d}</div>
+                     <div className="text-[10px] font-semibold tracking-wider text-stone-400">{s.n}</div>
+                     <div className="mt-1 text-xs font-semibold text-stone-800">{s.t}</div>
+                     <div className="mt-0.5 text-[10px] leading-snug text-stone-500">{s.d}</div>
                   </div>
                 ))}
               </div>
@@ -454,34 +524,68 @@ export default function ImportsPage() {
                 <tr>
                   <th className="w-10 pl-5"></th>
                   <th>Username</th>
-                  <th className="hidden sm:table-cell">Source</th>
+                  <th className="hidden sm:table-cell">Source / Reason</th>
                 </tr>
               </thead>
               <tbody>
-                {rows.map((row) => (
+                {(previewTab === "import" ? toImport : duplicates).map((row) => (
                   <tr
                     key={row.id}
-                    className="cursor-pointer"
-                    onClick={() =>
-                      setRows((prev) =>
-                        prev.map((r) => (r.id === row.id ? { ...r, selected: !r.selected } : r))
-                      )
-                    }
+                    className={cn(
+                      "cursor-pointer transition",
+                      previewTab === "duplicates" ? "bg-stone-50/40 hover:bg-stone-50" : ""
+                    )}
+                    onClick={() => {
+                      if (previewTab === "import") {
+                        setRows((prev) =>
+                          prev.map((r) => (r.id === row.id ? { ...r, selected: !r.selected } : r))
+                        );
+                      }
+                    }}
                   >
                     <td className="pl-5" onClick={(e) => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        className="rounded border-slate-300"
-                        checked={row.selected}
-                        onChange={(e) =>
-                          setRows((prev) =>
-                            prev.map((r) => (r.id === row.id ? { ...r, selected: e.target.checked } : r))
-                          )
-                        }
-                      />
+                      {previewTab === "import" ? (
+                        <input
+                          type="checkbox"
+                          className="rounded border-slate-300"
+                          checked={row.selected}
+                          onChange={(e) =>
+                            setRows((prev) =>
+                              prev.map((r) => (r.id === row.id ? { ...r, selected: e.target.checked } : r))
+                            )
+                          }
+                        />
+                      ) : (
+                        <span className="text-xs text-amber-500">⚠️</span>
+                      )}
                     </td>
-                    <td className="font-medium">@{row.username}</td>
-                    <td className="hidden max-w-[280px] truncate text-muted sm:table-cell">{row.raw}</td>
+                    <td className="font-medium">
+                      <div className="flex items-center gap-2">
+                        <span>@{row.username}</span>
+                        {row.student?.full_name && (
+                          <span className="text-xs text-stone-400 font-normal">({row.student.full_name})</span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="hidden max-w-[280px] truncate text-muted sm:table-cell">
+                      {previewTab === "import" ? (
+                        row.raw
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              "badge font-semibold px-2 py-0.5 rounded text-[10px]",
+                              row.isAlreadyTracked
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-slate-100 text-slate-700"
+                            )}
+                          >
+                            {row.isAlreadyTracked ? "Already in Database" : "Repeated in File"}
+                          </span>
+                          <span className="truncate max-w-[200px] text-xs text-stone-400">{row.raw}</span>
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

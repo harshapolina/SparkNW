@@ -191,7 +191,7 @@ export default function ProfilesPage() {
               </thead>
               <tbody>
                 {data.items.map((p) => (
-                  <tr key={p.id}>
+                  <tr key={p.id} className={p.status === "failed" ? "bg-red-50/40 hover:bg-red-50" : ""}>
                     <td>
                       <input
                         type="checkbox"
@@ -227,19 +227,29 @@ export default function ProfilesPage() {
                       {formatPct(p.growth_pct_today)}
                     </td>
                     <td>
-                      <span
-                        className={
-                          p.status === "failed"
-                            ? "badge-danger"
-                            : p.status === "active"
-                              ? "badge-success"
-                              : p.status === "paused"
-                                ? "badge-warning"
-                                : "badge-neutral"
-                        }
-                      >
-                        {p.status}
-                      </span>
+                      <div className="flex flex-col items-start gap-1">
+                        <span
+                          className={
+                            p.status === "failed"
+                              ? "badge-danger"
+                              : p.status === "active"
+                                ? "badge-success"
+                                : p.status === "paused"
+                                  ? "badge-warning"
+                                  : "badge-neutral"
+                          }
+                        >
+                          {p.status}
+                        </span>
+                        {p.status === "failed" && p.last_error && (
+                          <span
+                            className="text-[10px] text-red-600 max-w-[180px] truncate block font-medium cursor-help"
+                            title={p.last_error}
+                          >
+                            ⚠️ {p.last_error}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="text-xs text-muted whitespace-nowrap">
                       {p.last_scraped_at ? new Date(p.last_scraped_at).toLocaleString() : "—"}
