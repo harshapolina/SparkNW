@@ -146,6 +146,7 @@ class BulkImportResponse(BaseModel):
     skipped: int
     failed: int
     updated: int = 0
+    duplicates: int = 0
     scraping: bool
     items: list[BulkImportItemResult]
 

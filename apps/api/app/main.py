@@ -19,17 +19,19 @@ def create_app() -> FastAPI:
     cfg = get_settings()
     app = FastAPI(title=cfg.app_name, version="0.1.0", lifespan=lifespan)
 
-    origins = cfg.cors_origin_list
+    origins = list(cfg.cors_origin_list)
     # Dev convenience: allow any localhost / 127.0.0.1 port (UI may bind 3000 or 3001)
     if cfg.environment == "development" or cfg.debug:
         origins = list(
-            {
-                *origins,
-                "http://localhost:3000",
-                "http://localhost:3001",
-                "http://127.0.0.1:3000",
-                "http://127.0.0.1:3001",
-            }
+            dict.fromkeys(
+                [
+                    *origins,
+                    "http://localhost:3000",
+                    "http://localhost:3001",
+                    "http://127.0.0.1:3000",
+                    "http://127.0.0.1:3001",
+                ]
+            )
         )
 
     app.add_middleware(

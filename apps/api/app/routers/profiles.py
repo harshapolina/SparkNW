@@ -179,6 +179,7 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
     skipped = 0
     failed = 0
     updated = 0
+    duplicates = 0
     items: list[BulkImportItemResult] = []
     to_scrape: list = []
 
@@ -208,20 +209,24 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
                 imported += 1
                 status_label = "imported"
                 msg = None
+                to_scrape.append(profile)
             except HTTPException as exc:
                 if exc.status_code != 409:
                     raise
                 profile = await profile_service.add_profile(str(user.id), req, upsert_student=True)
+                already_scraped = bool(getattr(profile, "last_success_at", None))
+                duplicates += 1
+                status_label = "duplicate"
                 if row.student:
                     updated += 1
-                    status_label = "updated"
                     msg = "Already tracked — student fields merged"
                 else:
-                    skipped += 1
-                    status_label = "skipped"
                     msg = "Already tracked"
+                if already_scraped:
+                    msg = f"{msg}; scrape skipped (already scraped)"
+                else:
+                    to_scrape.append(profile)
 
-            to_scrape.append(profile)
             items.append(
                 BulkImportItemResult(
                     url=raw,
@@ -264,6 +269,7 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
         skipped=skipped,
         failed=failed,
         updated=updated,
+        duplicates=duplicates,
         scraping=scraping,
         items=items,
     )
@@ -303,20 +309,6 @@ async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current
         except Exception:
             continue
     return out
-
-
-@router.post("/refresh-all", response_model=MessageResponse)
-async def refresh_all_profiles(user: User = Depends(get_current_user)):
-    profiles = await Profile.find(Profile.user_id == str(user.id)).to_list()
-    # Trigger background inline scrapes
-    async def _refresh_all():
-        for p in profiles:
-            try:
-                await scrape_profile_inline(p)
-            except Exception:
-                continue
-    asyncio.create_task(_refresh_all())
-    return MessageResponse(message=f"Scheduled refresh for all {len(profiles)} profiles")
 
 
 @router.post("/bulk/pause", response_model=MessageResponse)

@@ -3,27 +3,71 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
-import { Plus, Search } from "lucide-react";
+import { AlertCircle, Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, EmptyState } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { api, type Profile } from "@/lib/api";
+import { STUDENT_SHEET_COLUMNS, studentFieldValue } from "@/lib/student-fields";
 import { formatNumber, formatPct } from "@/lib/utils";
 import { Avatar } from "@/components/ui/avatar";
+import { cn } from "@/lib/utils";
 
 type ListResponse = { items: Profile[]; total: number; page: number; page_size: number };
+
+const STATUS_FILTERS = [
+  { id: "", label: "All" },
+  { id: "active", label: "Active" },
+  { id: "failed", label: "Failed" },
+  { id: "paused", label: "Paused" },
+] as const;
+
+/** Sheet columns shown in the list table (subset for width; all fields on detail page). */
+const LIST_STUDENT_COLS = STUDENT_SHEET_COLUMNS.filter((c) =>
+  [
+    "program",
+    "year_of_study",
+    "email",
+    "mobile",
+    "instagram_handle",
+    "instagram_username",
+    "youtube_link",
+    "created_content_before",
+    "instagram_followers_declared",
+    "content_interest",
+    "uid",
+  ].includes(c.key)
+);
+
+function statusBadgeClass(status: string) {
+  if (status === "failed") return "badge-danger";
+  if (status === "active") return "badge-success";
+  if (status === "paused") return "badge-warning";
+  return "badge-neutral";
+}
 
 export default function ProfilesPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
   const [url, setUrl] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [page, setPage] = useState(1);
 
+  const queryString = useMemo(() => {
+    const params = new URLSearchParams({
+      q,
+      page: String(page),
+      page_size: "20",
+    });
+    if (statusFilter) params.set("status", statusFilter);
+    return params.toString();
+  }, [q, page, statusFilter]);
+
   const { data, isLoading } = useQuery({
-    queryKey: ["profiles", q, page],
-    queryFn: () => api<ListResponse>(`/profiles?q=${encodeURIComponent(q)}&page=${page}&page_size=20`),
+    queryKey: ["profiles", q, page, statusFilter],
+    queryFn: () => api<ListResponse>(`/profiles?${queryString}`),
   });
 
   const add = useMutation({
@@ -64,14 +108,6 @@ export default function ProfilesPage() {
     },
   });
 
-  const refreshAll = useMutation({
-    mutationFn: () => api<{ message: string }>("/profiles/refresh-all", { method: "POST" }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["profiles"] });
-      qc.invalidateQueries({ queryKey: ["overview"] });
-    },
-  });
-
   const allIds = useMemo(() => data?.items.map((p) => p.id) || [], [data]);
 
   function onAdd(e: FormEvent) {
@@ -104,17 +140,37 @@ export default function ProfilesPage() {
 
       <Card padding="lg">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="relative max-w-sm w-full">
-            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <Input
-              className="pl-10"
-              placeholder="Search username, name, student ID, university…"
-              value={q}
-              onChange={(e) => {
-                setQ(e.target.value);
-                setPage(1);
-              }}
-            />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="relative max-w-sm w-full">
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <Input
+                className="pl-10"
+                placeholder="Search username, name, student ID, university…"
+                value={q}
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  setPage(1);
+                }}
+              />
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {STATUS_FILTERS.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => {
+                    setStatusFilter(f.id);
+                    setPage(1);
+                  }}
+                  className={cn(
+                    "rounded-full px-3 py-1.5 text-xs font-medium transition",
+                    statusFilter === f.id ? "bg-fg text-white" : "bg-slate-100 text-muted hover:text-fg"
+                  )}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             {(
@@ -138,17 +194,6 @@ export default function ProfilesPage() {
             <Button size="sm" variant="danger" disabled={!selected.length || bulk.isPending} onClick={() => bulk.mutate("delete")}>
               Delete
             </Button>
-            <Button
-              size="sm"
-              disabled={refreshAll.isPending}
-              onClick={() => {
-                if (confirm("Are you sure you want to refresh all profiles? This will scrape all tracked profiles in the background.")) {
-                  refreshAll.mutate();
-                }
-              }}
-            >
-              {refreshAll.isPending ? "Refreshing All..." : "Refresh All"}
-            </Button>
           </div>
         </div>
 
@@ -165,7 +210,7 @@ export default function ProfilesPage() {
               description="Add your first Instagram profile above to begin continuous monitoring."
             />
           ) : (
-            <table className="table-premium min-w-[960px]">
+            <table className="table-premium min-w-[1800px]">
               <thead>
                 <tr>
                   <th className="w-10">
@@ -177,13 +222,16 @@ export default function ProfilesPage() {
                     />
                   </th>
                   <th>Username</th>
-                  <th>Student</th>
+                  <th>Full name</th>
+                  <th>Student ID</th>
                   <th>University</th>
+                  {LIST_STUDENT_COLS.map((col) => (
+                    <th key={col.key}>{col.label}</th>
+                  ))}
                   <th>Followers</th>
                   <th>Following</th>
                   <th>Posts</th>
                   <th>Avg likes</th>
-                  <th>Avg views</th>
                   <th>Growth</th>
                   <th>Status</th>
                   <th>Updated</th>
@@ -191,7 +239,11 @@ export default function ProfilesPage() {
               </thead>
               <tbody>
                 {data.items.map((p) => (
-                  <tr key={p.id} className={p.status === "failed" ? "bg-red-50/40 hover:bg-red-50" : ""}>
+                  <tr
+                    key={p.id}
+                    className={cn(p.status === "failed" && "bg-red-50/80 hover:bg-red-50")}
+                    title={p.status === "failed" && p.last_error ? p.last_error : undefined}
+                  >
                     <td>
                       <input
                         type="checkbox"
@@ -207,49 +259,37 @@ export default function ProfilesPage() {
                         <Avatar name={p.username} size="md" />
                         <div>
                           <div className="font-medium group-hover:text-accent transition">@{p.username}</div>
-                          <div className="text-xs text-muted">{p.full_name || p.student?.instagram_username || "—"}</div>
+                          {p.status === "failed" && (
+                            <div className="mt-0.5 flex items-center gap-1 text-xs text-danger">
+                              <AlertCircle size={11} /> Scrape failed
+                            </div>
+                          )}
                         </div>
                       </Link>
                     </td>
-                    <td>
-                      <div className="text-sm font-medium">{p.student?.full_name || "—"}</div>
-                      <div className="text-xs text-muted">{p.student?.student_id || ""}</div>
-                    </td>
-                    <td className="text-sm text-muted max-w-[160px] truncate" title={p.student?.university || ""}>
+                    <td className="text-sm">{p.student?.full_name || p.full_name || "—"}</td>
+                    <td className="text-sm text-muted">{p.student?.student_id || "—"}</td>
+                    <td className="text-sm text-muted max-w-[140px] truncate" title={p.student?.university || ""}>
                       {p.student?.university || "—"}
                     </td>
+                    {LIST_STUDENT_COLS.map((col) => (
+                      <td
+                        key={col.key}
+                        className="max-w-[140px] truncate text-sm text-muted"
+                        title={studentFieldValue(p.student, col.key)}
+                      >
+                        {studentFieldValue(p.student, col.key) || "—"}
+                      </td>
+                    ))}
                     <td className="tabular font-medium">{formatNumber(p.followers)}</td>
                     <td className="tabular text-muted">{formatNumber(p.following)}</td>
                     <td className="tabular text-muted">{formatNumber(p.posts_count)}</td>
                     <td className="tabular font-medium">{formatNumber(p.avg_likes)}</td>
-                    <td className="tabular text-muted">{formatNumber(p.avg_views)}</td>
                     <td className={`tabular font-medium ${p.growth_pct_today >= 0 ? "text-success" : "text-danger"}`}>
                       {formatPct(p.growth_pct_today)}
                     </td>
                     <td>
-                      <div className="flex flex-col items-start gap-1">
-                        <span
-                          className={
-                            p.status === "failed"
-                              ? "badge-danger"
-                              : p.status === "active"
-                                ? "badge-success"
-                                : p.status === "paused"
-                                  ? "badge-warning"
-                                  : "badge-neutral"
-                          }
-                        >
-                          {p.status}
-                        </span>
-                        {p.status === "failed" && p.last_error && (
-                          <span
-                            className="text-[10px] text-red-600 max-w-[180px] truncate block font-medium cursor-help"
-                            title={p.last_error}
-                          >
-                            ⚠️ {p.last_error}
-                          </span>
-                        )}
-                      </div>
+                      <span className={statusBadgeClass(p.status)}>{p.status}</span>
                     </td>
                     <td className="text-xs text-muted whitespace-nowrap">
                       {p.last_scraped_at ? new Date(p.last_scraped_at).toLocaleString() : "—"}

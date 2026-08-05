@@ -133,7 +133,7 @@ export function mapSheetRow(headers: string[], values: unknown[]): { student: Sh
   return { student, url: resolveInstagramUrl(student) || "" };
 }
 
-export function parseSheetMatrix(matrix: string[][]): { url: string; username: string; student: SheetStudent; isDuplicateInFile: boolean }[] {
+export function parseSheetMatrix(matrix: string[][]): { url: string; username: string; student: SheetStudent }[] {
   if (!matrix.length) return [];
   const headers = matrix[0].map((c) => String(c ?? "").trim());
   const looksLikeHeader = headers.some((h) => {
@@ -150,17 +150,16 @@ export function parseSheetMatrix(matrix: string[][]): { url: string; username: s
   const dataRows = looksLikeHeader ? matrix.slice(1) : matrix;
   const hdrs = looksLikeHeader ? headers : ["instagram_username"];
   const seen = new Set<string>();
-  const out: { url: string; username: string; student: SheetStudent; isDuplicateInFile: boolean }[] = [];
+  const out: { url: string; username: string; student: SheetStudent }[] = [];
 
   for (const row of dataRows) {
     const values = looksLikeHeader ? row : [row.find((c) => String(c || "").trim()) || ""];
     const mapped = mapSheetRow(hdrs, values);
     if (!mapped.url) continue;
     const username = extractUsername(mapped.url);
-    if (!username) continue;
-    const isDup = seen.has(username);
+    if (!username || seen.has(username)) continue;
     seen.add(username);
-    out.push({ url: mapped.url, username, student: mapped.student, isDuplicateInFile: isDup });
+    out.push({ url: mapped.url, username, student: mapped.student });
   }
   return out;
 }

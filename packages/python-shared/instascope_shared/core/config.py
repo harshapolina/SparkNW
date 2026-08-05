@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 14
 
     cors_origins: str = "http://localhost:3000"
+    # Optional single web app origin (e.g. http://62.238.57.52:3000) merged into CORS allowlist
+    web_origin: str | None = None
 
     scrape_delay_seconds: float = 2.0
     scrape_max_retries: int = 3
@@ -37,7 +39,10 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        if self.web_origin and self.web_origin.strip():
+            origins.append(self.web_origin.strip())
+        return list(dict.fromkeys(origins))
 
 
 @lru_cache

@@ -26,6 +26,7 @@ const nav = [
   { href: "/overview", label: "Overview", prefetch: "/analytics/overview" },
   { href: "/profiles", label: "Profiles", prefetch: "/profiles?page=1&page_size=20" },
   { href: "/imports", label: "Import" },
+  { href: "/imports/duplicates", label: "Duplicates" },
   { href: "/analytics", label: "Analytics", prefetch: "/analytics/overview" },
   { href: "/spark/dashboard", label: "Student", prefetchApi: "/spark/student" },
   { href: "/spark/leaderboard", label: "Leaderboard", prefetchApi: "/spark/leaderboard?sort=overall" },

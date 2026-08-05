@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
-import { BadgeCheck, ExternalLink, Pause, RefreshCw, Trash2 } from "lucide-react";
+import { BadgeCheck, ExternalLink, Pause, RefreshCw, Trash2, AlertCircle } from "lucide-react";
 import {
   Area,
   AreaChart,
@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
 import { api, type Profile } from "@/lib/api";
+import { studentDetailFields } from "@/lib/student-fields";
 import { formatNumber, formatPct } from "@/lib/utils";
 
 type Post = {
@@ -95,28 +96,11 @@ type Insights = {
 
 const tabs = ["overview", "student", "insights", "posts", "growth", "analytics", "history"] as const;
 
-function studentFields(s: NonNullable<Profile["student"]>) {
-  return [
-    ["Full name", s.full_name],
-    ["Student ID", s.student_id],
-    ["Program", s.program],
-    ["Year", s.year_of_study],
-    ["University", s.university],
-    ["Email", s.email],
-    ["Mobile", s.mobile],
-    ["Instagram", s.instagram_username || s.instagram_handle],
-    ["IG followers (declared)", s.instagram_followers_declared || s.current_follower_count_raw],
-    ["YouTube", s.youtube_status || "Coming soon"],
-    ["YouTube link", s.youtube_link],
-    ["YouTube username", s.youtube_username],
-    ["YT subs (declared)", s.youtube_subscribers_declared],
-    ["Created content before", s.created_content_before],
-    ["Content interest", s.content_interest],
-    ["UID", s.uid],
-    ["Duplicate flag", s.duplicate_flag],
-    ["Missing info", s.missing_info],
-    ["Submitted", s.timestamp],
-  ] as const;
+function statusBadgeClass(status: string) {
+  if (status === "failed") return "badge-danger";
+  if (status === "active") return "badge-success";
+  if (status === "paused") return "badge-warning";
+  return "badge-neutral";
 }
 
 function ChartTip({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) {
@@ -198,6 +182,16 @@ export default function ProfileDetailPage() {
 
   return (
     <div className="space-y-7">
+      {p.status === "failed" && (
+        <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-danger">
+          <AlertCircle size={18} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-semibold">Last scrape failed</div>
+            <p className="mt-1 text-danger/90">{p.last_error || "Unknown error — try Refresh to scrape again."}</p>
+          </div>
+        </div>
+      )}
+
       <Card padding="lg" className="relative overflow-hidden">
         <div className="pointer-events-none absolute inset-y-0 right-0 w-1/3 bg-gradient-to-l from-accent/[0.04] to-transparent" />
         <div className="relative flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
@@ -214,7 +208,7 @@ export default function ProfileDetailPage() {
                 {p.is_business && <span className="badge-neutral">Business</span>}
                 {p.is_private && <span className="badge-neutral">Private</span>}
                 {p.category && <span className="badge-neutral">{p.category}</span>}
-                <span className={p.status === "active" ? "badge-success" : "badge-neutral"}>{p.status}</span>
+                <span className={statusBadgeClass(p.status)}>{p.status}</span>
               </div>
               {p.bio && <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted line-clamp-3">{p.bio}</p>}
               {p.student?.full_name && (
@@ -275,11 +269,11 @@ export default function ProfileDetailPage() {
             <div className="mb-4 text-sm font-semibold">SPARK registration</div>
             {p.student && Object.keys(p.student).length ? (
               <dl className="grid gap-3 text-sm">
-                {studentFields(p.student).map(([label, value]) => (
-                  <div key={label} className="grid grid-cols-[140px_minmax(0,1fr)] gap-3 border-b border-border/60 pb-2 last:border-0">
+                {studentDetailFields(p.student).map(([label, value]) => (
+                  <div key={label} className="grid grid-cols-[160px_minmax(0,1fr)] gap-3 border-b border-border/60 pb-2 last:border-0">
                     <dt className="text-muted">{label}</dt>
                     <dd className="break-words font-medium">
-                      {label === "YouTube" ? (
+                      {label === "YouTube status" ? (
                         <span className="badge-neutral">{value || "Coming soon"}</span>
                       ) : value ? (
                         String(value)

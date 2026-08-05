@@ -252,8 +252,8 @@ def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
     if not posts:
         return False
     if posts_count <= 0:
-        # Unknown total — do not treat as complete so we continue scrolling/fetching
-        return False
+        # Unknown total — never treat the first profile-card page (~12) as complete.
+        return len(posts) > 12
     # Allow tiny mismatch (deleted/hidden posts between count and feed).
     return len(posts) >= max(posts_count - 2, 1) or len(posts) >= posts_count
 
@@ -504,14 +504,35 @@ async def _scroll_collect_all_posts(page, *, posts_count: int, existing: list[Sc
     merged = list(existing)
     seen = {p.shortcode for p in merged}
     stagnant = 0
-    # ~12 posts per scroll; allow plenty of room for slow loads
-    max_scrolls = max(40, (target // 3) + 20)
+    # ~12 posts per scroll batch; allow plenty of room for slow lazy-loads
+    max_scrolls = max(80, (target // 2) + 40)
+    scroll_delay = float(os.getenv("SCRAPE_SCROLL_DELAY_SECONDS") or "1.1")
 
-    for _ in range(max_scrolls):
+    for i in range(max_scrolls):
         if target > 0 and len(merged) >= target:
             break
-        await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        await asyncio.sleep(0.85)
+        # Progressive scroll — IG lazy-loads better than a single jump to bottom
+        await page.evaluate(
+            """(step) => {
+              const h = Math.max(
+                document.body.scrollHeight,
+                document.documentElement.scrollHeight
+              );
+              window.scrollTo(0, Math.min(h, (step + 1) * (window.innerHeight * 0.9)));
+              if (step % 3 === 2) window.scrollTo(0, h);
+            }""",
+            i,
+        )
+        await asyncio.sleep(scroll_delay)
+        # Dismiss "See more" / load-more style buttons if present
+        try:
+            for label in ("See more", "Show more", "Load more"):
+                btn = page.get_by_role("button", name=re.compile(label, re.I))
+                if await btn.count():
+                    await btn.first.click(timeout=1500)
+                    await asyncio.sleep(0.4)
+        except Exception:
+            pass
         dom_posts = await _extract_posts_from_dom(page)
         added = 0
         for dp in dom_posts:
@@ -522,7 +543,7 @@ async def _scroll_collect_all_posts(page, *, posts_count: int, existing: list[Sc
             added += 1
         if added == 0:
             stagnant += 1
-            if stagnant >= 5:
+            if stagnant >= 8:
                 break
         else:
             stagnant = 0
@@ -557,6 +578,7 @@ async def _scrape_live(
                 http_result = _result_from_user(username, user)
 
             # Only return early when we truly have the full timeline (or private).
+            # Never treat the profile-card page (~12) as complete.
             if http_result and (
                 http_result.is_private
                 or _posts_complete(http_result.posts, http_result.posts_count)
@@ -567,7 +589,11 @@ async def _scrape_live(
                     and http_result.posts
                     and all(p.likes == 0 and p.comments == 0 for p in http_result.posts[: min(6, len(http_result.posts))])
                 )
-                if not needs_enrich:
+                if not needs_enrich and (
+                    http_result.is_private
+                    or len(http_result.posts) > 12
+                    or http_result.posts_count <= 12
+                ):
                     http_result.raw = {
                         **(http_result.raw or {}),
                         "scraped_at": datetime.now(timezone.utc).isoformat(),
@@ -575,6 +601,7 @@ async def _scrape_live(
                         "path": "http_full",
                     }
                     return http_result
+            # Incomplete timeline → fall through to Playwright scroll + network capture
     except Exception:
         http_result = None
 
@@ -644,15 +671,6 @@ async def _scrape_live(
             except Exception:
                 pass
 
-        # Check if the page got redirected to a login wall
-        title = await page.title()
-        curr_url = page.url
-        if "login" in (title or "").lower() or "accounts/login" in (curr_url or ""):
-            await context.close()
-            raise ScrapeError(
-                "Instagram login wall blocked scraping. Add SCRAPE_PROXY_URL or session cookies."
-            )
-
         # Prefer intercepted payload, then explicit API call, then HTTP result
         user_payload = None
         for raw in captured:
@@ -711,30 +729,21 @@ async def _scrape_live(
             except Exception:
                 pass
 
+        # Merge any media nodes captured from network during load + scroll
+        if media_nodes and not result.is_private:
+            seen = {p.shortcode for p in result.posts}
+            for node in media_nodes:
+                post = _post_from_node(node)
+                if post and post.shortcode not in seen:
+                    result.posts.append(post)
+                    seen.add(post.shortcode)
+
         if not result.posts:
             dom_posts = await _extract_posts_from_dom(page)
             if dom_posts:
                 result.posts = dom_posts
 
-        # Merge any media nodes captured from network (including during scrolling)
-        if media_nodes and not result.is_private:
-            posts_map = {p.shortcode: p for p in result.posts}
-            for node in media_nodes:
-                post = _post_from_node(node)
-                if not post:
-                    continue
-                existing_post = posts_map.get(post.shortcode)
-                if not existing_post:
-                    posts_map[post.shortcode] = post
-                else:
-                    # Upgrade DOM-extracted or lower-quality posts to rich network posts
-                    if not existing_post.posted_at and post.posted_at:
-                        posts_map[post.shortcode] = post
-                    elif existing_post.likes == 0 and existing_post.comments == 0 and (post.likes > 0 or post.comments > 0):
-                        posts_map[post.shortcode] = post
-            result.posts = list(posts_map.values())
-
-        # Fill missing likes/comments/views for every post that needs it
+        # Fill missing likes/comments/views — cap enrich time on huge profiles via env
         if result.posts and not result.is_private:
             needs_enrich = any(
                 (p.likes == 0 and p.comments == 0)
