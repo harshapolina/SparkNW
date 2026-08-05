@@ -305,6 +305,20 @@ async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current
     return out
 
 
+@router.post("/refresh-all", response_model=MessageResponse)
+async def refresh_all_profiles(user: User = Depends(get_current_user)):
+    profiles = await Profile.find(Profile.user_id == str(user.id)).to_list()
+    # Trigger background inline scrapes
+    async def _refresh_all():
+        for p in profiles:
+            try:
+                await scrape_profile_inline(p)
+            except Exception:
+                continue
+    asyncio.create_task(_refresh_all())
+    return MessageResponse(message=f"Scheduled refresh for all {len(profiles)} profiles")
+
+
 @router.post("/bulk/pause", response_model=MessageResponse)
 async def bulk_pause(payload: BulkIdsRequest, user: User = Depends(get_current_user)):
     n = await profile_service.set_profiles_status(str(user.id), payload.ids, ProfileStatus.PAUSED)

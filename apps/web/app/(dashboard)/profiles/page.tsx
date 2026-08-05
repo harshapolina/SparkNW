@@ -64,6 +64,14 @@ export default function ProfilesPage() {
     },
   });
 
+  const refreshAll = useMutation({
+    mutationFn: () => api<{ message: string }>("/profiles/refresh-all", { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["profiles"] });
+      qc.invalidateQueries({ queryKey: ["overview"] });
+    },
+  });
+
   const allIds = useMemo(() => data?.items.map((p) => p.id) || [], [data]);
 
   function onAdd(e: FormEvent) {
@@ -129,6 +137,17 @@ export default function ProfilesPage() {
             ))}
             <Button size="sm" variant="danger" disabled={!selected.length || bulk.isPending} onClick={() => bulk.mutate("delete")}>
               Delete
+            </Button>
+            <Button
+              size="sm"
+              disabled={refreshAll.isPending}
+              onClick={() => {
+                if (confirm("Are you sure you want to refresh all profiles? This will scrape all tracked profiles in the background.")) {
+                  refreshAll.mutate();
+                }
+              }}
+            >
+              {refreshAll.isPending ? "Refreshing All..." : "Refresh All"}
             </Button>
           </div>
         </div>
