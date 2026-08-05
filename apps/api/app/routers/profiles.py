@@ -28,6 +28,16 @@ from fastapi import HTTPException
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
+# Keep strong refs so background scrapes are not GC'd mid-flight (Python 3.12+).
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _spawn_background(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 
 def _dispatch_jobs(jobs: list) -> bool:
     """Returns True if at least one job was handed to Celery."""
@@ -48,29 +58,9 @@ def _dispatch_jobs(jobs: list) -> bool:
 
 @router.post("", response_model=ProfileResponse, status_code=status.HTTP_201_CREATED)
 async def add_profile(payload: AddProfileRequest, user: User = Depends(get_current_user)):
-    """Create profile and scrape in the background.
-
-    Awaiting the full scrape here caused browser "Failed to fetch" / connection
-    resets when enrichment + pagination ran for minutes on the request thread.
-    """
+    """Create profile and scrape immediately so the UI gets real results on add."""
     profile = await profile_service.add_profile(str(user.id), payload)
-
-    async def _bg(pid: str) -> None:
-        try:
-            fresh = await Profile.get(pid)
-            if fresh:
-                await scrape_profile_inline(fresh)
-        except Exception:
-            import logging
-            import traceback
-
-            logging.getLogger("instascope.api.profiles").error(
-                "background scrape after add failed profile_id=%s\n%s",
-                pid,
-                traceback.format_exc(),
-            )
-
-    asyncio.create_task(_bg(str(profile.id)))
+    await scrape_profile_inline(profile)
     profile = await profile_service.get_profile(str(user.id), str(profile.id))
     return to_profile_response(profile)
 
@@ -110,54 +100,27 @@ async def delete_profile(profile_id: str, user: User = Depends(get_current_user)
 
 @router.post("/{profile_id}/refresh", response_model=list[JobResponse])
 async def refresh_profile(profile_id: str, user: User = Depends(get_current_user)):
-    """Refresh by scraping in the API process (latest volume-mounted scraper code).
+    """Refresh by scraping inline in the API process and returning when done.
 
-    Celery workers are easy to leave on old code; Refresh must use the API's mounted
-    scraper so full timelines (not stuck at 12) land after git pull + api recreate.
+    Awaits the scrape so Add/Refresh feel instantaneous in the UI (results ready
+    when the request completes). Celery is not used here — volume-mounted scraper
+    code on the API must run so full timelines land after git pull.
     """
     from datetime import datetime
 
-    from instascope_shared.models import Job, JobStatus, JobType
-
     try:
         profile = await profile_service.get_profile(str(user.id), profile_id)
-
-        job = Job(
-            user_id=str(user.id),
-            profile_id=str(profile.id),
-            job_type=JobType.SCRAPE_PROFILE,
-            status=JobStatus.PENDING,
-            priority=1,
-        )
-        await job.insert()
-
-        async def _bg(pid: str) -> None:
-            try:
-                fresh = await Profile.get(pid)
-                if fresh:
-                    await scrape_profile_inline(fresh)
-            except Exception:
-                import logging
-                import traceback
-
-                logging.getLogger("instascope.api.profiles").error(
-                    "background refresh scrape failed profile_id=%s\n%s",
-                    pid,
-                    traceback.format_exc(),
-                )
-
-        asyncio.create_task(_bg(str(profile.id)))
-
+        job = await scrape_profile_inline(profile)
         return [
             JobResponse(
                 id=str(job.id),
                 profile_id=str(profile.id),
                 job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
-                status=JobStatus.PENDING.value,
-                attempts=0,
-                error_message=None,
+                status=job.status.value if hasattr(job.status, "value") else str(job.status),
+                attempts=job.attempts,
+                error_message=job.error_message,
                 created_at=getattr(job, "created_at", None) or datetime.utcnow(),
-                finished_at=None,
+                finished_at=getattr(job, "finished_at", None),
             )
         ]
     except HTTPException:
@@ -331,7 +294,7 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
                         traceback.format_exc(),
                     )
 
-        asyncio.create_task(_scrape_all(to_scrape))
+        _spawn_background(_scrape_all(to_scrape))
 
     return BulkImportResponse(
         imported=imported,
@@ -412,7 +375,7 @@ async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current
                 log.error("bulk_refresh scrape failed profile_id=%s\n%s", pid, traceback.format_exc())
 
     if to_scrape:
-        asyncio.create_task(_scrape_all(to_scrape))
+        _spawn_background(_scrape_all(to_scrape))
     return out
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 from instascope_shared.core.config import get_settings
@@ -26,6 +27,12 @@ async def scrape_profile_inline(profile: Profile) -> Job:
 
     proxy = parse_proxy_url(settings.scrape_proxy_url)
 
+    # Cap per-post page enrich on the request path so Add/Refresh finish before
+    # the browser aborts. Full timeline pagination is unaffected.
+    prev_enrich = os.environ.get("SCRAPE_ENRICH_MAX")
+    inline_enrich = (os.getenv("SCRAPE_INLINE_ENRICH_MAX") or "24").strip()
+    os.environ["SCRAPE_ENRICH_MAX"] = inline_enrich
+
     try:
         result = await scrape_profile(
             profile.username,
@@ -39,4 +46,9 @@ async def scrape_profile_inline(profile: Profile) -> Job:
         await mark_scrape_failed(job, profile, str(exc), unavailable=exc.unavailable)
     except Exception as exc:  # noqa: BLE001
         await mark_scrape_failed(job, profile, str(exc))
+    finally:
+        if prev_enrich is None:
+            os.environ.pop("SCRAPE_ENRICH_MAX", None)
+        else:
+            os.environ["SCRAPE_ENRICH_MAX"] = prev_enrich
     return job

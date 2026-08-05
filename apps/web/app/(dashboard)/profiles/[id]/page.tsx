@@ -157,17 +157,12 @@ export default function ProfileDetailPage() {
   const refresh = useMutation({
     mutationFn: () => api(`/profiles/${profileId}/refresh`, { method: "POST" }),
     onSuccess: () => {
-      // Scrape runs in background — poll until status flips or posts count grows
-      const delays = [2000, 5000, 12000, 25000, 45000, 90000, 150000];
-      for (const ms of delays) {
-        window.setTimeout(() => {
-          void qc.invalidateQueries({ queryKey: ["profile", profileId] });
-          void qc.invalidateQueries({ queryKey: ["posts", profileId] });
-          void qc.invalidateQueries({ queryKey: ["history", profileId] });
-          void qc.invalidateQueries({ queryKey: ["analytics", profileId] });
-          void qc.invalidateQueries({ queryKey: ["overview"] });
-        }, ms);
-      }
+      void qc.invalidateQueries({ queryKey: ["profile", profileId] });
+      void qc.invalidateQueries({ queryKey: ["posts", profileId] });
+      void qc.invalidateQueries({ queryKey: ["history", profileId] });
+      void qc.invalidateQueries({ queryKey: ["analytics", profileId] });
+      void qc.invalidateQueries({ queryKey: ["overview"] });
+      void qc.invalidateQueries({ queryKey: ["profiles"] });
     },
   });
 
@@ -249,7 +244,7 @@ export default function ProfileDetailPage() {
             <div className="flex flex-wrap gap-2">
               <Button onClick={() => refresh.mutate()} disabled={refresh.isPending}>
                 <RefreshCw size={15} className={refresh.isPending ? "animate-spin" : ""} />
-                {refresh.isPending ? "Queuing…" : "Refresh"}
+                {refresh.isPending ? "Scraping…" : "Refresh"}
               </Button>
               <Button variant="secondary" onClick={() => pause.mutate()}>
                 <Pause size={15} /> Pause
@@ -265,7 +260,7 @@ export default function ProfileDetailPage() {
             )}
             {refresh.isSuccess && !refresh.isError && (
               <p className="max-w-xs text-right text-xs text-muted">
-                Scrape queued — Insights update when the worker finishes (can take 1–3 min).
+                Scrape finished — Insights and posts are updated.
               </p>
             )}
           </div>
