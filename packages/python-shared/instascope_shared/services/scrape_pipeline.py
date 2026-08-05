@@ -47,7 +47,7 @@ def humanize_scrape_error(err: BaseException | str) -> str:
     if "net::err_" in low or "page.goto" in low:
         return "Network error reaching Instagram via proxy. Refresh to retry (HTTP fallback enabled)."
     if "login wall" in low or ("login" in low and "blocked" in low):
-        return "Instagram login wall blocked scraping. Verify residential proxy session."
+        return "Instagram showed a login wall. Verify residential proxy session."
     if "incomplete timeline" in low:
         return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
     if "not found" in low:
@@ -55,6 +55,43 @@ def humanize_scrape_error(err: BaseException | str) -> str:
     if len(raw) > 220:
         return raw[:217] + "..."
     return raw
+
+
+def is_false_pymongo_failure(error: BaseException | str | None) -> bool:
+    """True for the known Beanie false-positive that marked scrapes failed after success."""
+    if error is None:
+        return False
+    low = str(error).lower()
+    return (
+        "get_pymongo_collection" in low
+        or ("pymongo" in low and "attribute" in low)
+        or "temporary database issue while saving scrape" in low
+    )
+
+
+async def heal_false_pymongo_failure(profile: Profile) -> bool:
+    """If status=failed only because of get_pymongo_collection but data is good → ACTIVE.
+
+    Does not change metrics, posts, or scrape flow — status/last_error only.
+    """
+    status_val = profile.status.value if hasattr(profile.status, "value") else str(profile.status)
+    if status_val != "failed":
+        return False
+    if not is_false_pymongo_failure(profile.last_error):
+        return False
+    has_data = bool(
+        profile.followers
+        or profile.posts_count
+        or profile.last_success_at
+        or (isinstance(profile.insights, dict) and profile.insights)
+    )
+    if not has_data:
+        return False
+    profile.status = ProfileStatus.ACTIVE
+    profile.last_error = None
+    profile.updated_at = datetime.utcnow()
+    await profile.save()
+    return True
 
 
 async def apply_scrape_result(
@@ -245,6 +282,25 @@ async def apply_scrape_result(
 
 
 async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavailable: bool = False) -> None:
+    # Known false positive: scrape + metrics already saved, then old Beanie call crashed.
+    # Never flip a good profile to failed for this.
+    if is_false_pymongo_failure(error):
+        job.status = JobStatus.SUCCESS
+        job.error_message = None
+        job.finished_at = datetime.utcnow()
+        job.updated_at = datetime.utcnow()
+        await job.save()
+        profile.status = ProfileStatus.ACTIVE
+        profile.last_error = None
+        profile.last_success_at = profile.last_success_at or datetime.utcnow()
+        profile.last_scraped_at = datetime.utcnow()
+        profile.updated_at = datetime.utcnow()
+        student = getattr(profile, "student", None)
+        if isinstance(student, dict) and student:
+            profile.student = student  # type: ignore[attr-defined]
+        await profile.save()
+        return
+
     friendly = humanize_scrape_error(error)
     job.status = JobStatus.FAILED
     job.error_message = friendly

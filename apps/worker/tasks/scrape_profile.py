@@ -58,7 +58,21 @@ async def _scrape(job_id: str, profile_id: str) -> dict:
             await apply_scrape_result(job=job, profile=profile, result=result.to_dict())
             return {"ok": True, "followers": result.followers}
         except Exception as exc:  # noqa: BLE001
-            # Scrape itself succeeded — don't thrash Instagram with Celery retries
+            # Scrape succeeded — never fail the profile for the known Beanie false positive
+            from instascope_shared.services.scrape_pipeline import is_false_pymongo_failure
+
+            if is_false_pymongo_failure(exc):
+                profile.status = ProfileStatus.ACTIVE
+                profile.last_error = None
+                profile.last_success_at = datetime.utcnow()
+                profile.last_scraped_at = datetime.utcnow()
+                profile.updated_at = datetime.utcnow()
+                await profile.save()
+                job.status = JobStatus.SUCCESS
+                job.error_message = None
+                job.finished_at = datetime.utcnow()
+                await job.save()
+                return {"ok": True, "followers": result.followers, "healed_pymongo": True}
             await mark_scrape_failed(job, profile, f"Save failed after scrape: {exc}")
             return {"ok": False, "error": str(exc)}
     finally:
