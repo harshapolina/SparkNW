@@ -252,8 +252,8 @@ def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
     if not posts:
         return False
     if posts_count <= 0:
-        # Unknown total — never treat the first profile-card page (~12) as complete.
-        return len(posts) > 12
+        # Unknown total — do not treat as complete so we continue scrolling/fetching
+        return False
     # Allow tiny mismatch (deleted/hidden posts between count and feed).
     return len(posts) >= max(posts_count - 2, 1) or len(posts) >= posts_count
 
@@ -693,15 +693,6 @@ async def _scrape_live(
         if not result.full_name and og_title:
             result.full_name = og_title.split("(")[0].strip() or result.full_name
 
-        # Merge any media nodes captured from network while loading the page
-        if media_nodes and not result.is_private:
-            seen = {p.shortcode for p in result.posts}
-            for node in media_nodes:
-                post = _post_from_node(node)
-                if post and post.shortcode not in seen:
-                    result.posts.append(post)
-                    seen.add(post.shortcode)
-
         # Scroll the grid until we have every public post (not just the first ~12)
         if not result.is_private and not _posts_complete(result.posts, result.posts_count):
             try:
@@ -715,6 +706,24 @@ async def _scrape_live(
             dom_posts = await _extract_posts_from_dom(page)
             if dom_posts:
                 result.posts = dom_posts
+
+        # Merge any media nodes captured from network (including during scrolling)
+        if media_nodes and not result.is_private:
+            posts_map = {p.shortcode: p for p in result.posts}
+            for node in media_nodes:
+                post = _post_from_node(node)
+                if not post:
+                    continue
+                existing_post = posts_map.get(post.shortcode)
+                if not existing_post:
+                    posts_map[post.shortcode] = post
+                else:
+                    # Upgrade DOM-extracted or lower-quality posts to rich network posts
+                    if not existing_post.posted_at and post.posted_at:
+                        posts_map[post.shortcode] = post
+                    elif existing_post.likes == 0 and existing_post.comments == 0 and (post.likes > 0 or post.comments > 0):
+                        posts_map[post.shortcode] = post
+            result.posts = list(posts_map.values())
 
         # Fill missing likes/comments/views for every post that needs it
         if result.posts and not result.is_private:

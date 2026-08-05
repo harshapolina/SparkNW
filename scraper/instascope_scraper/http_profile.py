@@ -246,8 +246,12 @@ async def fetch_all_media_nodes(
         if need_more:
             max_id: str | None = None
             more = True
-            stagnant = 0
-            while more and len(out) < limit and stagnant < 3:
+            seen_max_ids: set[str] = set()
+            while more and len(out) < limit:
+                if max_id in seen_max_ids:
+                    break
+                if max_id:
+                    seen_max_ids.add(max_id)
                 await asyncio.sleep(delay)
                 feed = await _feed_user_page(client, user_id=user_id, max_id=max_id, count=page_size)
                 if not feed:
@@ -255,11 +259,7 @@ async def fetch_all_media_nodes(
                 nodes, max_id, more = _nodes_from_feed(feed)
                 if not nodes:
                     break
-                added = _add(nodes)
-                if added == 0:
-                    stagnant += 1
-                else:
-                    stagnant = 0
+                _add(nodes)
                 if not max_id:
                     break
                 if expected_count > 0 and len(out) >= expected_count:
