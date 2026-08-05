@@ -326,7 +326,79 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
             seen.add(p.shortcode)
             posts.append(p)
 
+    # HTTP media-info pass for reel play counts (before browser enrich)
+    try:
+        posts = await _enrich_views_via_http(posts, username=username, proxy_url=proxy_url)
+    except Exception:
+        pass
+
     return posts
+
+
+async def _enrich_views_via_http(
+    posts: list[ScrapedPost],
+    *,
+    username: str,
+    proxy_url: str | None,
+) -> list[ScrapedPost]:
+    """Fill reel play counts via /api/v1/media/{id}/info/ over HTTP+proxy."""
+    import httpx
+    from instascope_scraper.http_profile import _apply_csrf, _bootstrap_session, _client_headers
+
+    weak = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
+    delay = float(os.getenv("SCRAPE_ENRICH_DELAY_SECONDS") or "0.5")
+    targets = [
+        p
+        for p in posts
+        if (p.media_type in {"reel", "video"} or p.is_video) and p.views < weak and p.ig_post_id
+    ]
+    if not targets:
+        return posts
+
+    headers = _client_headers(username)
+    timeout = httpx.Timeout(30.0)
+    by_code = {p.shortcode: p for p in posts}
+
+    async with httpx.AsyncClient(headers=headers, follow_redirects=True, proxy=proxy_url, timeout=timeout) as client:
+        await _bootstrap_session(client, username)
+        for post in targets:
+            await asyncio.sleep(delay)
+            media_id = str(post.ig_post_id).split("_")[0]
+            url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
+            req_headers = _client_headers(username)
+            _apply_csrf(client, req_headers)
+            try:
+                res = await client.get(url, headers=req_headers)
+                if res.status_code != 200:
+                    continue
+                payload = res.json()
+            except Exception:
+                continue
+            items = payload.get("items") if isinstance(payload, dict) else None
+            if not isinstance(items, list):
+                continue
+            best = post.views
+            for it in items:
+                if isinstance(it, dict):
+                    best = max(best, _views_from_mapping(it))
+            if best > post.views:
+                updated = ScrapedPost(
+                    ig_post_id=post.ig_post_id,
+                    shortcode=post.shortcode,
+                    media_type=post.media_type,
+                    caption=post.caption,
+                    thumbnail_url=post.thumbnail_url,
+                    permalink=post.permalink,
+                    likes=post.likes,
+                    comments=post.comments,
+                    views=best,
+                    posted_at=post.posted_at,
+                    is_video=post.is_video,
+                    accessibility_caption=post.accessibility_caption,
+                )
+                by_code[post.shortcode] = updated
+
+    return [by_code.get(p.shortcode, p) for p in posts]
 
 
 def _enrich_limit(total_posts: int) -> int:
@@ -759,6 +831,15 @@ async def _paginate_feed_in_browser(
     return merged
 
 
+def _posts_need_view_enrich(posts: list[ScrapedPost], *, weak: int = 1000) -> bool:
+    """True when any reel/video is missing a believable play count."""
+    for p in posts:
+        if p.media_type in {"reel", "video"} or p.is_video:
+            if p.views < weak:
+                return True
+    return False
+
+
 async def _scrape_live(
     username: str,
     *,
@@ -785,7 +866,7 @@ async def _scrape_live(
             else:
                 http_result = _result_from_user(username, user)
 
-            # Only skip browser when timeline is truly complete (or private / tiny account)
+            # Only skip browser when timeline is complete AND reel views look real
             if http_result and http_result.is_private:
                 http_result.raw = {
                     **(http_result.raw or {}),
@@ -794,12 +875,21 @@ async def _scrape_live(
                     "path": "http_private",
                 }
                 return http_result
-            if http_result and _posts_complete(http_result.posts, http_result.posts_count):
-                needs_enrich = (
+
+            weak = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
+            if (
+                http_result
+                and _posts_complete(http_result.posts, http_result.posts_count)
+                and not _posts_need_view_enrich(http_result.posts, weak=weak)
+            ):
+                needs_likes = (
                     http_result.posts
-                    and all(p.likes == 0 and p.comments == 0 for p in http_result.posts[: min(6, len(http_result.posts))])
+                    and all(
+                        p.likes == 0 and p.comments == 0
+                        for p in http_result.posts[: min(6, len(http_result.posts))]
+                    )
                 )
-                if not needs_enrich and len(http_result.posts) > 12:
+                if not needs_likes:
                     http_result.raw = {
                         **(http_result.raw or {}),
                         "scraped_at": datetime.now(timezone.utc).isoformat(),
@@ -807,15 +897,7 @@ async def _scrape_live(
                         "path": "http_full",
                     }
                     return http_result
-                if not needs_enrich and http_result.posts_count <= 12:
-                    http_result.raw = {
-                        **(http_result.raw or {}),
-                        "scraped_at": datetime.now(timezone.utc).isoformat(),
-                        "posts_scraped": len(http_result.posts),
-                        "path": "http_full_small",
-                    }
-                    return http_result
-            # Incomplete → Playwright browser feed pagination (required)
+            # Missing posts and/or reel views → Playwright enrich path
     except Exception:
         http_result = None
 
