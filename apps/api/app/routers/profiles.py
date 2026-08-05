@@ -37,7 +37,7 @@ def _dispatch_jobs(jobs: list) -> bool:
 
         for job in jobs:
             if job.profile_id:
-                task_id = dispatch_scrape_job(str(job.id), job.profile_id)
+                task_id = dispatch_scrape_job(str(job.id), str(job.profile_id))
                 if task_id:
                     job.celery_task_id = task_id
                     dispatched = True
@@ -90,55 +90,45 @@ async def delete_profile(profile_id: str, user: User = Depends(get_current_user)
 
 @router.post("/{profile_id}/refresh", response_model=list[JobResponse])
 async def refresh_profile(profile_id: str, user: User = Depends(get_current_user)):
-    """Queue a live scrape in the background so the API stays responsive (CORS/UI)."""
+    """Enqueue scrape on the Celery worker — never block/crash the API with Playwright."""
     from datetime import datetime
 
-    from instascope_shared.models import Job, JobStatus, JobType
+    from instascope_shared.models import JobStatus
 
     profile = await profile_service.get_profile(str(user.id), profile_id)
+    jobs = await profile_service.enqueue_refresh(str(user.id), [str(profile.id)], priority=1)
+    if not jobs:
+        raise HTTPException(status_code=500, detail="Could not create scrape job")
 
-    job = Job(
-        user_id=str(user.id),
-        profile_id=str(profile.id),
-        job_type=JobType.SCRAPE_PROFILE,
-        status=JobStatus.PENDING,
-        priority=1,
-    )
-    await job.insert()
-
-    async def _run(pid: str, jid: str) -> None:
+    job = jobs[0]
+    dispatched = _dispatch_jobs([job])
+    if dispatched and getattr(job, "celery_task_id", None):
         try:
-            fresh = await Profile.get(pid)
-            if not fresh:
-                return
-            # Reuse inline scrape (creates its own success/fail job records + updates profile)
-            await scrape_profile_inline(fresh)
-            pending = await Job.get(jid)
-            if pending and pending.status == JobStatus.PENDING:
-                pending.status = JobStatus.SUCCESS
-                pending.finished_at = datetime.utcnow()
-                pending.updated_at = datetime.utcnow()
-                await pending.save()
-        except Exception as exc:  # noqa: BLE001
-            pending = await Job.get(jid)
-            if pending:
-                pending.status = JobStatus.FAILED
-                pending.error_message = str(exc)
-                pending.finished_at = datetime.utcnow()
-                pending.updated_at = datetime.utcnow()
-                await pending.save()
+            await job.save()
+        except Exception:
+            pass
 
-    asyncio.create_task(_run(str(profile.id), str(job.id)))
+    if not dispatched:
+        # Celery/redis down — fall back to background task (still non-blocking for CORS/UI)
+        async def _bg(pid: str) -> None:
+            try:
+                fresh = await Profile.get(pid)
+                if fresh:
+                    await scrape_profile_inline(fresh)
+            except Exception:
+                return
+
+        asyncio.create_task(_bg(str(profile.id)))
 
     return [
         JobResponse(
             id=str(job.id),
-            profile_id=job.profile_id,
+            profile_id=str(profile.id),
             job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
-            status="pending",
-            attempts=0,
+            status=JobStatus.PENDING.value,
+            attempts=int(getattr(job, "attempts", 0) or 0),
             error_message=None,
-            created_at=job.created_at,
+            created_at=getattr(job, "created_at", None) or datetime.utcnow(),
             finished_at=None,
         )
     ]
