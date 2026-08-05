@@ -90,45 +90,36 @@ async def delete_profile(profile_id: str, user: User = Depends(get_current_user)
 
 @router.post("/{profile_id}/refresh", response_model=list[JobResponse])
 async def refresh_profile(profile_id: str, user: User = Depends(get_current_user)):
-    """Enqueue scrape on the Celery worker — never block/crash the API with Playwright."""
+    """Refresh by scraping in the API process (latest volume-mounted scraper code).
+
+    Celery workers are easy to leave on old code; Refresh must use the API's mounted
+    scraper so full timelines (not stuck at 12) land after git pull + api recreate.
+    """
     from datetime import datetime
 
     from instascope_shared.models import Job, JobStatus, JobType
 
     try:
         profile = await profile_service.get_profile(str(user.id), profile_id)
-        jobs = await profile_service.enqueue_refresh(str(user.id), [str(profile.id)], priority=1)
-        if not jobs:
-            # Last-resort job create
-            job = Job(
-                user_id=str(user.id),
-                profile_id=str(profile.id),
-                job_type=JobType.SCRAPE_PROFILE,
-                status=JobStatus.PENDING,
-                priority=1,
-            )
-            await job.insert()
-            jobs = [job]
 
-        job = jobs[0]
-        dispatched = _dispatch_jobs([job])
-        if dispatched and getattr(job, "celery_task_id", None):
+        job = Job(
+            user_id=str(user.id),
+            profile_id=str(profile.id),
+            job_type=JobType.SCRAPE_PROFILE,
+            status=JobStatus.PENDING,
+            priority=1,
+        )
+        await job.insert()
+
+        async def _bg(pid: str) -> None:
             try:
-                await job.save()
+                fresh = await Profile.get(pid)
+                if fresh:
+                    await scrape_profile_inline(fresh)
             except Exception:
-                pass
+                return
 
-        if not dispatched:
-            # Celery/redis down — fall back to background task (non-blocking)
-            async def _bg(pid: str) -> None:
-                try:
-                    fresh = await Profile.get(pid)
-                    if fresh:
-                        await scrape_profile_inline(fresh)
-                except Exception:
-                    return
-
-            asyncio.create_task(_bg(str(profile.id)))
+        asyncio.create_task(_bg(str(profile.id)))
 
         return [
             JobResponse(
@@ -136,7 +127,7 @@ async def refresh_profile(profile_id: str, user: User = Depends(get_current_user
                 profile_id=str(profile.id),
                 job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
                 status=JobStatus.PENDING.value,
-                attempts=int(getattr(job, "attempts", 0) or 0),
+                attempts=0,
                 error_message=None,
                 created_at=getattr(job, "created_at", None) or datetime.utcnow(),
                 finished_at=None,

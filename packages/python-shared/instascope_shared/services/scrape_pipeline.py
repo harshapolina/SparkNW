@@ -65,6 +65,8 @@ def is_soft_scrape_failure(error: BaseException | str | None) -> bool:
     return (
         "incomplete timeline" in low
         or "refusing to save" in low
+        or "pagination" in low
+        or "still short" in low
         or ("attribute" in low and "collection" in low)  # leftover AttributeError junk in DB
     )
 
@@ -77,7 +79,11 @@ async def heal_soft_scrape_failure(profile: Profile) -> bool:
     err = str(profile.last_error or "")
     soft = not err.strip() or is_soft_scrape_failure(err)
     has_card = bool(profile.followers or profile.posts_count or profile.last_success_at)
-    if not (soft and has_card):
+    # Also heal when Insights still shows first-card-only (~12) under a larger posts_count
+    insights = profile.insights if isinstance(profile.insights, dict) else {}
+    sampled = int(insights.get("sampled_posts") or 0)
+    stale_partial = bool(profile.posts_count and sampled and sampled < profile.posts_count)
+    if not ((soft or stale_partial) and has_card):
         return False
     profile.status = ProfileStatus.ACTIVE
     profile.last_error = None
