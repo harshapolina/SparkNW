@@ -644,6 +644,15 @@ async def _scrape_live(
             except Exception:
                 pass
 
+        # Check if the page got redirected to a login wall
+        title = await page.title()
+        curr_url = page.url
+        if "login" in (title or "").lower() or "accounts/login" in (curr_url or ""):
+            await context.close()
+            raise ScrapeError(
+                "Instagram login wall blocked scraping. Add SCRAPE_PROXY_URL or session cookies."
+            )
+
         # Prefer intercepted payload, then explicit API call, then HTTP result
         user_payload = None
         for raw in captured:
