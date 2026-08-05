@@ -90,18 +90,56 @@ async def delete_profile(profile_id: str, user: User = Depends(get_current_user)
 
 @router.post("/{profile_id}/refresh", response_model=list[JobResponse])
 async def refresh_profile(profile_id: str, user: User = Depends(get_current_user)):
+    """Queue a live scrape in the background so the API stays responsive (CORS/UI)."""
+    from datetime import datetime
+
+    from instascope_shared.models import Job, JobStatus, JobType
+
     profile = await profile_service.get_profile(str(user.id), profile_id)
-    job = await scrape_profile_inline(profile)
+
+    job = Job(
+        user_id=str(user.id),
+        profile_id=str(profile.id),
+        job_type=JobType.SCRAPE_PROFILE,
+        status=JobStatus.PENDING,
+        priority=1,
+    )
+    await job.insert()
+
+    async def _run(pid: str, jid: str) -> None:
+        try:
+            fresh = await Profile.get(pid)
+            if not fresh:
+                return
+            # Reuse inline scrape (creates its own success/fail job records + updates profile)
+            await scrape_profile_inline(fresh)
+            pending = await Job.get(jid)
+            if pending and pending.status == JobStatus.PENDING:
+                pending.status = JobStatus.SUCCESS
+                pending.finished_at = datetime.utcnow()
+                pending.updated_at = datetime.utcnow()
+                await pending.save()
+        except Exception as exc:  # noqa: BLE001
+            pending = await Job.get(jid)
+            if pending:
+                pending.status = JobStatus.FAILED
+                pending.error_message = str(exc)
+                pending.finished_at = datetime.utcnow()
+                pending.updated_at = datetime.utcnow()
+                await pending.save()
+
+    asyncio.create_task(_run(str(profile.id), str(job.id)))
+
     return [
         JobResponse(
             id=str(job.id),
             profile_id=job.profile_id,
-            job_type=job.job_type.value,
-            status=job.status.value,
-            attempts=job.attempts,
-            error_message=job.error_message,
+            job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
+            status="pending",
+            attempts=0,
+            error_message=None,
             created_at=job.created_at,
-            finished_at=job.finished_at,
+            finished_at=None,
         )
     ]
 

@@ -34,12 +34,24 @@ def create_app() -> FastAPI:
             )
         )
 
+    # Always allow this host's web UI (common prod miss: CORS_ORIGINS only has localhost)
+    for extra in (
+        "http://62.238.57.52:3000",
+        "http://62.238.57.52:3001",
+        getattr(cfg, "web_origin", None) or "",
+    ):
+        if extra and extra.strip():
+            origins.append(extra.strip())
+    origins = list(dict.fromkeys(origins))
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
+        allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|62\.238\.57\.52)(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["*"],
     )
 
     prefix = cfg.api_prefix

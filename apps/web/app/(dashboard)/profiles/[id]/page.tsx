@@ -153,11 +153,17 @@ export default function ProfileDetailPage() {
   const refresh = useMutation({
     mutationFn: () => api(`/profiles/${profileId}/refresh`, { method: "POST" }),
     onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ["profile", profileId] });
-      void qc.invalidateQueries({ queryKey: ["posts", profileId] });
-      void qc.invalidateQueries({ queryKey: ["history", profileId] });
-      void qc.invalidateQueries({ queryKey: ["analytics", profileId] });
-      void qc.invalidateQueries({ queryKey: ["overview"] });
+      // Scrape runs in background — poll a few times so posts count updates without blocking API
+      const delays = [3000, 8000, 20000, 45000, 90000];
+      for (const ms of delays) {
+        window.setTimeout(() => {
+          void qc.invalidateQueries({ queryKey: ["profile", profileId] });
+          void qc.invalidateQueries({ queryKey: ["posts", profileId] });
+          void qc.invalidateQueries({ queryKey: ["history", profileId] });
+          void qc.invalidateQueries({ queryKey: ["analytics", profileId] });
+          void qc.invalidateQueries({ queryKey: ["overview"] });
+        }, ms);
+      }
     },
   });
 
@@ -237,7 +243,7 @@ export default function ProfileDetailPage() {
           <div className="flex flex-wrap gap-2">
             <Button onClick={() => refresh.mutate()} disabled={refresh.isPending}>
               <RefreshCw size={15} className={refresh.isPending ? "animate-spin" : ""} />
-              {refresh.isPending ? "Scraping…" : "Refresh"}
+              {refresh.isPending ? "Queuing…" : "Refresh"}
             </Button>
             <Button variant="secondary" onClick={() => pause.mutate()}>
               <Pause size={15} /> Pause
