@@ -9,9 +9,8 @@ import { Card, EmptyState } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { api, type Profile } from "@/lib/api";
 import { STUDENT_SHEET_COLUMNS, studentFieldValue } from "@/lib/student-fields";
-import { formatNumber, formatPct } from "@/lib/utils";
+import { formatNumber, formatPct, humanizeScrapeError, cn } from "@/lib/utils";
 import { Avatar } from "@/components/ui/avatar";
-import { cn } from "@/lib/utils";
 
 type ListResponse = { items: Profile[]; total: number; page: number; page_size: number };
 
@@ -242,7 +241,7 @@ export default function ProfilesPage() {
                   <tr
                     key={p.id}
                     className={cn(p.status === "failed" && "bg-red-50/80 hover:bg-red-50")}
-                    title={p.status === "failed" && p.last_error ? p.last_error : undefined}
+                    title={p.status === "failed" && p.last_error ? humanizeScrapeError(p.last_error) : undefined}
                   >
                     <td>
                       <input
@@ -261,7 +260,7 @@ export default function ProfilesPage() {
                           <div className="font-medium group-hover:text-accent transition">@{p.username}</div>
                           {p.status === "failed" && (
                             <div className="mt-0.5 flex items-center gap-1 text-xs text-danger">
-                              <AlertCircle size={11} /> Scrape failed
+                              <AlertCircle size={11} /> Needs refresh
                             </div>
                           )}
                         </div>
@@ -289,7 +288,14 @@ export default function ProfilesPage() {
                       {formatPct(p.growth_pct_today)}
                     </td>
                     <td>
-                      <span className={statusBadgeClass(p.status)}>{p.status}</span>
+                      <div className="flex flex-col gap-0.5">
+                        <span className={statusBadgeClass(p.status)}>{p.status}</span>
+                        {p.status === "failed" && p.last_error && (
+                          <span className="max-w-[160px] truncate text-[10px] leading-tight text-danger/80" title={humanizeScrapeError(p.last_error)}>
+                            {humanizeScrapeError(p.last_error)}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="text-xs text-muted whitespace-nowrap">
                       {p.last_scraped_at ? new Date(p.last_scraped_at).toLocaleString() : "—"}

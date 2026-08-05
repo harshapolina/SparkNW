@@ -26,3 +26,23 @@ export function formatPct(n: number | undefined | null) {
 export function formatSparkPts(n: number) {
   return new Intl.NumberFormat("en-IN").format(Math.round(n));
 }
+
+/** Friendly scrape failure copy for the dashboard (mirrors API humanize). */
+export function humanizeScrapeError(raw?: string | null): string {
+  if (!raw?.trim()) return "Unknown error — try Refresh to scrape again.";
+  const low = raw.toLowerCase();
+  if (low.includes("get_pymongo_collection") || low.includes("pymongo")) {
+    return "Temporary database issue while saving scrape. Please Refresh again.";
+  }
+  if (low.includes("err_tunnel") || low.includes("tunnel_connection")) {
+    return "Proxy tunnel failed opening Instagram. Check Decodo credentials, then Refresh.";
+  }
+  if (low.includes("net::err_") || low.includes("page.goto")) {
+    return "Network error reaching Instagram via proxy. Refresh to retry.";
+  }
+  if (low.includes("login wall") || (low.includes("login") && low.includes("blocked"))) {
+    return "Instagram login wall blocked scraping. Verify residential proxy session.";
+  }
+  if (raw.length > 180) return `${raw.slice(0, 177)}…`;
+  return raw;
+}

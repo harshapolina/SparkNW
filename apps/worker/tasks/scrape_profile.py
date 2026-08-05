@@ -47,26 +47,32 @@ async def _scrape(job_id: str, profile_id: str) -> dict:
                 proxy=proxy,
                 delay_seconds=settings.scrape_delay_seconds,
             )
-            await apply_scrape_result(job=job, profile=profile, result=result.to_dict())
-            return {"ok": True, "followers": result.followers}
         except ScrapeError as exc:
             await mark_scrape_failed(job, profile, str(exc), unavailable=exc.unavailable)
-            return {"ok": False, "error": str(exc)}
+            return {"ok": False, "error": str(exc), "unavailable": exc.unavailable}
         except Exception as exc:  # noqa: BLE001
             await mark_scrape_failed(job, profile, str(exc))
-            raise
+            return {"ok": False, "error": str(exc), "retryable": True}
+
+        try:
+            await apply_scrape_result(job=job, profile=profile, result=result.to_dict())
+            return {"ok": True, "followers": result.followers}
+        except Exception as exc:  # noqa: BLE001
+            # Scrape itself succeeded — don't thrash Instagram with Celery retries
+            await mark_scrape_failed(job, profile, f"Save failed after scrape: {exc}")
+            return {"ok": False, "error": str(exc)}
     finally:
         await close_db()
 
 
-@celery_app.task(name="tasks.scrape_profile", bind=True, max_retries=3, default_retry_delay=60)
+@celery_app.task(name="tasks.scrape_profile", bind=True, max_retries=2, default_retry_delay=90)
 def scrape_profile_task(self, job_id: str, profile_id: str):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(_scrape(job_id, profile_id))
-        finally:
-            loop.close()
-    except Exception as exc:  # noqa: BLE001
-        raise self.retry(exc=exc)
+        result = loop.run_until_complete(_scrape(job_id, profile_id))
+        if isinstance(result, dict) and result.get("retryable") and not result.get("unavailable"):
+            raise self.retry(exc=RuntimeError(result.get("error") or "transient scrape error"))
+        return result
+    finally:
+        loop.close()

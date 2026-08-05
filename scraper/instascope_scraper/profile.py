@@ -840,6 +840,45 @@ def _posts_need_view_enrich(posts: list[ScrapedPost], *, weak: int = 1000) -> bo
     return False
 
 
+def _is_tunnel_or_proxy_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    needles = (
+        "err_tunnel",
+        "tunnel_connection",
+        "proxy",
+        "net::err_",
+        "ns_error_proxy",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "econnreset",
+        "econnrefused",
+    )
+    return any(n in msg for n in needles)
+
+
+def _result_is_usable(result: ScrapeResult | None) -> bool:
+    if not result:
+        return False
+    if result.followers > 0 or result.posts_count > 0:
+        return True
+    if result.posts:
+        return True
+    if result.full_name or result.bio or result.avatar_url:
+        return True
+    return False
+
+
+def _finalize_result(result: ScrapeResult, *, path: str) -> ScrapeResult:
+    result.raw = {
+        **(result.raw or {}),
+        "scraped_at": datetime.now(timezone.utc).isoformat(),
+        "posts_scraped": len(result.posts),
+        "path": path,
+    }
+    return result
+
+
 async def _scrape_live(
     username: str,
     *,
@@ -847,7 +886,7 @@ async def _scrape_live(
     proxy: Optional[ProxyConfig],
     delay: float,
 ) -> ScrapeResult:
-    # 1) Fast path: public web_profile_info over HTTP (metrics + first ~12 posts)
+    # 1) Fast path: public web_profile_info over HTTP (metrics + posts via feed API)
     http_result: ScrapeResult | None = None
     try:
         from instascope_scraper.http_profile import fetch_web_profile_http
@@ -856,7 +895,6 @@ async def _scrape_live(
         http_json = await fetch_web_profile_http(username, proxy=proxy_url)
         user = _user_from_web_profile(http_json) if http_json else None
         if user:
-            # Try HTTP pagination, but NEVER trust it as final if still ~12 of many
             if not bool(user.get("is_private")):
                 try:
                     all_posts = await _expand_all_posts(username, user, proxy_url=proxy_url)
@@ -866,15 +904,8 @@ async def _scrape_live(
             else:
                 http_result = _result_from_user(username, user)
 
-            # Only skip browser when timeline is complete AND reel views look real
             if http_result and http_result.is_private:
-                http_result.raw = {
-                    **(http_result.raw or {}),
-                    "scraped_at": datetime.now(timezone.utc).isoformat(),
-                    "posts_scraped": len(http_result.posts),
-                    "path": "http_private",
-                }
-                return http_result
+                return _finalize_result(http_result, path="http_private")
 
             weak = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
             if (
@@ -890,17 +921,55 @@ async def _scrape_live(
                     )
                 )
                 if not needs_likes:
-                    http_result.raw = {
-                        **(http_result.raw or {}),
-                        "scraped_at": datetime.now(timezone.utc).isoformat(),
-                        "posts_scraped": len(http_result.posts),
-                        "path": "http_full",
-                    }
-                    return http_result
-            # Missing posts and/or reel views → Playwright enrich path
+                    return _finalize_result(http_result, path="http_full")
     except Exception:
         http_result = None
 
+    # 2) Browser path — optional enrich. On proxy tunnel failure, keep HTTP data.
+    try:
+        return await _scrape_live_browser(
+            username,
+            headless=headless,
+            proxy=proxy,
+            delay=delay,
+            http_result=http_result,
+        )
+    except Exception as exc:
+        if _result_is_usable(http_result):
+            assert http_result is not None
+            http_result.raw = {
+                **(http_result.raw or {}),
+                "browser_error": str(exc)[:400],
+            }
+            return _finalize_result(http_result, path="http_fallback")
+        if _is_tunnel_or_proxy_error(exc) and proxy is not None:
+            # Last resort: HTTP without relying on browser proxy tunnel
+            try:
+                from instascope_scraper.http_profile import fetch_web_profile_http
+
+                proxy_url = proxy_to_httpx_url(proxy)
+                http_json = await fetch_web_profile_http(username, proxy=proxy_url)
+                user = _user_from_web_profile(http_json) if http_json else None
+                if user:
+                    posts = await _expand_all_posts(username, user, proxy_url=proxy_url)
+                    result = _result_from_user(username, user, posts_override=posts)
+                    if _result_is_usable(result):
+                        return _finalize_result(result, path="http_after_tunnel_fail")
+            except Exception:
+                pass
+        if isinstance(exc, ScrapeError):
+            raise
+        raise ScrapeError(str(exc)) from exc
+
+
+async def _scrape_live_browser(
+    username: str,
+    *,
+    headless: bool,
+    proxy: Optional[ProxyConfig],
+    delay: float,
+    http_result: ScrapeResult | None,
+) -> ScrapeResult:
     from instascope_scraper.http_profile import _timeline_from_user
 
     url = f"https://www.instagram.com/{username}/"
@@ -949,7 +1018,20 @@ async def _scrape_live(
 
         page.on("response", on_response)
 
-        response = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        try:
+            response = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        except Exception as exc:
+            await context.close()
+            # Prefer already-captured HTTP data over a hard tunnel failure
+            if _result_is_usable(http_result):
+                assert http_result is not None
+                http_result.raw = {
+                    **(http_result.raw or {}),
+                    "browser_error": str(exc)[:400],
+                }
+                return _finalize_result(http_result, path="http_fallback_goto")
+            raise ScrapeError(str(exc)) from exc
+
         await asyncio.sleep(max(delay, 2.0))
 
         if response and response.status == 404:
@@ -991,7 +1073,7 @@ async def _scrape_live(
             await context.close()
             if "login" in (title or "").lower():
                 raise ScrapeError(
-                    "Instagram login wall blocked scraping. Add SCRAPE_PROXY_URL or session cookies."
+                    "Instagram login wall blocked scraping. Check residential proxy credentials."
                 )
             raise ScrapeError("Could not extract real profile data from Instagram")
 
@@ -1002,9 +1084,10 @@ async def _scrape_live(
         if not result.full_name and og_title:
             result.full_name = og_title.split("(")[0].strip() or result.full_name
 
-        user_id = result.ig_user_id or (str(user_payload.get("id") or user_payload.get("pk") or "") if user_payload else "")
+        user_id = result.ig_user_id or (
+            str(user_payload.get("id") or user_payload.get("pk") or "") if user_payload else ""
+        )
 
-        # PRIMARY: paginate feed API inside the browser (real cookies + proxy)
         if not result.is_private and user_id and not _posts_complete(result.posts, result.posts_count):
             try:
                 result.posts = await _paginate_feed_in_browser(
@@ -1016,7 +1099,6 @@ async def _scrape_live(
             except Exception:
                 pass
 
-        # Merge network-captured nodes
         if media_nodes and not result.is_private:
             seen = {p.shortcode for p in result.posts}
             for node in media_nodes:
@@ -1025,7 +1107,6 @@ async def _scrape_live(
                     result.posts.append(post)
                     seen.add(post.shortcode)
 
-        # SECONDARY: DOM scroll for any remaining shortcodes
         if not result.is_private and not _posts_complete(result.posts, result.posts_count):
             try:
                 result.posts = await _scroll_collect_all_posts(
@@ -1034,7 +1115,6 @@ async def _scrape_live(
             except Exception:
                 pass
 
-        # THIRD: HTTP expand again using cookies from the browser session (export cookies)
         if not result.is_private and not _posts_complete(result.posts, result.posts_count) and user_payload:
             try:
                 proxy_url = proxy_to_httpx_url(proxy)
@@ -1052,7 +1132,6 @@ async def _scrape_live(
             if dom_posts:
                 result.posts = dom_posts
 
-        # Enrich reels for accurate play counts (feed often under-reports vs IG UI)
         if result.posts and not result.is_private:
             weak = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
             missing = [
@@ -1061,13 +1140,11 @@ async def _scrape_live(
                 if (p.likes == 0 and p.comments == 0)
                 or ((p.media_type in {"reel", "video"} or p.is_video) and p.views < weak)
             ]
-            # Prefer reels first so max/avg views match Instagram
             missing.sort(
                 key=lambda p: 0 if (p.media_type in {"reel", "video"} or p.is_video) else 1
             )
             enrich_cap_env = int(os.getenv("SCRAPE_ENRICH_MAX") or "0")
             if enrich_cap_env <= 0:
-                # Small accounts: enrich everything; larger: up to 80
                 enrich_cap = len(missing) if len(result.posts) <= 40 else min(len(missing), 80)
             else:
                 enrich_cap = min(enrich_cap_env, len(missing))
@@ -1075,33 +1152,26 @@ async def _scrape_live(
                 to_enrich = missing[:enrich_cap]
                 enrich_codes = {p.shortcode for p in to_enrich}
                 prioritized = to_enrich + [p for p in result.posts if p.shortcode not in enrich_codes]
-                enriched = await _enrich_posts(page, prioritized, limit=enrich_cap)
-                by_code = {p.shortcode: p for p in enriched}
-                result.posts = [by_code.get(p.shortcode, p) for p in result.posts]
+                try:
+                    enriched = await _enrich_posts(page, prioritized, limit=enrich_cap)
+                    by_code = {p.shortcode: p for p in enriched}
+                    result.posts = [by_code.get(p.shortcode, p) for p in result.posts]
+                except Exception:
+                    pass
 
         await context.close()
 
-        if result.followers <= 0 and result.posts_count <= 0 and not result.posts:
+        if not _result_is_usable(result):
             raise ScrapeError("Scraped profile returned empty metrics")
 
-        # Do NOT accept profile-card-only scrapes as success for large accounts
-        if (
+        # Soft-complete: keep usable scrapes even if Instagram blocked full pagination
+        incomplete = (
             not result.is_private
             and result.posts_count > 12
             and len(result.posts) <= 12
-        ):
-            raise ScrapeError(
-                f"Incomplete timeline: only {len(result.posts)}/{result.posts_count} posts "
-                f"(Instagram pagination blocked). Check SCRAPE_PROXY_URL / Decodo."
-            )
-
-        result.raw = {
-            **(result.raw or {}),
-            "scraped_at": datetime.now(timezone.utc).isoformat(),
-            "posts_scraped": len(result.posts),
-            "path": "browser_full",
-        }
-        return result
+        )
+        path = "browser_partial" if incomplete else "browser_full"
+        return _finalize_result(result, path=path)
 
 
 async def scrape_profile(
@@ -1115,7 +1185,6 @@ async def scrape_profile(
     """Always scrapes live Instagram data. `live` is kept for API compatibility."""
     _ = live  # ignored — real data only
     if os.getenv("LIVE_SCRAPE", "1") == "0":
-        # Explicit opt-out only
         raise ScrapeError("LIVE_SCRAPE=0 — enable LIVE_SCRAPE=1 for real scraping")
 
     if proxy is None:
@@ -1123,7 +1192,6 @@ async def scrape_profile(
 
         proxy = parse_proxy_url(os.getenv("SCRAPE_PROXY_URL") or None)
     elif proxy.server and "@" in proxy.server:
-        # Caller passed a full http://user:pass@host:port as server only
         from instascope_scraper.types import parse_proxy_url
 
         parsed = parse_proxy_url(proxy.server)
@@ -1140,9 +1208,36 @@ async def scrape_profile(
                 proxy=proxy,
                 delay=delay_seconds + attempt,
             )
-        except ScrapeError:
-            raise
+        except ScrapeError as exc:
+            # Don't burn retries on definitive not-found
+            if exc.unavailable:
+                raise
+            last_err = exc
+            await asyncio.sleep(delay_seconds * (attempt + 1))
         except Exception as exc:  # noqa: BLE001
             last_err = exc
             await asyncio.sleep(delay_seconds * (attempt + 1))
-    raise ScrapeError(str(last_err or "Scrape failed after retries"))
+
+    raise ScrapeError(_humanize_scrape_error(last_err or "Scrape failed after retries"))
+
+
+def _humanize_scrape_error(err: BaseException | str) -> str:
+    raw = str(err)
+    low = raw.lower()
+    if "get_pymongo_collection" in low:
+        return "Temporary database write issue during scrape (fixed — please Refresh again)."
+    if "err_tunnel" in low or "tunnel_connection" in low:
+        return (
+            "Proxy tunnel failed while opening Instagram. "
+            "Check Decodo proxy; HTTP fallback may still work on Refresh."
+        )
+    if "login wall" in low or ("login" in low and "blocked" in low):
+        return (
+            "Instagram showed a login wall. "
+            "Residential proxy may need verification or a fresh session."
+        )
+    if "not found" in low:
+        return raw
+    if len(raw) > 220:
+        return raw[:217] + "..."
+    return raw

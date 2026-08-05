@@ -18,7 +18,7 @@ import { Card } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
 import { api, type Profile } from "@/lib/api";
 import { studentDetailFields } from "@/lib/student-fields";
-import { formatNumber, formatPct } from "@/lib/utils";
+import { formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
 
 type Post = {
   id: string;
@@ -197,7 +197,8 @@ export default function ProfileDetailPage() {
           <AlertCircle size={18} className="mt-0.5 shrink-0" />
           <div>
             <div className="font-semibold">Last scrape failed</div>
-            <p className="mt-1 text-danger/90">{p.last_error || "Unknown error — try Refresh to scrape again."}</p>
+            <p className="mt-1 text-danger/90">{humanizeScrapeError(p.last_error)}</p>
+            <p className="mt-2 text-xs text-danger/70">Click Refresh to re-queue a live scrape. Usable data is saved whenever Instagram responds.</p>
           </div>
         </div>
       )}

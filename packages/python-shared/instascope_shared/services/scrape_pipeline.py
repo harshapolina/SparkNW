@@ -36,6 +36,27 @@ def _media_type(raw: str | None) -> MediaType:
     return mapping.get(raw or "", MediaType.UNKNOWN)
 
 
+def humanize_scrape_error(err: BaseException | str) -> str:
+    """User-facing scrape failure text (never leak raw internal API names)."""
+    raw = str(err)
+    low = raw.lower()
+    if "get_pymongo_collection" in low or "pymongo" in low:
+        return "Temporary database issue while saving scrape. Please Refresh again."
+    if "err_tunnel" in low or "tunnel_connection" in low:
+        return "Proxy tunnel failed opening Instagram. Check Decodo credentials, then Refresh."
+    if "net::err_" in low or "page.goto" in low:
+        return "Network error reaching Instagram via proxy. Refresh to retry (HTTP fallback enabled)."
+    if "login wall" in low or ("login" in low and "blocked" in low):
+        return "Instagram login wall blocked scraping. Verify residential proxy session."
+    if "incomplete timeline" in low:
+        return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
+    if "not found" in low:
+        return raw
+    if len(raw) > 220:
+        return raw[:217] + "..."
+    return raw
+
+
 async def apply_scrape_result(
     *,
     job: Job,
@@ -94,65 +115,74 @@ async def apply_scrape_result(
     # Replace posts with this scrape's real set (avoid leftover demo/stale rows)
     await Post.find(Post.profile_id == str(profile.id)).delete()
 
+    posts_saved = 0
     for p in posts_data:
-        ig_post_id = str(p.get("ig_post_id") or p.get("id") or "")
-        if not ig_post_id:
-            continue
-        existing = await Post.find_one(Post.ig_post_id == ig_post_id)
-        posted_at = p.get("posted_at")
-        if isinstance(posted_at, str):
-            try:
-                posted_at = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
-            except ValueError:
-                posted_at = None
+        try:
+            ig_post_id = str(p.get("ig_post_id") or p.get("id") or "")
+            if not ig_post_id:
+                continue
+            existing = await Post.find_one(Post.ig_post_id == ig_post_id)
+            posted_at = p.get("posted_at")
+            if isinstance(posted_at, str):
+                try:
+                    posted_at = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+                except ValueError:
+                    posted_at = None
 
-        payload = dict(
+            payload = dict(
+                profile_id=str(profile.id),
+                user_id=profile.user_id,
+                ig_post_id=ig_post_id,
+                shortcode=str(p.get("shortcode") or ig_post_id),
+                media_type=_media_type(p.get("media_type")),
+                caption=p.get("caption"),
+                thumbnail_url=p.get("thumbnail_url"),
+                permalink=p.get("permalink") or f"https://instagram.com/p/{p.get('shortcode')}/",
+                likes=int(p.get("likes") or 0),
+                comments=int(p.get("comments") or 0),
+                views=int(p.get("views") or 0),
+                posted_at=posted_at,
+                scraped_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+            )
+            if existing:
+                for k, v in payload.items():
+                    setattr(existing, k, v)
+                await existing.save()
+            else:
+                await Post(**payload).insert()
+            posts_saved += 1
+        except Exception:
+            # One bad post must never flip a successful scrape to failed
+            continue
+
+    try:
+        existing_snap = await ProfileSnapshot.find_one(
+            ProfileSnapshot.profile_id == str(profile.id),
+            ProfileSnapshot.snapshot_date == today,
+        )
+        snap_data = dict(
             profile_id=str(profile.id),
             user_id=profile.user_id,
-            ig_post_id=ig_post_id,
-            shortcode=str(p.get("shortcode") or ig_post_id),
-            media_type=_media_type(p.get("media_type")),
-            caption=p.get("caption"),
-            thumbnail_url=p.get("thumbnail_url"),
-            permalink=p.get("permalink") or f"https://instagram.com/p/{p.get('shortcode')}/",
-            likes=int(p.get("likes") or 0),
-            comments=int(p.get("comments") or 0),
-            views=int(p.get("views") or 0),
-            posted_at=posted_at,
-            scraped_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            snapshot_date=today,
+            followers=followers,
+            following=following,
+            posts_count=posts_count,
+            avg_likes=avg_likes,
+            avg_views=avg_views,
+            avg_comments=avg_comments,
+            engagement_rate=eng,
+            followers_growth=g_abs,
+            followers_growth_pct=g_pct,
         )
-        if existing:
-            for k, v in payload.items():
-                setattr(existing, k, v)
-            await existing.save()
+        if existing_snap:
+            for k, v in snap_data.items():
+                setattr(existing_snap, k, v)
+            await existing_snap.save()
         else:
-            await Post(**payload).insert()
-
-    existing_snap = await ProfileSnapshot.find_one(
-        ProfileSnapshot.profile_id == str(profile.id),
-        ProfileSnapshot.snapshot_date == today,
-    )
-    snap_data = dict(
-        profile_id=str(profile.id),
-        user_id=profile.user_id,
-        snapshot_date=today,
-        followers=followers,
-        following=following,
-        posts_count=posts_count,
-        avg_likes=avg_likes,
-        avg_views=avg_views,
-        avg_comments=avg_comments,
-        engagement_rate=eng,
-        followers_growth=g_abs,
-        followers_growth_pct=g_pct,
-    )
-    if existing_snap:
-        for k, v in snap_data.items():
-            setattr(existing_snap, k, v)
-        await existing_snap.save()
-    else:
-        await ProfileSnapshot(**snap_data).insert()
+            await ProfileSnapshot(**snap_data).insert()
+    except Exception:
+        pass
 
     job.status = JobStatus.SUCCESS
     job.finished_at = datetime.utcnow()
@@ -165,7 +195,12 @@ async def apply_scrape_result(
         user_id=profile.user_id,
         level="info",
         message="Scrape succeeded",
-        details={"followers": followers, "posts": len(posts_data)},
+        details={
+            "followers": followers,
+            "posts": len(posts_data),
+            "posts_saved": posts_saved,
+            "path": (result.get("raw") or {}).get("path") if isinstance(result.get("raw"), dict) else None,
+        },
     ).insert()
 
     user_settings = await UserSettings.find_one(UserSettings.user_id == profile.user_id)
@@ -210,14 +245,15 @@ async def apply_scrape_result(
 
 
 async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavailable: bool = False) -> None:
+    friendly = humanize_scrape_error(error)
     job.status = JobStatus.FAILED
-    job.error_message = error
+    job.error_message = friendly
     job.finished_at = datetime.utcnow()
     job.updated_at = datetime.utcnow()
     await job.save()
 
     profile.last_scraped_at = datetime.utcnow()
-    profile.last_error = error
+    profile.last_error = friendly
     profile.status = ProfileStatus.UNAVAILABLE if unavailable else ProfileStatus.FAILED
     profile.updated_at = datetime.utcnow()
     student = getattr(profile, "student", None)
@@ -230,7 +266,8 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
         profile_id=str(profile.id),
         user_id=profile.user_id,
         level="error",
-        message=error,
+        message=friendly,
+        details={"raw": str(error)[:500]} if str(error) != friendly else {},
     ).insert()
 
     ntype = NotificationType.PROFILE_UNAVAILABLE if unavailable else NotificationType.SCRAPE_FAILED
@@ -239,5 +276,5 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
         profile_id=str(profile.id),
         type=ntype,
         title=f"Scrape failed for @{profile.username}",
-        body=error[:280],
+        body=friendly[:280],
     ).insert()
