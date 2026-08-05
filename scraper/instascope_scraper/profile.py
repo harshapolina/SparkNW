@@ -274,22 +274,18 @@ def _expected_posts_count(user: dict[str, Any]) -> int:
 
 
 def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
-    """True when we've collected essentially the full public timeline."""
+    """True when we've collected the full public timeline for this account."""
     if not posts:
         return False
     got = len(posts)
     if posts_count <= 0:
         # Unknown total — never treat the first profile-card page (~12) as complete.
         return got > 12
-    # Must reach Instagram's count (allow 1–2 deleted/hidden drift).
-    return got >= max(posts_count - 2, 1) or got >= posts_count
-
-
-def _is_first_page_only(posts: list[ScrapedPost], posts_count: int) -> bool:
-    """True when we only have Instagram's first profile-card page (~12)."""
+    # Small accounts: every post must be present (6→2 / 1→0 must NOT pass).
     if posts_count <= 12:
-        return False
-    return len(posts) <= 12
+        return got >= posts_count
+    # Large accounts: allow 1–2 deleted/hidden drift.
+    return got >= max(posts_count - 2, 1)
 
 
 def _posts_from_nodes(nodes: list[dict[str, Any]]) -> list[ScrapedPost]:
@@ -343,11 +339,12 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
 
     # Keep going until we hit posts_count (or exhaust rounds).
     # Alternate proxy ↔ direct so residential stalls don't freeze at page 1.
-    rounds = max(1, int(os.getenv("SCRAPE_EXPAND_ROUNDS") or "6"))
+    rounds = max(1, int(os.getenv("SCRAPE_EXPAND_ROUNDS") or "8"))
     proxy_cycle: list[str | None] = [proxy_url]
     if proxy_url and os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0":
         proxy_cycle.append(None)
 
+    stagnant_rounds = 0
     for round_i in range(rounds):
         if expected > 0 and _posts_complete(posts, expected):
             break
@@ -360,12 +357,14 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
                 break
             try:
                 seed = initial_nodes if (round_i == 0 and not posts) else _seed_nodes_from_posts(posts)
+                # Always ask for more while short of Instagram's count
+                force_next = expected > len(posts) or (expected <= 0 and len(posts) <= 12)
                 all_nodes = await fetch_all_media_nodes(
                     username,
                     user_id=user_id,
                     initial_nodes=seed,
                     initial_cursor=cursor if round_i == 0 else None,
-                    initial_has_next=True if expected > len(posts) else has_next,
+                    initial_has_next=True if force_next else has_next,
                     expected_count=expected,
                     proxy=pxy,
                 )
@@ -378,8 +377,13 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
 
         if expected > 0 and _posts_complete(posts, expected):
             break
-        if not progressed and round_i >= 1:
-            break
+        if progressed:
+            stagnant_rounds = 0
+        else:
+            stagnant_rounds += 1
+            # Keep trying a few no-progress rounds — IG often needs a fresh session
+            if stagnant_rounds >= 3 and round_i >= 2:
+                break
         await asyncio.sleep(0.8 + round_i * 0.6)
 
     # HTTP media-info pass for reel play counts (before browser enrich)
@@ -1036,7 +1040,8 @@ async def _paginate_feed_in_browser(
             more = bool(cursor)
         else:
             more = bool(more_flag)
-            if not more and cursor and len(items) >= 12:
+            # IG lies with more_available=false on short pages — keep going with a cursor
+            if not more and cursor and len(items) >= 1:
                 more = True
 
         added = 0
@@ -1070,6 +1075,16 @@ async def _paginate_feed_in_browser(
                 more = False
         else:
             more = False
+
+        # Keep paging while short of Instagram posts_count
+        if (
+            not more
+            and _still_short(len(merged), limit=limit, expected_count=expected_count)
+            and (cursor or max_id)
+        ):
+            more = True
+            if cursor:
+                max_id = cursor
 
         if expected_count > 0 and len(merged) >= expected_count:
             break
@@ -1207,15 +1222,10 @@ async def _scrape_live(
                         return _finalize_result(result, path="http_after_browser")
             except Exception:
                 pass
-        return result
+        _raise_if_incomplete(result)
+        return _finalize_result(result, path="browser")
     except Exception as exc:
-        # Prefer any HTTP result that beat the first card page
-        if http_result and not _is_first_page_only(http_result.posts, http_result.posts_count):
-            http_result.raw = {
-                **(http_result.raw or {}),
-                "browser_error": str(exc)[:400],
-            }
-            return _finalize_result(http_result, path="http_fallback_ok")
+        # ONLY return HTTP results that actually reached posts_count — never partials
         if http_result and _posts_complete(http_result.posts, http_result.posts_count):
             return _finalize_result(http_result, path="http_fallback_complete")
         if _is_tunnel_or_proxy_error(exc) and proxy is not None:
@@ -1232,8 +1242,6 @@ async def _scrape_live(
                         result = _result_from_user(username, user, posts_override=posts)
                         if _posts_complete(result.posts, result.posts_count):
                             return _finalize_result(result, path="http_after_tunnel_fail")
-                        if not _is_first_page_only(result.posts, result.posts_count):
-                            return _finalize_result(result, path="http_after_tunnel_partial")
                     except Exception:
                         continue
             except Exception:

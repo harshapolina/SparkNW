@@ -103,10 +103,16 @@ async def apply_scrape_result(
 
     posts_data: list[dict[str, Any]] = result.get("posts") or []
 
-    # NEVER wipe a good profile with an empty / first-card (~12) scrape
-    if posts_count > 12 and len(posts_data) <= 12:
+    # NEVER wipe a good profile with an incomplete / empty scrape
+    if posts_count > 0 and len(posts_data) < (
+        posts_count if posts_count <= 12 else max(posts_count - 2, 1)
+    ):
         raise ValueError(
             f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count} posts)"
+        )
+    if posts_count > 0 and not posts_data:
+        raise ValueError(
+            f"Refusing to save empty scrape ({len(posts_data)}/{posts_count} posts)"
         )
     if followers <= 0 and posts_count <= 0 and not posts_data:
         raise ValueError("Refusing to save empty scrape result")

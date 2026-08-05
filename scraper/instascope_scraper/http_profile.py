@@ -124,17 +124,45 @@ async def fetch_web_profile_http(username: str, *, proxy: str | None = None) -> 
 
 
 def _timeline_from_user(user: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None, bool]:
-    """Return (edge nodes, end_cursor, has_next_page)."""
-    media = user.get("edge_owner_to_timeline_media") or {}
-    edges = media.get("edges") or []
+    """Return (edge nodes, end_cursor, has_next_page) from posts + reels edges."""
     nodes: list[dict[str, Any]] = []
-    for edge in edges:
-        node = edge.get("node") if isinstance(edge, dict) else None
-        if isinstance(node, dict):
+    seen: set[str] = set()
+
+    def _add_edges(media: Any) -> tuple[str | None, bool]:
+        if not isinstance(media, dict):
+            return None, False
+        for edge in media.get("edges") or []:
+            node = edge.get("node") if isinstance(edge, dict) else None
+            if not isinstance(node, dict):
+                continue
+            key = _node_key(node)
+            if not key or key in seen:
+                continue
+            seen.add(key)
             nodes.append(node)
-    page = media.get("page_info") or {}
-    cursor = page.get("end_cursor")
-    has_next = bool(page.get("has_next_page"))
+        page = media.get("page_info") or {}
+        return page.get("end_cursor"), bool(page.get("has_next_page"))
+
+    cursor, has_next = _add_edges(user.get("edge_owner_to_timeline_media"))
+    felix_cursor, felix_next = _add_edges(user.get("edge_felix_video_timeline"))
+    if not cursor:
+        cursor = felix_cursor
+    has_next = has_next or felix_next
+
+    # Newer shapes
+    for key in ("media", "reel"):
+        media = user.get(key) or {}
+        if not isinstance(media, dict):
+            continue
+        for node in media.get("nodes") or media.get("items") or []:
+            if not isinstance(node, dict):
+                continue
+            nk = _node_key(node)
+            if not nk or nk in seen:
+                continue
+            seen.add(nk)
+            nodes.append(node)
+
     return nodes, cursor, has_next
 
 
@@ -312,12 +340,13 @@ def _nodes_from_feed(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str
 
     more_flag = payload.get("more_available")
     if more_flag is None:
-        # Full-ish page with a cursor ⇒ assume more exists until proven otherwise
+        # Any page with a cursor ⇒ assume more until proven otherwise
         more = bool(cursor) and len(nodes) >= 1
     else:
         more = bool(more_flag)
-        if not more and cursor and len(nodes) >= 12:
-            # IG sometimes lies with more_available=false on page 1 — keep going if cursor present
+        # IG often lies with more_available=false while next_max_id is present —
+        # keep going whenever a cursor exists (critical for small accounts < 12).
+        if not more and cursor and len(nodes) >= 1:
             more = True
 
     return nodes, cursor, more
@@ -328,9 +357,14 @@ def _node_key(node: dict[str, Any]) -> str:
 
 
 def _still_short(collected: int, *, limit: int, expected_count: int) -> bool:
+    """True when we must keep paginating toward Instagram's posts_count."""
     if collected >= limit:
         return False
     if expected_count > 0:
+        # Small accounts: require every post (2/6 must keep going).
+        # Large accounts: allow 1–2 deleted/hidden drift.
+        if expected_count <= 12:
+            return collected < expected_count
         return collected < max(expected_count - 2, 1)
     # Unknown total: first profile card (~12) is never "done"
     return collected <= 12
@@ -430,9 +464,11 @@ async def fetch_all_media_nodes(
                     stagnant += 1
                     if next_cursor and next_cursor != max_id:
                         max_id = next_cursor
+                        more = True
                         continue
                     if max_id is None and feed_seed_cursor:
                         max_id = feed_seed_cursor
+                        more = True
                         continue
                     break
 
@@ -468,6 +504,18 @@ async def fetch_all_media_nodes(
                         more = False
                 else:
                     more = False
+
+                # Never stop early while Instagram says we should have more posts
+                if (
+                    not more
+                    and _still_short(len(out), limit=limit, expected_count=expected_count)
+                    and (next_cursor or max_id or feed_seed_cursor)
+                ):
+                    more = True
+                    if next_cursor:
+                        max_id = next_cursor
+                    elif not max_id and feed_seed_cursor:
+                        max_id = feed_seed_cursor
 
                 if expected_count > 0 and len(out) >= expected_count:
                     break
