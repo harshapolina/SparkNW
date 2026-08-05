@@ -90,12 +90,6 @@ async def apply_scrape_result(
     if isinstance(student, dict) and student:
         profile.student = student  # type: ignore[attr-defined]
     await profile.save()
-    if isinstance(student, dict) and student:
-        # Extra safety for older deploys / Beanie models without student field
-        await Profile.get_pymongo_collection().update_one(
-            {"_id": profile.id},
-            {"$set": {"student": student}},
-        )
 
     # Replace posts with this scrape's real set (avoid leftover demo/stale rows)
     await Post.find(Post.profile_id == str(profile.id)).delete()
@@ -227,12 +221,9 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
     profile.status = ProfileStatus.UNAVAILABLE if unavailable else ProfileStatus.FAILED
     profile.updated_at = datetime.utcnow()
     student = getattr(profile, "student", None)
-    await profile.save()
     if isinstance(student, dict) and student:
-        await Profile.get_pymongo_collection().update_one(
-            {"_id": profile.id},
-            {"$set": {"student": student}},
-        )
+        profile.student = student  # type: ignore[attr-defined]
+    await profile.save()
 
     await ScrapeLog(
         job_id=str(job.id),
