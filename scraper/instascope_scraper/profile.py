@@ -987,9 +987,9 @@ async def _paginate_feed_in_browser(
               const q = new URLSearchParams({ count: String(count) });
               if (maxId) q.set('max_id', String(maxId));
               const paths = [
+                `/api/v1/feed/user/${encodeURIComponent(username)}/username/?${q.toString()}`,
                 `/api/v1/feed/user/${userId}/?${q.toString()}`,
                 `https://www.instagram.com/api/v1/feed/user/${userId}/?${q.toString()}`,
-                `/api/v1/feed/user/${encodeURIComponent(username)}/username/?${q.toString()}`,
               ];
               for (const url of paths) {
                 try {

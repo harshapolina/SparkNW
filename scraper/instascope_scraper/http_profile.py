@@ -399,36 +399,40 @@ async def fetch_all_media_nodes(
             while more and _still_short(len(out), limit=limit, expected_count=expected_count) and stagnant < 10 and pages < max_pages:
                 pages += 1
                 await asyncio.sleep(delay if pages > 1 else 0.15)
-                feed = await _feed_user_page(
-                    client,
-                    username=username,
-                    user_id=user_id,
-                    max_id=max_id,
-                    count=page_size,
-                    mobile=use_mobile,
-                )
+
+                # Prefer username feed first — user_id feed often returns 401 anonymously
+                feed = None
+                if not use_mobile:
+                    feed = await _feed_user_page_username(
+                        client,
+                        username=username,
+                        max_id=max_id,
+                        count=page_size,
+                    )
                 if not feed:
-                    if pages == 1 and not use_mobile:
-                        alt = await _feed_user_page_username(
-                            client,
-                            username=username,
-                            max_id=max_id,
-                            count=page_size,
-                        )
-                        if alt:
-                            feed = alt
-                    if not feed:
-                        stagnant += 1
-                        if max_id is None and feed_seed_cursor:
-                            max_id = feed_seed_cursor
-                            continue
-                        break
+                    feed = await _feed_user_page(
+                        client,
+                        username=username,
+                        user_id=user_id,
+                        max_id=max_id,
+                        count=page_size,
+                        mobile=use_mobile,
+                    )
+                if not feed:
+                    stagnant += 1
+                    if max_id is None and feed_seed_cursor:
+                        max_id = feed_seed_cursor
+                        continue
+                    break
 
                 nodes, next_cursor, more = _nodes_from_feed(feed)
                 if not nodes:
                     stagnant += 1
                     if next_cursor and next_cursor != max_id:
                         max_id = next_cursor
+                        continue
+                    if max_id is None and feed_seed_cursor:
+                        max_id = feed_seed_cursor
                         continue
                     break
 
@@ -454,6 +458,13 @@ async def fetch_all_media_nodes(
                         max_id = derived
                         more = more or _still_short(len(out), limit=limit, expected_count=expected_count)
                     else:
+                        # No cursor but we may still be short — force seed jump once
+                        if not tried_seed_jump and feed_seed_cursor and expected_count > len(out):
+                            max_id = feed_seed_cursor
+                            tried_seed_jump = True
+                            more = True
+                            stagnant = 0
+                            continue
                         more = False
                 else:
                     more = False
