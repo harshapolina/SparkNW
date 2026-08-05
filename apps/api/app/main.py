@@ -76,16 +76,24 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):
-        """Ensure CORS headers exist even on 500s (browser otherwise shows 'Failed to fetch')."""
+        """Ensure CORS headers exist even on errors (browser otherwise shows 'Failed to fetch')."""
         from fastapi import HTTPException
         from fastapi.exceptions import RequestValidationError
 
-        if isinstance(exc, (HTTPException, RequestValidationError)):
-            raise exc
+        headers = _cors_headers(request, origins)
+        if isinstance(exc, HTTPException):
+            detail = exc.detail
+            return JSONResponse(status_code=exc.status_code, content={"detail": detail}, headers=headers)
+        if isinstance(exc, RequestValidationError):
+            return JSONResponse(
+                status_code=422,
+                content={"detail": exc.errors()},
+                headers=headers,
+            )
         return JSONResponse(
             status_code=500,
             content={"detail": str(exc)[:400] or "Internal server error"},
-            headers=_cors_headers(request, origins),
+            headers=headers,
         )
 
     prefix = cfg.api_prefix
