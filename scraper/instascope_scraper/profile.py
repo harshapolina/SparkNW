@@ -738,6 +738,7 @@ async def _paginate_feed_in_browser(
     page,
     *,
     user_id: str,
+    username: str,
     expected_count: int,
     existing: list[ScrapedPost],
 ) -> list[ScrapedPost]:
@@ -746,7 +747,13 @@ async def _paginate_feed_in_browser(
     This is the reliable path when standalone httpx feed calls only return the
     first profile-card page (~12 posts).
     """
-    from instascope_scraper.http_profile import _max_posts
+    from instascope_scraper.http_profile import (
+        _cursor_from_node,
+        _max_posts,
+        _normalize_cursor,
+        _page_size,
+        _still_short,
+    )
 
     limit = _max_posts()
     if expected_count > 0:
@@ -755,25 +762,33 @@ async def _paginate_feed_in_browser(
     merged = list(existing)
     seen = {p.shortcode for p in merged}
     max_id: str | None = None
+    # Jump past the first card page using the last known media id
+    if merged:
+        # ScrapedPost.ig_post_id is the media id / pk
+        last_id = merged[-1].ig_post_id
+        if last_id:
+            text = str(last_id).split("_", 1)[0]
+            max_id = text or None
     more = True
     stagnant = 0
     pages = 0
     delay = float(os.getenv("SCRAPE_PAGE_DELAY_SECONDS") or "0.75")
-    page_size = 12
-    max_pages = max(40, (limit // page_size) + 20)
+    page_size = _page_size()
+    max_pages = max(80, (limit // max(page_size, 1)) + 40)
 
-    while more and len(merged) < limit and stagnant < 5 and pages < max_pages:
+    while more and _still_short(len(merged), limit=limit, expected_count=expected_count) and stagnant < 8 and pages < max_pages:
         pages += 1
         if pages > 1:
             await asyncio.sleep(delay)
 
         payload = await page.evaluate(
-            """async ({ userId, maxId, count }) => {
+            """async ({ userId, username, maxId, count }) => {
               const q = new URLSearchParams({ count: String(count) });
               if (maxId) q.set('max_id', String(maxId));
               const paths = [
                 `/api/v1/feed/user/${userId}/?${q.toString()}`,
                 `https://www.instagram.com/api/v1/feed/user/${userId}/?${q.toString()}`,
+                `/api/v1/feed/user/${encodeURIComponent(username)}/username/?${q.toString()}`,
               ];
               for (const url of paths) {
                 try {
@@ -793,7 +808,12 @@ async def _paginate_feed_in_browser(
               }
               return { __error: true, items: [], more_available: false };
             }""",
-            {"userId": str(user_id), "maxId": max_id, "count": page_size},
+            {
+                "userId": str(user_id),
+                "username": username,
+                "maxId": max_id,
+                "count": page_size,
+            },
         )
 
         if not isinstance(payload, dict) or payload.get("__error"):
@@ -801,14 +821,29 @@ async def _paginate_feed_in_browser(
             continue
 
         items = payload.get("items") or []
-        more = bool(payload.get("more_available"))
-        next_max = payload.get("next_max_id")
-        max_id = str(next_max) if next_max is not None else None
+        if not isinstance(items, list):
+            items = []
+
+        next_max = payload.get("next_max_id") or payload.get("max_id")
+        paging = payload.get("paging_info")
+        if next_max is None and isinstance(paging, dict):
+            next_max = paging.get("max_id")
+        cursor = _normalize_cursor(next_max)
+
+        more_flag = payload.get("more_available")
+        if more_flag is None:
+            more = bool(cursor)
+        else:
+            more = bool(more_flag)
+            if not more and cursor and len(items) >= 12:
+                more = True
 
         added = 0
+        last_node: dict[str, Any] | None = None
         for item in items:
             if not isinstance(item, dict):
                 continue
+            last_node = item
             post = _post_from_node(item)
             if not post or post.shortcode in seen:
                 continue
@@ -823,8 +858,18 @@ async def _paginate_feed_in_browser(
         else:
             stagnant = 0
 
-        if not max_id:
-            break
+        if cursor and cursor != max_id:
+            max_id = cursor
+        elif last_node:
+            derived = _cursor_from_node(last_node)
+            if derived and derived != max_id:
+                max_id = derived
+                more = more or _still_short(len(merged), limit=limit, expected_count=expected_count)
+            else:
+                more = False
+        else:
+            more = False
+
         if expected_count > 0 and len(merged) >= expected_count:
             break
 
@@ -879,6 +924,20 @@ def _finalize_result(result: ScrapeResult, *, path: str) -> ScrapeResult:
     return result
 
 
+def _raise_if_incomplete(result: ScrapeResult) -> None:
+    """Never accept the first profile-card page (~12) as a full scrape."""
+    if result.is_private:
+        return
+    if _posts_complete(result.posts, result.posts_count):
+        return
+    got = len(result.posts)
+    expected = result.posts_count
+    raise ScrapeError(
+        f"Incomplete timeline: only {got}/{expected} posts "
+        f"(Instagram pagination blocked). Check SCRAPE_PROXY_URL / Decodo."
+    )
+
+
 async def _scrape_live(
     username: str,
     *,
@@ -925,7 +984,7 @@ async def _scrape_live(
     except Exception:
         http_result = None
 
-    # 2) Browser path — optional enrich. On proxy tunnel failure, keep HTTP data.
+    # 2) Browser path — optional enrich. On proxy tunnel failure, keep HTTP only if COMPLETE.
     try:
         return await _scrape_live_browser(
             username,
@@ -935,15 +994,13 @@ async def _scrape_live(
             http_result=http_result,
         )
     except Exception as exc:
-        if _result_is_usable(http_result):
-            assert http_result is not None
+        if http_result and _posts_complete(http_result.posts, http_result.posts_count):
             http_result.raw = {
                 **(http_result.raw or {}),
                 "browser_error": str(exc)[:400],
             }
-            return _finalize_result(http_result, path="http_fallback")
+            return _finalize_result(http_result, path="http_fallback_complete")
         if _is_tunnel_or_proxy_error(exc) and proxy is not None:
-            # Last resort: HTTP without relying on browser proxy tunnel
             try:
                 from instascope_scraper.http_profile import fetch_web_profile_http
 
@@ -953,7 +1010,7 @@ async def _scrape_live(
                 if user:
                     posts = await _expand_all_posts(username, user, proxy_url=proxy_url)
                     result = _result_from_user(username, user, posts_override=posts)
-                    if _result_is_usable(result):
+                    if _posts_complete(result.posts, result.posts_count):
                         return _finalize_result(result, path="http_after_tunnel_fail")
             except Exception:
                 pass
@@ -1022,9 +1079,8 @@ async def _scrape_live_browser(
             response = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         except Exception as exc:
             await context.close()
-            # Prefer already-captured HTTP data over a hard tunnel failure
-            if _result_is_usable(http_result):
-                assert http_result is not None
+            # Only accept HTTP data when the full timeline was already collected
+            if http_result and _posts_complete(http_result.posts, http_result.posts_count):
                 http_result.raw = {
                     **(http_result.raw or {}),
                     "browser_error": str(exc)[:400],
@@ -1093,6 +1149,7 @@ async def _scrape_live_browser(
                 result.posts = await _paginate_feed_in_browser(
                     page,
                     user_id=user_id,
+                    username=username,
                     expected_count=result.posts_count,
                     existing=result.posts,
                 )
@@ -1145,7 +1202,7 @@ async def _scrape_live_browser(
             )
             enrich_cap_env = int(os.getenv("SCRAPE_ENRICH_MAX") or "0")
             if enrich_cap_env <= 0:
-                enrich_cap = len(missing) if len(result.posts) <= 40 else min(len(missing), 80)
+                enrich_cap = len(missing)  # enrich every post missing likes/views
             else:
                 enrich_cap = min(enrich_cap_env, len(missing))
             if missing and enrich_cap > 0:
@@ -1164,14 +1221,8 @@ async def _scrape_live_browser(
         if not _result_is_usable(result):
             raise ScrapeError("Scraped profile returned empty metrics")
 
-        # Soft-complete: keep usable scrapes even if Instagram blocked full pagination
-        incomplete = (
-            not result.is_private
-            and result.posts_count > 12
-            and len(result.posts) <= 12
-        )
-        path = "browser_partial" if incomplete else "browser_full"
-        return _finalize_result(result, path=path)
+        _raise_if_incomplete(result)
+        return _finalize_result(result, path="browser_full")
 
 
 async def scrape_profile(

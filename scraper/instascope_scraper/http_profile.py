@@ -245,18 +245,95 @@ async def _feed_user_page(
     return payload
 
 
+def _normalize_cursor(value: Any) -> str | None:
+    """Coerce Instagram pagination cursors (str / int / nested / JSON string)."""
+    if value is None or value is False:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return str(int(value))
+    if isinstance(value, str):
+        text = value.strip()
+        if not text or text.lower() in {"null", "none", "undefined"}:
+            return None
+        if text.startswith("{") and "max_id" in text:
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    nested = parsed.get("max_id") or parsed.get("next_max_id")
+                    if nested is not None:
+                        return _normalize_cursor(nested)
+            except Exception:
+                pass
+        return text
+    if isinstance(value, dict):
+        for key in ("max_id", "next_max_id", "end_cursor", "cursor", "id", "pk"):
+            if key in value and value[key] is not None:
+                found = _normalize_cursor(value[key])
+                if found:
+                    return found
+    return None
+
+
+def _cursor_from_node(node: dict[str, Any]) -> str | None:
+    """Fallback cursor = last media id (Instagram accepts pk/id as max_id)."""
+    for key in ("id", "pk", "pk_id", "media_id"):
+        raw = node.get(key)
+        if raw is None:
+            continue
+        # Prefer bare numeric id when shape is "12345_67890"
+        text = str(raw).strip()
+        if "_" in text:
+            text = text.split("_", 1)[0]
+        if text:
+            return text
+    return None
+
+
 def _nodes_from_feed(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None, bool]:
     items = payload.get("items") or []
+    if not isinstance(items, list):
+        items = []
     nodes = [it for it in items if isinstance(it, dict)]
-    more = bool(payload.get("more_available"))
-    next_max = payload.get("next_max_id")
-    if next_max is None and isinstance(payload.get("next_max_id"), (int, float)):
-        next_max = payload.get("next_max_id")
-    return nodes, str(next_max) if next_max is not None else None, more
+
+    next_max = payload.get("next_max_id") or payload.get("max_id")
+    paging = payload.get("paging_info")
+    if next_max is None and isinstance(paging, dict):
+        next_max = paging.get("max_id") or paging.get("next_max_id")
+    # next_max_id may live on the last item in some app responses
+    if next_max is None and nodes:
+        last = nodes[-1]
+        next_max = last.get("next_max_id")
+
+    cursor = _normalize_cursor(next_max)
+    if not cursor and nodes:
+        cursor = _cursor_from_node(nodes[-1])
+
+    more_flag = payload.get("more_available")
+    if more_flag is None:
+        # Full-ish page with a cursor ⇒ assume more exists until proven otherwise
+        more = bool(cursor) and len(nodes) >= 1
+    else:
+        more = bool(more_flag)
+        if not more and cursor and len(nodes) >= 12:
+            # IG sometimes lies with more_available=false on page 1 — keep going if cursor present
+            more = True
+
+    return nodes, cursor, more
 
 
 def _node_key(node: dict[str, Any]) -> str:
     return str(node.get("shortcode") or node.get("code") or node.get("id") or node.get("pk") or "")
+
+
+def _still_short(collected: int, *, limit: int, expected_count: int) -> bool:
+    if collected >= limit:
+        return False
+    if expected_count > 0:
+        return collected < max(expected_count - 2, 1)
+    # Unknown total: first profile card (~12) is never "done"
+    return collected <= 12
 
 
 async def fetch_all_media_nodes(
@@ -296,29 +373,30 @@ async def fetch_all_media_nodes(
     if len(out) >= limit:
         return out[:limit]
 
+    # Feed API wants media id/pk as max_id — NOT GraphQL end_cursor
+    feed_seed_cursor = _cursor_from_node(out[-1]) if out else None
+    graphql_cursor = _normalize_cursor(initial_cursor)
+
     headers = _client_headers(username)
     timeout = httpx.Timeout(60.0)
     async with httpx.AsyncClient(headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout) as client:
         await _bootstrap_session(client, username)
 
-        # --- 1) Feed API first (www, then mobile host) — most reliable in 2026 ---
+        # --- 1) Feed API (www, then mobile) — keep paging until full timeline ---
         for use_mobile in (False, True):
-            if len(out) >= limit:
+            if not _still_short(len(out), limit=limit, expected_count=expected_count):
                 break
-            if expected_count > 0 and len(out) >= expected_count:
-                break
+
             max_id: str | None = None
             more = True
             stagnant = 0
             pages = 0
-            max_pages = max(30, (limit // max(page_size, 1)) + 40)
-            # Restart from start on each host so we don't skip with a dead cursor
-            if use_mobile:
-                max_id = None
-                more = True
-                stagnant = 0
+            max_pages = max(60, (limit // max(page_size, 1)) + 80)
+            # Prefer discovering next_max_id from a fresh page-1 call.
+            # If that returns only duplicates, advance using last seed media id.
+            tried_seed_jump = False
 
-            while more and len(out) < limit and stagnant < 4 and pages < max_pages:
+            while more and _still_short(len(out), limit=limit, expected_count=expected_count) and stagnant < 6 and pages < max_pages:
                 pages += 1
                 await asyncio.sleep(delay if pages > 1 else 0.15)
                 feed = await _feed_user_page(
@@ -330,46 +408,79 @@ async def fetch_all_media_nodes(
                     mobile=use_mobile,
                 )
                 if not feed:
-                    break
-                nodes, max_id, more = _nodes_from_feed(feed)
+                    if pages == 1 and not use_mobile:
+                        alt = await _feed_user_page_username(
+                            client,
+                            username=username,
+                            max_id=max_id,
+                            count=page_size,
+                        )
+                        if alt:
+                            feed = alt
+                    if not feed:
+                        stagnant += 1
+                        if max_id is None and feed_seed_cursor:
+                            max_id = feed_seed_cursor
+                            continue
+                        break
+
+                nodes, next_cursor, more = _nodes_from_feed(feed)
                 if not nodes:
                     stagnant += 1
-                    if not max_id:
-                        break
-                    continue
+                    if next_cursor and next_cursor != max_id:
+                        max_id = next_cursor
+                        continue
+                    break
+
                 added = _add(nodes)
                 if added == 0:
                     stagnant += 1
+                    # Page-1 returned the same seed cards — jump using last media id
+                    if not tried_seed_jump and feed_seed_cursor and max_id != feed_seed_cursor:
+                        max_id = feed_seed_cursor
+                        tried_seed_jump = True
+                        stagnant = 0
+                        more = True
+                        continue
                 else:
                     stagnant = 0
-                if not max_id:
-                    break
+
+                if next_cursor and next_cursor != max_id:
+                    max_id = next_cursor
+                    feed_seed_cursor = next_cursor
+                elif nodes:
+                    derived = _cursor_from_node(nodes[-1])
+                    if derived and derived != max_id:
+                        max_id = derived
+                        more = more or _still_short(len(out), limit=limit, expected_count=expected_count)
+                    else:
+                        more = False
+                else:
+                    more = False
+
                 if expected_count > 0 and len(out) >= expected_count:
                     break
 
             logger.info(
-                "feed pagination @%s mobile=%s collected=%s expected=%s",
+                "feed pagination @%s mobile=%s collected=%s expected=%s pages=%s",
                 username,
                 use_mobile,
                 len(out),
                 expected_count,
+                pages,
             )
-            if expected_count <= 0 or len(out) >= max(expected_count - 2, 1):
-                break
-            if len(out) > 12:
-                # Got past first page — keep going only if still short
-                if expected_count > 0 and len(out) < expected_count - 2:
-                    continue
-                break
 
-        # --- 2) doc_id GraphQL POST ---
-        need_more = len(out) < limit and (expected_count <= 0 or len(out) < max(expected_count - 2, 1))
-        if need_more and (initial_has_next or initial_cursor or len(out) < 12):
-            cursor = initial_cursor
-            has_next = initial_has_next or bool(cursor)
+        # --- 2) doc_id GraphQL POST (run whenever still short — including exactly 12) ---
+        need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
+        if need_more:
+            cursor = graphql_cursor or (_cursor_from_node(out[-1]) if out else None)
+            has_next = initial_has_next or bool(cursor) or need_more
             working_doc: str | None = None
             stagnant = 0
-            while has_next and len(out) < limit and cursor and stagnant < 3:
+            pages = 0
+            while has_next and need_more and cursor and stagnant < 5 and pages < 80:
+                pages += 1
+                need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
                 await asyncio.sleep(delay)
                 payload: dict[str, Any] | None = None
                 if working_doc:
@@ -394,7 +505,6 @@ async def fetch_all_media_nodes(
                         if payload and (payload.get("data") or {}).get("user"):
                             working_doc = doc_id
                             break
-                        # Some responses nest under different keys
                         data = payload.get("data") if payload else None
                         if isinstance(data, dict) and data:
                             working_doc = doc_id
@@ -404,27 +514,33 @@ async def fetch_all_media_nodes(
                     break
                 user = (payload.get("data") or {}).get("user") or {}
                 if not user:
-                    # Try to find timeline edges anywhere under data
                     data = payload.get("data") or {}
                     for v in data.values():
                         if isinstance(v, dict) and "edge_owner_to_timeline_media" in v:
                             user = v
                             break
                 nodes, cursor, has_next = _timeline_from_user(user) if user else ([], None, False)
+                cursor = _normalize_cursor(cursor)
                 if not nodes:
                     stagnant += 1
                     continue
                 added = _add(nodes)
                 stagnant = 0 if added else stagnant + 1
+                if not cursor:
+                    has_next = False
+                need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
 
         # --- 3) Legacy query_hash / query_id ---
-        need_more = len(out) < limit and (expected_count <= 0 or len(out) < max(expected_count - 2, 1))
+        need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
         if need_more:
-            cursor = initial_cursor
-            has_next = initial_has_next or bool(cursor)
+            cursor = graphql_cursor or (_cursor_from_node(out[-1]) if out else None)
+            has_next = initial_has_next or bool(cursor) or need_more
             working_hash: str | None = None
             working_qid: str | None = None
-            while has_next and len(out) < limit and cursor:
+            pages = 0
+            while has_next and need_more and cursor and pages < 80:
+                pages += 1
+                need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
                 await asyncio.sleep(delay)
                 payload = None
                 if working_hash:
@@ -477,9 +593,12 @@ async def fetch_all_media_nodes(
                     break
                 user = (payload.get("data") or {}).get("user") or {}
                 nodes, cursor, has_next = _timeline_from_user(user)
+                cursor = _normalize_cursor(cursor)
                 if not nodes:
                     break
                 _add(nodes)
+                if not cursor:
+                    has_next = False
 
     logger.info(
         "fetch_all_media_nodes @%s done collected=%s expected=%s limit=%s",
@@ -489,3 +608,29 @@ async def fetch_all_media_nodes(
         limit,
     )
     return out[:limit]
+
+
+async def _feed_user_page_username(
+    client: httpx.AsyncClient,
+    *,
+    username: str,
+    max_id: str | None,
+    count: int,
+) -> dict[str, Any] | None:
+    """Alternate feed path: /api/v1/feed/user/{username}/username/."""
+    q = f"count={count}"
+    if max_id:
+        q += f"&max_id={quote(str(max_id))}"
+    url = f"https://www.instagram.com/api/v1/feed/user/{quote(username)}/username/?{q}"
+    headers = _client_headers(username)
+    _apply_csrf(client, headers)
+    res = await client.get(url, headers=headers)
+    if res.status_code != 200:
+        return None
+    try:
+        payload = res.json()
+    except Exception:
+        return None
+    if payload.get("status") == "fail":
+        return None
+    return payload
