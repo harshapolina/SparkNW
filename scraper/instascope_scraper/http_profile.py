@@ -67,8 +67,8 @@ def _page_size() -> int:
         n = int(os.getenv("SCRAPE_POSTS_PAGE_SIZE") or "12")
     except ValueError:
         n = 12
-    # Feed API is most stable at 12; allow up to 50.
-    return max(12, min(n, 50))
+    # Feed API is most stable at 12; larger counts often get silently truncated.
+    return max(12, min(n, 12))
 
 
 def _client_headers(username: str) -> dict[str, str]:

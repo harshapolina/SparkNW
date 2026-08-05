@@ -93,7 +93,14 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   const token = getToken();
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  } catch {
+    throw new Error(
+      `Cannot reach API at ${API_URL}. Check NEXT_PUBLIC_API_URL / CORS and that the API is running.`
+    );
+  }
   if (res.status === 401) {
     clearTokens();
     if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
