@@ -277,11 +277,24 @@ def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
     """True when we've collected essentially the full public timeline."""
     if not posts:
         return False
+    got = len(posts)
     if posts_count <= 0:
         # Unknown total — never treat the first profile-card page (~12) as complete.
-        return len(posts) > 12
-    # Allow tiny mismatch (deleted/hidden posts between count and feed).
-    return len(posts) >= max(posts_count - 2, 1) or len(posts) >= posts_count
+        return got > 12
+    # Allow small mismatch (deleted/hidden posts between count and feed).
+    if got >= max(posts_count - 2, 1) or got >= posts_count:
+        return True
+    # Near-complete is good enough for ACTIVE (IG count can drift)
+    if posts_count >= 20 and got >= int(posts_count * 0.9):
+        return True
+    return False
+
+
+def _is_first_page_only(posts: list[ScrapedPost], posts_count: int) -> bool:
+    """True when we only have Instagram's first profile-card page (~12)."""
+    if posts_count <= 12:
+        return False
+    return len(posts) <= 12
 
 
 async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: str | None) -> list[ScrapedPost]:
@@ -296,8 +309,6 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
 
     expected = _expected_posts_count(user)
     initial_nodes, cursor, has_next = _timeline_from_user(user)
-    # Also seed from alternate media shapes already parsed via _result_from_user
-    seed = _result_from_user(username, user).posts
     seed_nodes = initial_nodes
     all_nodes = await fetch_all_media_nodes(
         username,
@@ -320,11 +331,31 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
         seen.add(post.shortcode)
         posts.append(post)
 
-    # Keep any seed posts GraphQL might have missed field-wise
-    for p in seed:
-        if p.shortcode not in seen:
-            seen.add(p.shortcode)
-            posts.append(p)
+    # If residential proxy stalled on the first card (~12), retry once without proxy
+    if (
+        proxy_url
+        and expected > 12
+        and len(posts) <= 12
+        and os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0"
+    ):
+        try:
+            direct_nodes = await fetch_all_media_nodes(
+                username,
+                user_id=user_id,
+                initial_nodes=seed_nodes,
+                initial_cursor=cursor,
+                initial_has_next=has_next,
+                expected_count=expected,
+                proxy=None,
+            )
+            for node in direct_nodes:
+                post = _post_from_node(node)
+                if not post or post.shortcode in seen:
+                    continue
+                seen.add(post.shortcode)
+                posts.append(post)
+        except Exception:
+            pass
 
     # HTTP media-info pass for reel play counts (before browser enrich)
     try:
@@ -1111,25 +1142,14 @@ async def _scrape_live(
             if http_result and http_result.is_private:
                 return _finalize_result(http_result, path="http_private")
 
-            weak = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
-            if (
-                http_result
-                and _posts_complete(http_result.posts, http_result.posts_count)
-                and not _posts_need_view_enrich(http_result.posts, weak=weak)
-            ):
-                needs_likes = (
-                    http_result.posts
-                    and all(
-                        p.likes == 0 and p.comments == 0
-                        for p in http_result.posts[: min(6, len(http_result.posts))]
-                    )
-                )
-                if not needs_likes:
-                    return _finalize_result(http_result, path="http_full")
+            # CRITICAL: full timeline via HTTP → success immediately.
+            # Do NOT send to browser (proxy tunnel failures were flipping these to failed).
+            if http_result and _posts_complete(http_result.posts, http_result.posts_count):
+                return _finalize_result(http_result, path="http_full")
     except Exception:
         http_result = None
 
-    # 2) Browser path — optional enrich. On proxy tunnel failure, keep HTTP only if COMPLETE.
+    # 2) Browser path only when HTTP timeline is still short
     try:
         return await _scrape_live_browser(
             username,
@@ -1139,24 +1159,32 @@ async def _scrape_live(
             http_result=http_result,
         )
     except Exception as exc:
-        if http_result and _posts_complete(http_result.posts, http_result.posts_count):
+        # Prefer any HTTP result that beat the first card page
+        if http_result and not _is_first_page_only(http_result.posts, http_result.posts_count):
             http_result.raw = {
                 **(http_result.raw or {}),
                 "browser_error": str(exc)[:400],
             }
+            return _finalize_result(http_result, path="http_fallback_ok")
+        if http_result and _posts_complete(http_result.posts, http_result.posts_count):
             return _finalize_result(http_result, path="http_fallback_complete")
         if _is_tunnel_or_proxy_error(exc) and proxy is not None:
             try:
                 from instascope_scraper.http_profile import fetch_web_profile_http
 
-                proxy_url = proxy_to_httpx_url(proxy)
-                http_json = await fetch_web_profile_http(username, proxy=proxy_url)
-                user = _user_from_web_profile(http_json) if http_json else None
-                if user:
-                    posts = await _expand_all_posts(username, user, proxy_url=proxy_url)
-                    result = _result_from_user(username, user, posts_override=posts)
-                    if _posts_complete(result.posts, result.posts_count):
-                        return _finalize_result(result, path="http_after_tunnel_fail")
+                # Try with proxy, then direct
+                for use_proxy in (proxy_to_httpx_url(proxy), None):
+                    try:
+                        http_json = await fetch_web_profile_http(username, proxy=use_proxy)
+                        user = _user_from_web_profile(http_json) if http_json else None
+                        if not user:
+                            continue
+                        posts = await _expand_all_posts(username, user, proxy_url=use_proxy)
+                        result = _result_from_user(username, user, posts_override=posts)
+                        if not _is_first_page_only(result.posts, result.posts_count):
+                            return _finalize_result(result, path="http_after_tunnel_fail")
+                    except Exception:
+                        continue
             except Exception:
                 pass
         if isinstance(exc, ScrapeError):
@@ -1366,19 +1394,19 @@ async def _scrape_live_browser(
         if not _result_is_usable(result):
             raise ScrapeError("Scraped profile returned empty metrics")
 
-        # Accept near-complete timelines (>= 90% or within 2 of expected). Never accept first-card-only.
-        if not result.is_private and result.posts_count > 12:
-            got = len(result.posts)
-            expected = result.posts_count
-            if got <= 12:
+        # Only hard-fail the true first-card trap (~12 posts). Anything beyond that is ACTIVE.
+        if not result.is_private and _is_first_page_only(result.posts, result.posts_count):
+            # Prefer HTTP seed if somehow better
+            if http_result and len(http_result.posts) > len(result.posts):
+                result = http_result
+            if _is_first_page_only(result.posts, result.posts_count):
                 raise ScrapeError(
-                    f"Incomplete timeline: only {got}/{expected} posts "
+                    f"Incomplete timeline: only {len(result.posts)}/{result.posts_count} posts "
                     f"(Instagram pagination blocked). Check SCRAPE_PROXY_URL / Decodo."
                 )
-            if got < max(expected - 2, 1) and got < int(expected * 0.9):
-                # Still short but better than 12 — keep data; mark path partial for ops
-                return _finalize_result(result, path="browser_partial_ok")
-        return _finalize_result(result, path="browser_full")
+
+        path = "browser_full" if _posts_complete(result.posts, result.posts_count) else "browser_partial_ok"
+        return _finalize_result(result, path=path)
 
 
 async def scrape_profile(

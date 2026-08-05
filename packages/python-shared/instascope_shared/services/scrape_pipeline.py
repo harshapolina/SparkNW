@@ -70,22 +70,21 @@ def is_false_pymongo_failure(error: BaseException | str | None) -> bool:
 
 
 async def heal_false_pymongo_failure(profile: Profile) -> bool:
-    """If status=failed only because of get_pymongo_collection but data is good → ACTIVE.
+    """Clear bogus failed status (pymongo / incomplete-timeline) when profile has real data.
 
     Does not change metrics, posts, or scrape flow — status/last_error only.
     """
     status_val = profile.status.value if hasattr(profile.status, "value") else str(profile.status)
     if status_val != "failed":
         return False
-    if not is_false_pymongo_failure(profile.last_error):
-        return False
-    has_data = bool(
-        profile.followers
-        or profile.posts_count
-        or profile.last_success_at
-        or (isinstance(profile.insights, dict) and profile.insights)
+    err = str(profile.last_error or "")
+    soft = (
+        is_false_pymongo_failure(err)
+        or "incomplete timeline" in err.lower()
+        or "get_pymongo" in err.lower()
     )
-    if not has_data:
+    has_card = bool(profile.followers or profile.posts_count or profile.last_success_at)
+    if not (soft and has_card):
         return False
     profile.status = ProfileStatus.ACTIVE
     profile.last_error = None
@@ -282,18 +281,22 @@ async def apply_scrape_result(
 
 
 async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavailable: bool = False) -> None:
-    # Known false positive: scrape + metrics already saved, then old Beanie call crashed.
-    # Never flip a good profile to failed for this.
-    if is_false_pymongo_failure(error):
-        job.status = JobStatus.SUCCESS
-        job.error_message = None
+    # Known false positives / pagination traps must NEVER leave the profile as "failed"
+    # when Instagram card metrics (followers/posts_count) already exist.
+    soft = is_false_pymongo_failure(error) or "incomplete timeline" in str(error).lower()
+    if soft and not unavailable:
+        job.status = JobStatus.FAILED
+        job.error_message = humanize_scrape_error(error)
         job.finished_at = datetime.utcnow()
         job.updated_at = datetime.utcnow()
         await job.save()
-        profile.status = ProfileStatus.ACTIVE
+        # Keep / restore ACTIVE so the UI never shows failed+⚠️ for these cases
+        if profile.status != ProfileStatus.PAUSED:
+            profile.status = ProfileStatus.ACTIVE
         profile.last_error = None
-        profile.last_success_at = profile.last_success_at or datetime.utcnow()
         profile.last_scraped_at = datetime.utcnow()
+        if not profile.last_success_at and (profile.followers or profile.posts_count):
+            profile.last_success_at = datetime.utcnow()
         profile.updated_at = datetime.utcnow()
         student = getattr(profile, "student", None)
         if isinstance(student, dict) and student:
