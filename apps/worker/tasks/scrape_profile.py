@@ -58,14 +58,10 @@ async def _scrape(job_id: str, profile_id: str) -> dict:
             await apply_scrape_result(job=job, profile=profile, result=result.to_dict())
             return {"ok": True, "followers": result.followers}
         except Exception as exc:  # noqa: BLE001
-            from instascope_shared.services.scrape_pipeline import is_false_pymongo_failure
+            from instascope_shared.services.scrape_pipeline import is_soft_scrape_failure
 
             msg = str(exc)
-            if (
-                is_false_pymongo_failure(exc)
-                or "refusing to save" in msg.lower()
-                or "incomplete timeline" in msg.lower()
-            ):
+            if is_soft_scrape_failure(exc):
                 # Keep existing DB data intact — never wipe to zeros
                 if profile.status != ProfileStatus.PAUSED:
                     profile.status = ProfileStatus.ACTIVE

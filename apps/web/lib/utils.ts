@@ -31,9 +31,6 @@ export function formatSparkPts(n: number) {
 export function humanizeScrapeError(raw?: string | null): string {
   if (!raw?.trim()) return "Unknown error — try Refresh to scrape again.";
   const low = raw.toLowerCase();
-  if (low.includes("get_pymongo_collection") || low.includes("pymongo")) {
-    return "Temporary database issue while saving scrape. Please Refresh again.";
-  }
   if (low.includes("err_tunnel") || low.includes("tunnel_connection")) {
     return "Proxy tunnel failed opening Instagram. Check Decodo credentials, then Refresh.";
   }

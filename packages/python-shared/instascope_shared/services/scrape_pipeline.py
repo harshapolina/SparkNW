@@ -37,11 +37,9 @@ def _media_type(raw: str | None) -> MediaType:
 
 
 def humanize_scrape_error(err: BaseException | str) -> str:
-    """User-facing scrape failure text (never leak raw internal API names)."""
+    """User-facing scrape failure text."""
     raw = str(err)
     low = raw.lower()
-    if "get_pymongo_collection" in low or "pymongo" in low:
-        return "Temporary database issue while saving scrape. Please Refresh again."
     if "err_tunnel" in low or "tunnel_connection" in low:
         return "Proxy tunnel failed opening Instagram. Check Decodo credentials, then Refresh."
     if "net::err_" in low or "page.goto" in low:
@@ -50,6 +48,8 @@ def humanize_scrape_error(err: BaseException | str) -> str:
         return "Instagram showed a login wall. Verify residential proxy session."
     if "incomplete timeline" in low:
         return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
+    if "refusing to save" in low:
+        return "Scrape was incomplete and was not saved over existing data. Please Refresh again."
     if "not found" in low:
         return raw
     if len(raw) > 220:
@@ -57,34 +57,25 @@ def humanize_scrape_error(err: BaseException | str) -> str:
     return raw
 
 
-def is_false_pymongo_failure(error: BaseException | str | None) -> bool:
-    """True for the known Beanie false-positive that marked scrapes failed after success."""
+def is_soft_scrape_failure(error: BaseException | str | None) -> bool:
+    """True for non-fatal scrape issues that must not leave the profile badge as failed."""
     if error is None:
         return False
     low = str(error).lower()
     return (
-        "get_pymongo_collection" in low
-        or ("pymongo" in low and "attribute" in low)
-        or "temporary database issue while saving scrape" in low
+        "incomplete timeline" in low
+        or "refusing to save" in low
+        or ("attribute" in low and "collection" in low)  # leftover AttributeError junk in DB
     )
 
 
-async def heal_false_pymongo_failure(profile: Profile) -> bool:
-    """Clear bogus failed status (pymongo / incomplete-timeline / stale) when profile has data.
-
-    Does not change metrics, posts, or scrape flow — status/last_error only.
-    """
+async def heal_soft_scrape_failure(profile: Profile) -> bool:
+    """Clear soft/stale failed status when the profile already has real card data."""
     status_val = profile.status.value if hasattr(profile.status, "value") else str(profile.status)
     if status_val != "failed":
         return False
     err = str(profile.last_error or "")
-    soft = (
-        not err.strip()
-        or is_false_pymongo_failure(err)
-        or "incomplete timeline" in err.lower()
-        or "get_pymongo" in err.lower()
-        or "refusing to save" in err.lower()
-    )
+    soft = not err.strip() or is_soft_scrape_failure(err)
     has_card = bool(profile.followers or profile.posts_count or profile.last_success_at)
     if not (soft and has_card):
         return False
@@ -300,20 +291,13 @@ async def apply_scrape_result(
 
 
 async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavailable: bool = False) -> None:
-    # Known false positives / pagination traps must NEVER leave the profile as "failed"
-    # when Instagram card metrics (followers/posts_count) already exist.
-    soft = (
-        is_false_pymongo_failure(error)
-        or "incomplete timeline" in str(error).lower()
-        or "refusing to save" in str(error).lower()
-    )
-    if soft and not unavailable:
+    # Soft failures must NEVER leave the profile badge as "failed" when card data exists.
+    if is_soft_scrape_failure(error) and not unavailable:
         job.status = JobStatus.FAILED
         job.error_message = humanize_scrape_error(error)
         job.finished_at = datetime.utcnow()
         job.updated_at = datetime.utcnow()
         await job.save()
-        # Keep / restore ACTIVE so the UI never shows failed+⚠️ for these cases
         if profile.status != ProfileStatus.PAUSED:
             profile.status = ProfileStatus.ACTIVE
         profile.last_error = None

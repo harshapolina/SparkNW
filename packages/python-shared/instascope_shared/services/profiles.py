@@ -10,7 +10,7 @@ from fastapi import HTTPException, status
 from instascope_shared.domain.instagram import extract_username, profile_url_for
 from instascope_shared.models import Job, JobStatus, JobType, Profile, ProfileStatus
 from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse
-from instascope_shared.services.scrape_pipeline import heal_false_pymongo_failure
+from instascope_shared.services.scrape_pipeline import heal_soft_scrape_failure
 from instascope_shared.services.student_roster import merge_student
 
 
@@ -94,10 +94,10 @@ async def list_profiles(
     # for 1M scale, push filters into Mongo queries.
     profiles = await query.to_list()
 
-    # Clear stale get_pymongo_collection "failed" when scrape data is already good
+    # Clear soft/stale "failed" when scrape card data is already good
     for p in profiles:
         try:
-            await heal_false_pymongo_failure(p)
+            await heal_soft_scrape_failure(p)
         except Exception:
             pass
 
@@ -149,7 +149,7 @@ async def get_profile(user_id: str, profile_id: str) -> Profile:
     if not profile or profile.user_id != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
     try:
-        await heal_false_pymongo_failure(profile)
+        await heal_soft_scrape_failure(profile)
     except Exception:
         pass
     return profile
