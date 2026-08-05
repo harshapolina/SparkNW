@@ -53,6 +53,10 @@ def compute_post_metrics(posts: list[dict[str, Any]], *, followers: int) -> dict
             "total_likes_sampled": 0,
             "total_comments_sampled": 0,
             "total_views_sampled": 0,
+            "avg_reel_views": 0.0,
+            "total_reel_views": 0,
+            "max_reel_views": 0,
+            "reel_posts_with_views": 0,
             "posts_with_views": 0,
             "posts_without_views": 0,
             "avg_caption_length": 0.0,
@@ -75,6 +79,17 @@ def compute_post_metrics(posts: list[dict[str, Any]], *, followers: int) -> dict
 
     posts_with_views = sum(1 for p in posts if _int(p.get("views")) >= 10)
     posts_without_views = len(posts) - posts_with_views
+
+    reelish = [
+        p
+        for p in posts
+        if str(p.get("media_type") or "").lower() in {"reel", "video", "clips", "graphvideo"}
+        or bool(p.get("is_video"))
+    ]
+    reel_view_vals = [_int(p.get("views")) for p in reelish if _int(p.get("views")) >= 10]
+    avg_reel_views = float(round(mean(reel_view_vals))) if reel_view_vals else 0.0
+    total_reel_views = sum(reel_view_vals)
+    max_reel_views = max(reel_view_vals) if reel_view_vals else 0
 
     caps = [str(p.get("caption") or "") for p in posts]
     hashtags: list[str] = []
@@ -147,6 +162,10 @@ def compute_post_metrics(posts: list[dict[str, Any]], *, followers: int) -> dict
         "total_likes_sampled": sum(likes),
         "total_comments_sampled": sum(comments),
         "total_views_sampled": sum(view_vals),
+        "avg_reel_views": avg_reel_views,
+        "total_reel_views": total_reel_views,
+        "max_reel_views": max_reel_views,
+        "reel_posts_with_views": len(reel_view_vals),
         "posts_with_views": posts_with_views,
         "posts_without_views": posts_without_views,
         "avg_caption_length": round(mean([len(c) for c in caps]), 1) if caps else 0.0,
@@ -166,6 +185,6 @@ def compute_post_metrics(posts: list[dict[str, Any]], *, followers: int) -> dict
         ),
         "median_likes": float(sorted(likes)[len(likes) // 2]) if likes else 0.0,
         "max_likes": max(likes) if likes else 0,
-        "max_views": max(view_vals) if view_vals else 0,
+        "max_views": max_reel_views or (max(view_vals) if view_vals else 0),
         "min_likes": min(likes) if likes else 0,
     }

@@ -62,6 +62,10 @@ type Insights = {
   avg_likes?: number;
   avg_comments?: number;
   avg_views?: number;
+  avg_reel_views?: number;
+  total_reel_views?: number;
+  max_reel_views?: number;
+  reel_posts_with_views?: number;
   engagement_rate?: number;
   like_follower_ratio?: number;
   comment_follower_ratio?: number;
@@ -399,7 +403,9 @@ export default function ProfileDetailPage() {
               ["Posting / week", `${num(insights.posting_frequency_per_week)}`],
               ["Median likes", formatNumber(num(insights.median_likes))],
               ["Max likes", formatNumber(num(insights.max_likes))],
-              ["Max reel views", formatNumber(num(insights.max_views))],
+              ["Max reel views", formatNumber(num(insights.max_reel_views || insights.max_views))],
+              ["Avg reel views", formatNumber(num(insights.avg_reel_views || insights.avg_views))],
+              ["Total reel views", formatNumber(num(insights.total_reel_views || insights.total_views_sampled))],
               ["Min likes", formatNumber(num(insights.min_likes))],
               ["Like / follower %", `${num(insights.like_follower_ratio).toFixed(3)}%`],
               ["Comment / follower %", `${num(insights.comment_follower_ratio).toFixed(3)}%`],

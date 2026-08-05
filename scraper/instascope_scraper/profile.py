@@ -77,6 +77,36 @@ def _caption_from_node(node: dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _views_from_mapping(obj: dict[str, Any] | None) -> int:
+    """Pick the best play/view count from an IG media object.
+
+    Instagram exposes several fields; public reel UI usually matches play_count.
+    We take the MAX so we don't under-count when one field is stale/lower.
+    """
+    if not isinstance(obj, dict):
+        return 0
+    keys = (
+        "play_count",
+        "ig_play_count",
+        "video_play_count",
+        "video_view_count",
+        "view_count",
+        "fb_play_count",
+        "play_count_disabled",  # ignore non-numeric below
+    )
+    best = 0
+    for k in keys:
+        if k == "play_count_disabled":
+            continue
+        best = max(best, _parse_count(obj.get(k)))
+    # Nested shapes seen on feed / clips payloads
+    for nest_key in ("clips_metadata", "media", "video_versions", "metrics"):
+        nested = obj.get(nest_key)
+        if isinstance(nested, dict):
+            best = max(best, _views_from_mapping(nested))
+    return best
+
+
 def _post_from_node(node: dict[str, Any]) -> ScrapedPost | None:
     shortcode = node.get("shortcode") or node.get("code")
     post_id = str(node.get("id") or node.get("pk") or shortcode or "")
@@ -103,14 +133,7 @@ def _post_from_node(node: dict[str, Any]) -> ScrapedPost | None:
         or node.get("comment_count")
         or node.get("comments")
     )
-    views = _parse_count(
-        node.get("video_view_count")
-        or node.get("video_play_count")
-        or node.get("play_count")
-        or node.get("view_count")
-        or node.get("ig_play_count")
-        or 0
-    )
+    views = _views_from_mapping(node)
     # Carousel: sum play counts from video slides when parent has none
     if views < 10:
         children = (
@@ -123,13 +146,7 @@ def _post_from_node(node: dict[str, Any]) -> ScrapedPost | None:
             child = edge.get("node") if isinstance(edge, dict) and "node" in edge else edge
             if not isinstance(child, dict):
                 continue
-            child_views += _parse_count(
-                child.get("video_view_count")
-                or child.get("video_play_count")
-                or child.get("play_count")
-                or child.get("view_count")
-                or 0
-            )
+            child_views += _views_from_mapping(child)
         if child_views > views:
             views = child_views
 
@@ -440,60 +457,145 @@ async def _extract_posts_from_dom(page) -> list[ScrapedPost]:
 
 
 async def _enrich_posts(page, posts: list[ScrapedPost], *, limit: int | None = None) -> list[ScrapedPost]:
-    """Open individual post pages to fill likes/comments/views when missing.
+    """Open individual post/reel pages to fill likes/comments/views.
 
-    By default enriches every post that is missing engagement details
-    (SCRAPE_ENRICH_MAX=0). Set SCRAPE_ENRICH_MAX to cap for very large profiles.
+    Reels always get a view/play-count pass when views look missing or weak,
+    because feed payloads often under-report play_count vs the public UI.
     """
     if limit is None:
         limit = _enrich_limit(len(posts))
     delay = float(os.getenv("SCRAPE_ENRICH_DELAY_SECONDS") or "0.9")
+    # Reels with "some" views can still be under-counted; re-check below this bar
+    weak_views = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
     enriched: list[ScrapedPost] = []
     visited = 0
+
     for post in posts:
+        is_reelish = post.media_type in {"reel", "video"} or post.is_video
+        needs_views = is_reelish and post.views < weak_views
+        needs_eng = post.likes == 0 and post.comments == 0
         if visited >= limit:
             enriched.append(post)
             continue
-        # Still open reels/videos if views are missing (likes alone are not enough)
-        needs_views = (post.media_type in {"reel", "video"} or post.is_video) and post.views < 10
-        if (post.likes or post.comments) and not needs_views:
+        if not needs_views and not needs_eng:
             enriched.append(post)
             continue
-        if post.views >= 10 and (post.likes or post.comments):
+        if post.views >= weak_views and (post.likes or post.comments) and not needs_views:
             enriched.append(post)
             continue
+
         visited += 1
         try:
-            resp = await page.goto(post.permalink, wait_until="domcontentloaded", timeout=30_000)
+            resp = await page.goto(post.permalink, wait_until="domcontentloaded", timeout=45_000)
             await asyncio.sleep(delay)
             if resp and resp.status == 404:
                 enriched.append(post)
                 continue
-            meta = await page.locator('meta[name="description"]').get_attribute("content")
+
             likes = comments = views = 0
+            meta = await page.locator('meta[name="description"]').get_attribute("content")
             if meta:
-                # Examples vary: "1,234 Likes, 56 Comments - caption"
                 lm = re.search(r"([\d.,]+[KMB]?)\s+Likes?", meta, flags=re.I)
                 cm = re.search(r"([\d.,]+[KMB]?)\s+Comments?", meta, flags=re.I)
-                vm = re.search(r"([\d.,]+[KMB]?)\s+views?", meta, flags=re.I)
+                # "95.1K views" / "167,000 plays" / "167K plays"
+                vm = re.search(
+                    r"([\d.,]+[KMB]?)\s+(?:views?|plays?|video views?)",
+                    meta,
+                    flags=re.I,
+                )
                 if lm:
                     likes = _parse_count(lm.group(1))
                 if cm:
                     comments = _parse_count(cm.group(1))
                 if vm:
                     views = _parse_count(vm.group(1))
+
+            # Pull play_count from embedded JSON / media info API (most accurate for reels)
+            try:
+                extracted = await page.evaluate(
+                    """async ({ shortcode, mediaId }) => {
+                      const pick = (obj) => {
+                        if (!obj || typeof obj !== 'object') return 0;
+                        const keys = ['play_count','ig_play_count','video_play_count','video_view_count','view_count'];
+                        let best = 0;
+                        for (const k of keys) {
+                          const n = Number(obj[k]);
+                          if (Number.isFinite(n) && n > best) best = n;
+                        }
+                        return best;
+                      };
+                      let best = 0;
+                      // 1) media info by pk
+                      if (mediaId) {
+                        try {
+                          const res = await fetch(`/api/v1/media/${mediaId}/info/`, {
+                            credentials: 'include',
+                            headers: { 'X-IG-App-ID': '936619743392459', 'X-Requested-With': 'XMLHttpRequest' },
+                          });
+                          if (res.ok) {
+                            const json = await res.json();
+                            const items = json.items || [];
+                            for (const it of items) best = Math.max(best, pick(it));
+                          }
+                        } catch (e) {}
+                      }
+                      // 2) scan script tags for play_count near shortcode
+                      try {
+                        const scripts = Array.from(document.querySelectorAll('script'));
+                        const re = /"play_count"\\s*:\\s*(\\d+)/g;
+                        for (const s of scripts) {
+                          const t = s.textContent || '';
+                          if (shortcode && !t.includes(shortcode) && !t.includes('play_count')) continue;
+                          let m;
+                          while ((m = re.exec(t)) !== null) {
+                            const n = Number(m[1]);
+                            if (n > best) best = n;
+                          }
+                          const re2 = /"video_view_count"\\s*:\\s*(\\d+)/g;
+                          while ((m = re2.exec(t)) !== null) {
+                            const n = Number(m[1]);
+                            if (n > best) best = n;
+                          }
+                        }
+                      } catch (e) {}
+                      // 3) visible "X views" / "X plays" text
+                      try {
+                        const body = document.body ? document.body.innerText : '';
+                        const m = body.match(/([\\d.,]+\\s*[KMB]?)\\s+(views|plays)/i);
+                        if (m) {
+                          const raw = m[1].replace(/,/g, '').trim().toUpperCase();
+                          let mult = 1;
+                          let num = raw;
+                          if (raw.endsWith('K')) { mult = 1e3; num = raw.slice(0, -1); }
+                          else if (raw.endsWith('M')) { mult = 1e6; num = raw.slice(0, -1); }
+                          else if (raw.endsWith('B')) { mult = 1e9; num = raw.slice(0, -1); }
+                          const n = Math.round(parseFloat(num) * mult);
+                          if (Number.isFinite(n) && n > best) best = n;
+                        }
+                      } catch (e) {}
+                      return best;
+                    }""",
+                    {"shortcode": post.shortcode, "mediaId": post.ig_post_id},
+                )
+                if isinstance(extracted, (int, float)) and int(extracted) > views:
+                    views = int(extracted)
+            except Exception:
+                pass
+
             og_image = await page.locator('meta[property="og:image"]').get_attribute("content")
             enriched.append(
                 ScrapedPost(
                     ig_post_id=post.ig_post_id,
                     shortcode=post.shortcode,
                     media_type=post.media_type,
-                    caption=post.caption or (meta.split("-", 1)[-1].strip() if meta and "-" in meta else post.caption),
+                    caption=post.caption
+                    or (meta.split("-", 1)[-1].strip() if meta and "-" in meta else post.caption),
                     thumbnail_url=og_image or post.thumbnail_url,
                     permalink=post.permalink,
                     likes=likes or post.likes,
                     comments=comments or post.comments,
-                    views=views or post.views,
+                    # Never downgrade a better feed view count
+                    views=max(views, post.views),
                     posted_at=post.posted_at,
                     is_video=post.is_video,
                     accessibility_caption=post.accessibility_caption,
@@ -868,17 +970,23 @@ async def _scrape_live(
             if dom_posts:
                 result.posts = dom_posts
 
-        # Enrich only posts still missing engagement (feed items usually have counts)
+        # Enrich reels for accurate play counts (feed often under-reports vs IG UI)
         if result.posts and not result.is_private:
+            weak = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
             missing = [
                 p
                 for p in result.posts
                 if (p.likes == 0 and p.comments == 0)
-                or ((p.media_type in {"reel", "video"} or p.is_video) and p.views < 10)
+                or ((p.media_type in {"reel", "video"} or p.is_video) and p.views < weak)
             ]
+            # Prefer reels first so max/avg views match Instagram
+            missing.sort(
+                key=lambda p: 0 if (p.media_type in {"reel", "video"} or p.is_video) else 1
+            )
             enrich_cap_env = int(os.getenv("SCRAPE_ENRICH_MAX") or "0")
             if enrich_cap_env <= 0:
-                enrich_cap = min(len(missing), 40)
+                # Small accounts: enrich everything; larger: up to 80
+                enrich_cap = len(missing) if len(result.posts) <= 40 else min(len(missing), 80)
             else:
                 enrich_cap = min(enrich_cap_env, len(missing))
             if missing and enrich_cap > 0:
