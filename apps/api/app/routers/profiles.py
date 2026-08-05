@@ -93,45 +93,60 @@ async def refresh_profile(profile_id: str, user: User = Depends(get_current_user
     """Enqueue scrape on the Celery worker — never block/crash the API with Playwright."""
     from datetime import datetime
 
-    from instascope_shared.models import JobStatus
+    from instascope_shared.models import Job, JobStatus, JobType
 
-    profile = await profile_service.get_profile(str(user.id), profile_id)
-    jobs = await profile_service.enqueue_refresh(str(user.id), [str(profile.id)], priority=1)
-    if not jobs:
-        raise HTTPException(status_code=500, detail="Could not create scrape job")
+    try:
+        profile = await profile_service.get_profile(str(user.id), profile_id)
+        jobs = await profile_service.enqueue_refresh(str(user.id), [str(profile.id)], priority=1)
+        if not jobs:
+            # Last-resort job create
+            job = Job(
+                user_id=str(user.id),
+                profile_id=str(profile.id),
+                job_type=JobType.SCRAPE_PROFILE,
+                status=JobStatus.PENDING,
+                priority=1,
+            )
+            await job.insert()
+            jobs = [job]
 
-    job = jobs[0]
-    dispatched = _dispatch_jobs([job])
-    if dispatched and getattr(job, "celery_task_id", None):
-        try:
-            await job.save()
-        except Exception:
-            pass
-
-    if not dispatched:
-        # Celery/redis down — fall back to background task (still non-blocking for CORS/UI)
-        async def _bg(pid: str) -> None:
+        job = jobs[0]
+        dispatched = _dispatch_jobs([job])
+        if dispatched and getattr(job, "celery_task_id", None):
             try:
-                fresh = await Profile.get(pid)
-                if fresh:
-                    await scrape_profile_inline(fresh)
+                await job.save()
             except Exception:
-                return
+                pass
 
-        asyncio.create_task(_bg(str(profile.id)))
+        if not dispatched:
+            # Celery/redis down — fall back to background task (non-blocking)
+            async def _bg(pid: str) -> None:
+                try:
+                    fresh = await Profile.get(pid)
+                    if fresh:
+                        await scrape_profile_inline(fresh)
+                except Exception:
+                    return
 
-    return [
-        JobResponse(
-            id=str(job.id),
-            profile_id=str(profile.id),
-            job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
-            status=JobStatus.PENDING.value,
-            attempts=int(getattr(job, "attempts", 0) or 0),
-            error_message=None,
-            created_at=getattr(job, "created_at", None) or datetime.utcnow(),
-            finished_at=None,
-        )
-    ]
+            asyncio.create_task(_bg(str(profile.id)))
+
+        return [
+            JobResponse(
+                id=str(job.id),
+                profile_id=str(profile.id),
+                job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
+                status=JobStatus.PENDING.value,
+                attempts=int(getattr(job, "attempts", 0) or 0),
+                error_message=None,
+                created_at=getattr(job, "created_at", None) or datetime.utcnow(),
+                finished_at=None,
+            )
+        ]
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Never surface as opaque CORS "Failed to fetch" — return a clear JSON error
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {str(exc)[:240]}") from exc
 
 
 @router.post("/{profile_id}/pause", response_model=ProfileResponse)

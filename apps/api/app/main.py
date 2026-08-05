@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.routers import analytics, auth, notifications, profiles, settings, spark
 from instascope_shared.core.config import get_settings
@@ -13,6 +14,25 @@ async def lifespan(_app: FastAPI):
     await connect_db()
     yield
     await close_db()
+
+
+def _cors_headers(request: Request, origins: list[str]) -> dict[str, str]:
+    origin = request.headers.get("origin") or ""
+    allow = origin if origin in origins else (origins[0] if origins else "*")
+    # Always echo request origin when it matches our host regex (prod IP / localhost)
+    if origin and (
+        origin in origins
+        or "62.238.57.52" in origin
+        or "localhost" in origin
+        or "127.0.0.1" in origin
+    ):
+        allow = origin
+    return {
+        "Access-Control-Allow-Origin": allow,
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "*",
+        "Access-Control-Allow-Headers": "*",
+    }
 
 
 def create_app() -> FastAPI:
@@ -46,13 +66,27 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=origins,
+        allow_origins=origins or ["*"],
         allow_origin_regex=r"https?://(localhost|127\.0\.0\.1|62\.238\.57\.52)(:\d+)?",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
         expose_headers=["*"],
     )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        """Ensure CORS headers exist even on 500s (browser otherwise shows 'Failed to fetch')."""
+        from fastapi import HTTPException
+        from fastapi.exceptions import RequestValidationError
+
+        if isinstance(exc, (HTTPException, RequestValidationError)):
+            raise exc
+        return JSONResponse(
+            status_code=500,
+            content={"detail": str(exc)[:400] or "Internal server error"},
+            headers=_cors_headers(request, origins),
+        )
 
     prefix = cfg.api_prefix
     app.include_router(auth.router, prefix=prefix)
@@ -65,6 +99,10 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         return {"status": "ok", "service": cfg.app_name}
+
+    @app.options("/{full_path:path}")
+    async def preflight(full_path: str, request: Request):
+        return JSONResponse(content={"ok": True}, headers=_cors_headers(request, origins))
 
     return app
 

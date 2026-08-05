@@ -70,7 +70,7 @@ def is_false_pymongo_failure(error: BaseException | str | None) -> bool:
 
 
 async def heal_false_pymongo_failure(profile: Profile) -> bool:
-    """Clear bogus failed status (pymongo / incomplete-timeline) when profile has real data.
+    """Clear bogus failed status (pymongo / incomplete-timeline / stale) when profile has data.
 
     Does not change metrics, posts, or scrape flow — status/last_error only.
     """
@@ -79,9 +79,11 @@ async def heal_false_pymongo_failure(profile: Profile) -> bool:
         return False
     err = str(profile.last_error or "")
     soft = (
-        is_false_pymongo_failure(err)
+        not err.strip()
+        or is_false_pymongo_failure(err)
         or "incomplete timeline" in err.lower()
         or "get_pymongo" in err.lower()
+        or "refusing to save" in err.lower()
     )
     has_card = bool(profile.followers or profile.posts_count or profile.last_success_at)
     if not (soft and has_card):
@@ -109,7 +111,24 @@ async def apply_scrape_result(
     posts_count = int(result.get("posts_count") or 0)
 
     posts_data: list[dict[str, Any]] = result.get("posts") or []
+
+    # NEVER wipe a good profile with an empty / first-card (~12) scrape
+    if posts_count > 12 and len(posts_data) <= 12:
+        raise ValueError(
+            f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count} posts)"
+        )
+    if followers <= 0 and posts_count <= 0 and not posts_data:
+        raise ValueError("Refusing to save empty scrape result")
+
     metrics = compute_post_metrics(posts_data, followers=followers)
+    # Guard: never replace real insights with an all-zero metrics blob
+    if (
+        int(metrics.get("sampled_posts") or 0) == 0
+        and isinstance(profile.insights, dict)
+        and int((profile.insights or {}).get("sampled_posts") or 0) > 0
+    ):
+        raise ValueError("Refusing to overwrite insights with empty metrics")
+
     avg_likes = float(metrics["avg_likes"])
     avg_views = float(metrics["avg_views"])
     avg_comments = float(metrics["avg_comments"])
@@ -283,7 +302,11 @@ async def apply_scrape_result(
 async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavailable: bool = False) -> None:
     # Known false positives / pagination traps must NEVER leave the profile as "failed"
     # when Instagram card metrics (followers/posts_count) already exist.
-    soft = is_false_pymongo_failure(error) or "incomplete timeline" in str(error).lower()
+    soft = (
+        is_false_pymongo_failure(error)
+        or "incomplete timeline" in str(error).lower()
+        or "refusing to save" in str(error).lower()
+    )
     if soft and not unavailable:
         job.status = JobStatus.FAILED
         job.error_message = humanize_scrape_error(error)
