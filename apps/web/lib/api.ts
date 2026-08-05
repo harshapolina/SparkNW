@@ -96,9 +96,11 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   let res: Response;
   try {
     res = await fetch(`${API_URL}${path}`, { ...options, headers });
-  } catch {
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    // Native fetch throws TypeError("Failed to fetch") on network/CORS/timeout aborts
     throw new Error(
-      `Cannot reach API at ${API_URL}. Check NEXT_PUBLIC_API_URL / CORS and that the API is running.`
+      `Cannot reach API at ${API_URL} (${cause}). Check NEXT_PUBLIC_API_URL / CORS, that the API is running, and that long scrapes are not blocking the request.`
     );
   }
   if (res.status === 401) {

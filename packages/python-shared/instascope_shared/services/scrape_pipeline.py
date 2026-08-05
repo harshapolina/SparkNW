@@ -109,6 +109,15 @@ async def apply_scrape_result(
 
     posts_data: list[dict[str, Any]] = result.get("posts") or []
 
+    # Login-wall / rate-limit scrapes often return full posts but followers=0.
+    # Never wipe known card metrics with zeros when the timeline itself is good.
+    if followers <= 0 and profile.followers > 0:
+        followers = int(profile.followers)
+    if following <= 0 and profile.following > 0:
+        following = int(profile.following)
+    if posts_count <= 0 and len(posts_data) > 0:
+        posts_count = max(int(profile.posts_count or 0), len(posts_data))
+
     # NEVER wipe a good profile with an incomplete / empty scrape
     if posts_count > 0 and len(posts_data) < (
         posts_count if posts_count <= 12 else max(posts_count - 2, 1)

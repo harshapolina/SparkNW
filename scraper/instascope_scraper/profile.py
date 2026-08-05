@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
+import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from instascope_scraper.browser import browser_session
 from instascope_scraper.types import ProxyConfig, ScrapedPost, ScrapeResult, proxy_to_httpx_url
+
+logger = logging.getLogger("instascope.scraper.profile")
 
 
 class ScrapeError(Exception):
@@ -317,11 +321,21 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
 
     user_id = str(user.get("id") or user.get("pk") or "")
     if not user_id:
+        logger.warning("expand @%s: missing user_id — returning card edges only", username)
         return _result_from_user(username, user).posts
 
     expected = _expected_posts_count(user)
     initial_nodes, cursor, has_next = _timeline_from_user(user)
     posts = _posts_from_nodes(initial_nodes)
+    logger.info(
+        "expand @%s start expected=%s initial=%s has_next=%s cursor=%s proxy=%s",
+        username,
+        expected,
+        len(posts),
+        has_next,
+        (cursor or "")[:48],
+        bool(proxy_url),
+    )
 
     def _seed_nodes_from_posts(items: list[ScrapedPost]) -> list[dict[str, Any]]:
         """Re-seed pagination from posts we already have (continue past page 1)."""
@@ -370,9 +384,24 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
                 )
                 before = len(posts)
                 posts = _merge_posts(posts, _posts_from_nodes(all_nodes))
+                logger.info(
+                    "expand @%s round=%s proxy=%s before=%s after=%s expected=%s",
+                    username,
+                    round_i,
+                    bool(pxy),
+                    before,
+                    len(posts),
+                    expected,
+                )
                 if len(posts) > before:
                     progressed = True
             except Exception:
+                logger.exception(
+                    "expand @%s round=%s proxy=%s FAILED",
+                    username,
+                    round_i,
+                    bool(pxy),
+                )
                 continue
 
         if expected > 0 and _posts_complete(posts, expected):
@@ -383,6 +412,13 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
             stagnant_rounds += 1
             # Keep trying a few no-progress rounds — IG often needs a fresh session
             if stagnant_rounds >= 3 and round_i >= 2:
+                logger.warning(
+                    "expand @%s giving up after stagnant_rounds=%s collected=%s/%s",
+                    username,
+                    stagnant_rounds,
+                    len(posts),
+                    expected,
+                )
                 break
         await asyncio.sleep(0.8 + round_i * 0.6)
 
@@ -390,8 +426,9 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
     try:
         posts = await _enrich_views_via_http(posts, username=username, proxy_url=proxy_url)
     except Exception:
-        pass
+        logger.exception("expand @%s view enrich failed", username)
 
+    logger.info("expand @%s done collected=%s expected=%s", username, len(posts), expected)
     return posts
 
 
@@ -738,59 +775,182 @@ async def _enrich_posts(page, posts: list[ScrapedPost], *, limit: int | None = N
     return enriched
 
 
-async def _scroll_collect_all_posts(page, *, posts_count: int, existing: list[ScrapedPost]) -> list[ScrapedPost]:
-    """Infinite-scroll the profile grid until all public posts are visible in the DOM."""
+async def _scroll_collect_all_posts(page, *, posts_count: int, existing: list[ScrapedPost], username: str = "") -> list[ScrapedPost]:
+    """Infinite-scroll the profile grid until all public posts are visible in the DOM.
+
+    Stop ONLY when ALL of these are true for consecutive stagnant scrolls:
+      - no new posts
+      - page height unchanged
+      - no new GraphQL/feed network requests
+      - no new DOM nodes
+    Never stop merely because 12 posts exist.
+    """
     from instascope_scraper.http_profile import _max_posts
 
     hard_cap = _max_posts()
     target = min(posts_count if posts_count > 0 else hard_cap, hard_cap)
     merged = list(existing)
     seen = {p.shortcode for p in merged}
-    stagnant = 0
+    scroll_delay = float(os.getenv("SCRAPE_SCROLL_DELAY_SECONDS") or "1.1")
     # ~12 posts per scroll batch; allow plenty of room for slow lazy-loads
     max_scrolls = max(80, (target // 2) + 40)
-    scroll_delay = float(os.getenv("SCRAPE_SCROLL_DELAY_SECONDS") or "1.1")
+    # Require several fully-idle scrolls before declaring end-of-feed
+    idle_needed = max(3, int(os.getenv("SCRAPE_SCROLL_IDLE_STREAK") or "5"))
+    idle_streak = 0
 
-    for i in range(max_scrolls):
-        if target > 0 and len(merged) >= target:
-            break
-        # Progressive scroll — IG lazy-loads better than a single jump to bottom
-        await page.evaluate(
-            """(step) => {
+    net_feed = {"count": 0}
+    net_gql = {"count": 0}
+
+    def _on_request(req) -> None:
+        u = req.url or ""
+        if "/api/v1/feed/user/" in u:
+            net_feed["count"] += 1
+        elif "graphql" in u:
+            net_gql["count"] += 1
+
+    page.on("request", _on_request)
+
+    async def _dom_stats() -> dict[str, int]:
+        return await page.evaluate(
+            """() => {
+              const anchors = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'));
+              const seen = new Set();
+              for (const a of anchors) {
+                const m = (a.getAttribute('href') || '').match(/\\/(p|reel)\\/([^\\/]+)/);
+                if (m) seen.add(m[2]);
+              }
               const h = Math.max(
-                document.body.scrollHeight,
-                document.documentElement.scrollHeight
+                document.body ? document.body.scrollHeight : 0,
+                document.documentElement ? document.documentElement.scrollHeight : 0
               );
-              window.scrollTo(0, Math.min(h, (step + 1) * (window.innerHeight * 0.9)));
-              if (step % 3 === 2) window.scrollTo(0, h);
-            }""",
-            i,
+              return {
+                posts: seen.size,
+                height: h,
+                nodes: document.querySelectorAll('*').length,
+                locator: anchors.length,
+              };
+            }"""
         )
-        await asyncio.sleep(scroll_delay)
-        # Dismiss "See more" / load-more style buttons if present
+
+    logger.info(
+        "scroll @%s start existing=%s target=%s max_scrolls=%s idle_needed=%s",
+        username,
+        len(merged),
+        target,
+        max_scrolls,
+        idle_needed,
+    )
+
+    try:
+        for i in range(max_scrolls):
+            if target > 0 and len(merged) >= target:
+                logger.info("scroll @%s reached target=%s collected=%s", username, target, len(merged))
+                break
+
+            before_posts = len(merged)
+            before_feed = net_feed["count"]
+            before_gql = net_gql["count"]
+            before_stats = await _dom_stats()
+
+            await page.evaluate(
+                """(step) => {
+                  const h = Math.max(
+                    document.body.scrollHeight,
+                    document.documentElement.scrollHeight
+                  );
+                  window.scrollTo(0, Math.min(h, (step + 1) * (window.innerHeight * 0.9)));
+                  if (step % 3 === 2) window.scrollTo(0, h);
+                }""",
+                i,
+            )
+            await asyncio.sleep(scroll_delay)
+
+            # Dismiss "See more" / load-more style buttons if present
+            try:
+                for label in ("See more", "Show more", "Load more"):
+                    btn = page.get_by_role("button", name=re.compile(label, re.I))
+                    if await btn.count():
+                        await btn.first.click(timeout=1500)
+                        await asyncio.sleep(0.4)
+            except Exception:
+                logger.debug("scroll @%s load-more click skipped\n%s", username, traceback.format_exc())
+
+            dom_posts = await _extract_posts_from_dom(page)
+            added = 0
+            for dp in dom_posts:
+                if dp.shortcode in seen:
+                    continue
+                merged.append(dp)
+                seen.add(dp.shortcode)
+                added += 1
+
+            after_stats = await _dom_stats()
+            height_changed = after_stats["height"] != before_stats["height"]
+            nodes_changed = after_stats["nodes"] != before_stats["nodes"]
+            locator_changed = after_stats["locator"] != before_stats["locator"]
+            feed_new = net_feed["count"] - before_feed
+            gql_new = net_gql["count"] - before_gql
+            network_active = (feed_new + gql_new) > 0
+            new_posts = len(merged) - before_posts
+
+            logger.info(
+                "scroll @%s n=%s posts=%s (+%s) height=%s (changed=%s) "
+                "dom_nodes=%s (changed=%s) locators=%s (changed=%s) "
+                "feed_reqs=+%s gql_reqs=+%s network_active=%s target=%s",
+                username,
+                i + 1,
+                len(merged),
+                new_posts,
+                after_stats["height"],
+                height_changed,
+                after_stats["nodes"],
+                nodes_changed,
+                after_stats["locator"],
+                locator_changed,
+                feed_new,
+                gql_new,
+                network_active,
+                target,
+            )
+
+            fully_idle = (
+                new_posts == 0
+                and not height_changed
+                and not network_active
+                and not nodes_changed
+            )
+            if fully_idle:
+                idle_streak += 1
+                logger.info(
+                    "scroll @%s idle_streak=%s/%s (no posts/height/network/dom)",
+                    username,
+                    idle_streak,
+                    idle_needed,
+                )
+                if idle_streak >= idle_needed:
+                    logger.info(
+                        "scroll @%s END — idle conditions met collected=%s/%s",
+                        username,
+                        len(merged),
+                        target,
+                    )
+                    break
+            else:
+                idle_streak = 0
+    finally:
         try:
-            for label in ("See more", "Show more", "Load more"):
-                btn = page.get_by_role("button", name=re.compile(label, re.I))
-                if await btn.count():
-                    await btn.first.click(timeout=1500)
-                    await asyncio.sleep(0.4)
+            page.remove_listener("request", _on_request)
         except Exception:
             pass
-        dom_posts = await _extract_posts_from_dom(page)
-        added = 0
-        for dp in dom_posts:
-            if dp.shortcode in seen:
-                continue
-            merged.append(dp)
-            seen.add(dp.shortcode)
-            added += 1
-        if added == 0:
-            stagnant += 1
-            if stagnant >= 8:
-                break
-        else:
-            stagnant = 0
 
+    logger.info(
+        "scroll @%s finished collected=%s target=%s feed_total=%s gql_total=%s",
+        username,
+        len(merged),
+        target,
+        net_feed["count"],
+        net_gql["count"],
+    )
     return merged
 
 
@@ -827,6 +987,15 @@ async def _collect_full_timeline_in_browser(
     rounds = 0
     max_rounds = max(25, (expected_count // 6) + 15 if expected_count else 30)
     scroll_delay = float(os.getenv("SCRAPE_SCROLL_DELAY_SECONDS") or "1.0")
+    logger.info(
+        "browser_timeline @%s start existing=%s expected=%s media_nodes=%s cursors=%s max_rounds=%s",
+        username,
+        len(posts),
+        expected_count,
+        len(media_nodes),
+        len(feed_cursors),
+        max_rounds,
+    )
 
     while rounds < max_rounds and not _posts_complete(posts, expected_count):
         rounds += 1
@@ -834,19 +1003,20 @@ async def _collect_full_timeline_in_browser(
 
         posts = _merge_media_nodes_into_posts(posts, media_nodes)
 
-        if user_id:
-            try:
-                posts = await _paginate_feed_in_browser(
-                    page,
-                    user_id=user_id,
-                    username=username,
-                    expected_count=expected_count,
-                    existing=posts,
-                )
-            except Exception:
-                pass
+        # Username feed works without user_id; id path is a secondary fallback inside.
+        try:
+            posts = await _paginate_feed_in_browser(
+                page,
+                user_id=user_id or "0",
+                username=username,
+                expected_count=expected_count,
+                existing=posts,
+            )
+        except Exception:
+            logger.exception("browser_timeline @%s paginate_feed failed round=%s", username, rounds)
 
         if _posts_complete(posts, expected_count):
+            logger.info("browser_timeline @%s complete after feed paginate posts=%s", username, len(posts))
             break
 
         if feed_cursors and user_id:
@@ -864,12 +1034,19 @@ async def _collect_full_timeline_in_browser(
                           'X-Requested-With': 'XMLHttpRequest',
                         },
                       });
-                      if (!res.ok) return null;
+                      if (!res.ok) return { __error: true, status: res.status, text: await res.text() };
                       return await res.json();
                     }""",
                     {"userId": str(user_id), "maxId": cursor},
                 )
-                if isinstance(forced, dict):
+                if isinstance(forced, dict) and forced.get("__error"):
+                    logger.warning(
+                        "browser_timeline @%s forced feed HTTP %s body=%r",
+                        username,
+                        forced.get("status"),
+                        str(forced.get("text") or "")[:180],
+                    )
+                elif isinstance(forced, dict):
                     for item in forced.get("items") or []:
                         if isinstance(item, dict):
                             media_nodes.append(item)
@@ -879,7 +1056,7 @@ async def _collect_full_timeline_in_browser(
                         if text and text not in feed_cursors:
                             feed_cursors.append(text)
             except Exception:
-                pass
+                logger.exception("browser_timeline @%s forced feed cursor failed", username)
             posts = _merge_media_nodes_into_posts(posts, media_nodes)
 
         if _posts_complete(posts, expected_count):
@@ -898,14 +1075,21 @@ async def _collect_full_timeline_in_browser(
                 rounds,
             )
             await asyncio.sleep(scroll_delay)
-            # Lightweight DOM harvest each round (full scroll pass is done once below)
             for dp in await _extract_posts_from_dom(page):
                 if dp.shortcode not in {p.shortcode for p in posts}:
                     posts.append(dp)
         except Exception:
-            pass
+            logger.exception("browser_timeline @%s scroll/DOM harvest failed round=%s", username, rounds)
 
         posts = _merge_media_nodes_into_posts(posts, media_nodes)
+        logger.info(
+            "browser_timeline @%s round=%s posts=%s (+%s) expected=%s",
+            username,
+            rounds,
+            len(posts),
+            len(posts) - before,
+            expected_count,
+        )
 
         if len(posts) <= before:
             if rounds <= 2:
@@ -923,19 +1107,32 @@ async def _collect_full_timeline_in_browser(
                     )
                     await asyncio.sleep(scroll_delay)
                 except Exception:
-                    pass
+                    logger.exception("browser_timeline @%s reels/profile reload failed", username)
                 continue
+            logger.warning(
+                "browser_timeline @%s no progress round=%s posts=%s — breaking to full scroll",
+                username,
+                rounds,
+                len(posts),
+            )
             break
 
     if not _posts_complete(posts, expected_count):
         try:
             posts = await _scroll_collect_all_posts(
-                page, posts_count=expected_count, existing=posts
+                page, posts_count=expected_count, existing=posts, username=username
             )
         except Exception:
-            pass
+            logger.exception("browser_timeline @%s full scroll collect failed", username)
         posts = _merge_media_nodes_into_posts(posts, media_nodes)
 
+    logger.info(
+        "browser_timeline @%s done posts=%s expected=%s complete=%s",
+        username,
+        len(posts),
+        expected_count,
+        _posts_complete(posts, expected_count),
+    )
     return posts
 
 
@@ -947,10 +1144,11 @@ async def _paginate_feed_in_browser(
     expected_count: int,
     existing: list[ScrapedPost],
 ) -> list[ScrapedPost]:
-    """Paginate /api/v1/feed/user/{id}/ inside the browser (uses real IG cookies).
+    """Paginate /api/v1/feed/user/{username}/username/ inside the browser (real IG cookies).
 
+    Username feed path works anonymously; /feed/user/{id}/ often returns 401 require_login.
     This is the reliable path when standalone httpx feed calls only return the
-    first profile-card page (~12 posts).
+    first profile-card page (~12 posts) or hit rate limits.
     """
     from instascope_scraper.http_profile import (
         _cursor_from_node,
@@ -969,7 +1167,6 @@ async def _paginate_feed_in_browser(
     max_id: str | None = None
     # Jump past the first card page using the last known media id
     if merged:
-        # ScrapedPost.ig_post_id is the media id / pk
         last_id = merged[-1].ig_post_id
         if last_id:
             text = str(last_id).split("_", 1)[0]
@@ -981,6 +1178,15 @@ async def _paginate_feed_in_browser(
     page_size = _page_size()
     max_pages = max(80, (limit // max(page_size, 1)) + 40)
 
+    logger.info(
+        "browser_feed @%s start have=%s expected=%s seed_max_id=%s max_pages=%s",
+        username,
+        len(merged),
+        expected_count,
+        max_id,
+        max_pages,
+    )
+
     while more and _still_short(len(merged), limit=limit, expected_count=expected_count) and stagnant < 8 and pages < max_pages:
         pages += 1
         if pages > 1:
@@ -990,11 +1196,12 @@ async def _paginate_feed_in_browser(
             """async ({ userId, username, maxId, count }) => {
               const q = new URLSearchParams({ count: String(count) });
               if (maxId) q.set('max_id', String(maxId));
+              // Username path first — id path returns 401 anonymously
               const paths = [
                 `/api/v1/feed/user/${encodeURIComponent(username)}/username/?${q.toString()}`,
                 `/api/v1/feed/user/${userId}/?${q.toString()}`,
-                `https://www.instagram.com/api/v1/feed/user/${userId}/?${q.toString()}`,
               ];
+              const errors = [];
               for (const url of paths) {
                 try {
                   const res = await fetch(url, {
@@ -1006,12 +1213,25 @@ async def _paginate_feed_in_browser(
                       'Accept': '*/*',
                     },
                   });
-                  if (!res.ok) continue;
-                  const json = await res.json();
-                  if (json && (json.items || json.status === 'ok')) return json;
-                } catch (e) {}
+                  const text = await res.text();
+                  if (!res.ok) {
+                    errors.push({ url: url.slice(0, 100), status: res.status, body: text.slice(0, 160) });
+                    continue;
+                  }
+                  let json;
+                  try { json = JSON.parse(text); } catch (e) {
+                    errors.push({ url: url.slice(0, 100), status: res.status, body: text.slice(0, 160), parse: String(e) });
+                    continue;
+                  }
+                  if (json && (json.items || json.profile_grid_items || json.status === 'ok')) {
+                    return json;
+                  }
+                  errors.push({ url: url.slice(0, 100), status: res.status, body: text.slice(0, 160) });
+                } catch (e) {
+                  errors.push({ url: url.slice(0, 100), fetch_error: String(e) });
+                }
               }
-              return { __error: true, items: [], more_available: false };
+              return { __error: true, errors, items: [], more_available: false };
             }""",
             {
                 "userId": str(user_id),
@@ -1023,13 +1243,31 @@ async def _paginate_feed_in_browser(
 
         if not isinstance(payload, dict) or payload.get("__error"):
             stagnant += 1
+            logger.warning(
+                "browser_feed @%s page=%s FAILED stagnant=%s max_id=%s errors=%s",
+                username,
+                pages,
+                stagnant,
+                max_id,
+                json.dumps(payload.get("errors") if isinstance(payload, dict) else payload)[:400],
+            )
             continue
 
         items = payload.get("items") or []
         if not isinstance(items, list):
             items = []
+        if not items:
+            for entry in payload.get("profile_grid_items") or []:
+                if isinstance(entry, dict):
+                    media = entry.get("media") if isinstance(entry.get("media"), dict) else entry
+                    if isinstance(media, dict):
+                        items.append(media)
 
-        next_max = payload.get("next_max_id") or payload.get("max_id")
+        next_max = (
+            payload.get("next_max_id")
+            or payload.get("max_id")
+            or payload.get("profile_grid_items_cursor")
+        )
         paging = payload.get("paging_info")
         if next_max is None and isinstance(paging, dict):
             next_max = paging.get("max_id")
@@ -1040,7 +1278,6 @@ async def _paginate_feed_in_browser(
             more = bool(cursor)
         else:
             more = bool(more_flag)
-            # IG lies with more_available=false on short pages — keep going with a cursor
             if not more and cursor and len(items) >= 1:
                 more = True
 
@@ -1059,8 +1296,24 @@ async def _paginate_feed_in_browser(
             if len(merged) >= limit:
                 break
 
+        logger.info(
+            "browser_feed @%s page=%s got=%s added=%s total=%s next=%s more=%s more_flag=%s",
+            username,
+            pages,
+            len(items),
+            added,
+            len(merged),
+            cursor,
+            more,
+            more_flag,
+        )
+
         if added == 0:
             stagnant += 1
+            # Advance with response cursor even on duplicates
+            if cursor and cursor != max_id:
+                max_id = cursor
+                continue
         else:
             stagnant = 0
 
@@ -1076,7 +1329,6 @@ async def _paginate_feed_in_browser(
         else:
             more = False
 
-        # Keep paging while short of Instagram posts_count
         if (
             not more
             and _still_short(len(merged), limit=limit, expected_count=expected_count)
@@ -1089,6 +1341,14 @@ async def _paginate_feed_in_browser(
         if expected_count > 0 and len(merged) >= expected_count:
             break
 
+    logger.info(
+        "browser_feed @%s done total=%s expected=%s pages=%s stagnant=%s",
+        username,
+        len(merged),
+        expected_count,
+        pages,
+        stagnant,
+    )
     return merged
 
 
@@ -1164,7 +1424,10 @@ async def _scrape_live(
     # 1) Fast path: public web_profile_info over HTTP — paginate until posts_count
     http_result: ScrapeResult | None = None
     try:
-        from instascope_scraper.http_profile import fetch_web_profile_http
+        from instascope_scraper.http_profile import (
+            fetch_timeline_via_username_feed,
+            fetch_web_profile_http,
+        )
 
         proxy_url = proxy_to_httpx_url(proxy)
         http_json = await fetch_web_profile_http(username, proxy=proxy_url)
@@ -1180,6 +1443,7 @@ async def _scrape_live(
                     all_posts = await _expand_all_posts(username, user, proxy_url=proxy_url)
                     http_result = _result_from_user(username, user, posts_override=all_posts)
                 except Exception:
+                    logger.exception("http expand @%s failed — falling back to card edges", username)
                     http_result = _result_from_user(username, user)
             else:
                 http_result = _result_from_user(username, user)
@@ -1189,8 +1453,93 @@ async def _scrape_live(
 
             # Full timeline via HTTP → success immediately (no browser).
             if http_result and _posts_complete(http_result.posts, http_result.posts_count):
+                logger.info(
+                    "http_full @%s posts=%s/%s",
+                    username,
+                    len(http_result.posts),
+                    http_result.posts_count,
+                )
                 return _finalize_result(http_result, path="http_full")
+            if http_result:
+                logger.warning(
+                    "http_partial @%s posts=%s/%s — escalating to browser",
+                    username,
+                    len(http_result.posts),
+                    http_result.posts_count,
+                )
+        else:
+            # web_profile_info blocked (401 Please wait) — username feed often still works
+            logger.warning("web_profile_info @%s unavailable — trying username feed", username)
+            try:
+                feed_user, feed_nodes = await fetch_timeline_via_username_feed(
+                    username, expected_count=0, proxy=proxy_url
+                )
+                if feed_nodes:
+                    posts = _posts_from_nodes(feed_nodes)
+                    if feed_user:
+                        # Normalize feed user shape for _result_from_user
+                        if "edge_owner_to_timeline_media" not in feed_user:
+                            from instascope_scraper.http_profile import _parse_media_count
+
+                            feed_user = {
+                                **feed_user,
+                                "edge_owner_to_timeline_media": {
+                                    "count": _parse_media_count(feed_user) or len(posts),
+                                    "edges": [],
+                                    "page_info": {"has_next_page": False},
+                                },
+                            }
+                        http_result = _result_from_user(username, feed_user, posts_override=posts)
+                    else:
+                        http_result = ScrapeResult(
+                            username=username,
+                            ig_user_id=None,
+                            full_name=None,
+                            bio=None,
+                            website=None,
+                            avatar_url=None,
+                            is_verified=False,
+                            followers=0,
+                            following=0,
+                            posts_count=len(posts),
+                            posts=posts,
+                            raw={"source": "username_feed"},
+                        )
+                    if http_result and (
+                        _posts_complete(http_result.posts, http_result.posts_count)
+                        or (http_result.posts_count <= 0 and len(http_result.posts) > 12)
+                    ):
+                        # If posts_count unknown, trust feed exhaustion when we got >12
+                        if http_result.posts_count <= 0:
+                            http_result.posts_count = len(http_result.posts)
+                        if _posts_complete(http_result.posts, http_result.posts_count):
+                            # Feed user payload is thin (often no follower_count) — only
+                            # short-circuit when card metrics exist; else browser fills card.
+                            if http_result.followers > 0:
+                                logger.info(
+                                    "username_feed_full @%s posts=%s/%s followers=%s",
+                                    username,
+                                    len(http_result.posts),
+                                    http_result.posts_count,
+                                    http_result.followers,
+                                )
+                                return _finalize_result(http_result, path="username_feed_full")
+                            logger.info(
+                                "username_feed_posts @%s posts=%s/%s but followers=0 — browser for card",
+                                username,
+                                len(http_result.posts),
+                                http_result.posts_count,
+                            )
+                    logger.warning(
+                        "username_feed_partial @%s posts=%s/%s — escalating to browser",
+                        username,
+                        len(http_result.posts) if http_result else 0,
+                        http_result.posts_count if http_result else 0,
+                    )
+            except Exception:
+                logger.exception("username_feed @%s failed", username)
     except Exception:
+        logger.exception("http fast-path @%s crashed", username)
         http_result = None
 
     # 2) Browser path only when HTTP timeline is still short
@@ -1221,7 +1570,22 @@ async def _scrape_live(
                     if _posts_complete(result.posts, result.posts_count):
                         return _finalize_result(result, path="http_after_browser")
             except Exception:
-                pass
+                logger.exception("http_after_browser @%s failed", username)
+            # Username feed rescue when web_profile still blocked
+            if not _posts_complete(result.posts, result.posts_count):
+                try:
+                    from instascope_scraper.http_profile import fetch_timeline_via_username_feed
+
+                    _, feed_nodes = await fetch_timeline_via_username_feed(
+                        username,
+                        expected_count=result.posts_count,
+                        proxy=proxy_to_httpx_url(proxy),
+                    )
+                    result.posts = _merge_posts(result.posts, _posts_from_nodes(feed_nodes))
+                    if _posts_complete(result.posts, result.posts_count):
+                        return _finalize_result(result, path="username_feed_after_browser")
+                except Exception:
+                    logger.exception("username_feed_after_browser @%s failed", username)
         _raise_if_incomplete(result)
         return _finalize_result(result, path="browser")
     except Exception as exc:
@@ -1230,22 +1594,35 @@ async def _scrape_live(
             return _finalize_result(http_result, path="http_fallback_complete")
         if _is_tunnel_or_proxy_error(exc) and proxy is not None:
             try:
-                from instascope_scraper.http_profile import fetch_web_profile_http
+                from instascope_scraper.http_profile import (
+                    fetch_timeline_via_username_feed,
+                    fetch_web_profile_http,
+                )
 
                 for use_proxy in (proxy_to_httpx_url(proxy), None):
                     try:
                         http_json = await fetch_web_profile_http(username, proxy=use_proxy)
                         user = _user_from_web_profile(http_json) if http_json else None
-                        if not user:
-                            continue
-                        posts = await _expand_all_posts(username, user, proxy_url=use_proxy)
-                        result = _result_from_user(username, user, posts_override=posts)
-                        if _posts_complete(result.posts, result.posts_count):
-                            return _finalize_result(result, path="http_after_tunnel_fail")
+                        if user:
+                            posts = await _expand_all_posts(username, user, proxy_url=use_proxy)
+                            result = _result_from_user(username, user, posts_override=posts)
+                            if _posts_complete(result.posts, result.posts_count):
+                                return _finalize_result(result, path="http_after_tunnel_fail")
+                        feed_user, feed_nodes = await fetch_timeline_via_username_feed(
+                            username, expected_count=0, proxy=use_proxy
+                        )
+                        if feed_nodes and feed_user:
+                            posts = _posts_from_nodes(feed_nodes)
+                            result = _result_from_user(username, feed_user, posts_override=posts)
+                            if result.posts_count <= 0:
+                                result.posts_count = len(posts)
+                            if _posts_complete(result.posts, result.posts_count):
+                                return _finalize_result(result, path="username_feed_after_tunnel")
                     except Exception:
+                        logger.exception("tunnel fallback @%s proxy=%s failed", username, bool(use_proxy))
                         continue
             except Exception:
-                pass
+                logger.exception("tunnel fallback outer @%s failed", username)
         if isinstance(exc, ScrapeError):
             raise
         raise ScrapeError(str(exc)) from exc
@@ -1367,6 +1744,46 @@ async def _scrape_live_browser(
                 username, meta_desc=meta_desc, og_image=og_image, og_title=og_title
             )
 
+        # HTTP username-feed often returns posts without follower_count — fill from meta
+        if result and result.followers <= 0:
+            try:
+                meta_desc = await page.locator('meta[name="description"]').get_attribute(
+                    "content", timeout=5_000
+                )
+                og_image = await page.locator('meta[property="og:image"]').get_attribute(
+                    "content", timeout=3_000
+                )
+                og_title = await page.locator('meta[property="og:title"]').get_attribute(
+                    "content", timeout=3_000
+                )
+                meta = _result_from_meta(
+                    username, meta_desc=meta_desc, og_image=og_image, og_title=og_title
+                )
+                if meta:
+                    if meta.followers > 0:
+                        result.followers = meta.followers
+                    if meta.following > 0:
+                        result.following = meta.following
+                    if meta.posts_count > 0 and result.posts_count <= 0:
+                        result.posts_count = meta.posts_count
+                    if not result.avatar_url and meta.avatar_url:
+                        result.avatar_url = meta.avatar_url
+                    if not result.full_name and meta.full_name:
+                        result.full_name = meta.full_name
+                    logger.info(
+                        "browser @%s filled card from meta followers=%s following=%s posts_count=%s",
+                        username,
+                        result.followers,
+                        result.following,
+                        result.posts_count,
+                    )
+            except Exception:
+                logger.warning(
+                    "browser @%s meta card fill skipped (login wall or missing tags)\n%s",
+                    username,
+                    traceback.format_exc(),
+                )
+
         if not result:
             title = await page.title()
             await context.close()
@@ -1387,34 +1804,51 @@ async def _scrape_live_browser(
             str(user_payload.get("id") or user_payload.get("pk") or "") if user_payload else ""
         )
 
-        if not result.is_private and user_id:
+        # Full timeline for public profiles — skip when HTTP already completed it
+        if not result.is_private and not _posts_complete(result.posts, result.posts_count):
             try:
                 result.posts = await _collect_full_timeline_in_browser(
                     page,
                     username=username,
-                    user_id=user_id,
+                    user_id=user_id or "",
                     expected_count=result.posts_count,
                     existing=result.posts,
                     media_nodes=media_nodes,
                     feed_cursors=feed_cursors,
                 )
             except Exception:
+                logger.exception("browser_timeline collect @%s failed", username)
                 result.posts = _merge_media_nodes_into_posts(result.posts, media_nodes)
         elif not result.is_private:
-            result.posts = _merge_media_nodes_into_posts(result.posts, media_nodes)
+            logger.info(
+                "browser @%s skipping timeline — already complete posts=%s/%s",
+                username,
+                len(result.posts),
+                result.posts_count,
+            )
 
         # Last-chance HTTP expand with cookies already warmed by browser session
-        if not result.is_private and not _posts_complete(result.posts, result.posts_count) and user_payload:
+        if not result.is_private and not _posts_complete(result.posts, result.posts_count):
             try:
                 proxy_url = proxy_to_httpx_url(proxy)
-                more_posts = await _expand_all_posts(username, user_payload, proxy_url=proxy_url)
-                seen = {p.shortcode for p in result.posts}
-                for p in more_posts:
-                    if p.shortcode not in seen:
-                        result.posts.append(p)
-                        seen.add(p.shortcode)
+                if user_payload:
+                    more_posts = await _expand_all_posts(username, user_payload, proxy_url=proxy_url)
+                    seen = {p.shortcode for p in result.posts}
+                    for p in more_posts:
+                        if p.shortcode not in seen:
+                            result.posts.append(p)
+                            seen.add(p.shortcode)
+                if not _posts_complete(result.posts, result.posts_count):
+                    from instascope_scraper.http_profile import fetch_timeline_via_username_feed
+
+                    _, feed_nodes = await fetch_timeline_via_username_feed(
+                        username,
+                        expected_count=result.posts_count,
+                        proxy=proxy_url,
+                    )
+                    result.posts = _merge_posts(result.posts, _posts_from_nodes(feed_nodes))
             except Exception:
-                pass
+                logger.exception("browser last-chance HTTP expand @%s failed", username)
 
         if not result.posts:
             dom_posts = await _extract_posts_from_dom(page)
@@ -1446,7 +1880,7 @@ async def _scrape_live_browser(
                     by_code = {p.shortcode: p for p in enriched}
                     result.posts = [by_code.get(p.shortcode, p) for p in result.posts]
                 except Exception:
-                    pass
+                    logger.exception("browser enrich @%s failed", username)
 
         await context.close()
 
@@ -1492,22 +1926,51 @@ async def scrape_profile(
 
     last_err: Exception | None = None
     attempts = int(os.getenv("SCRAPE_MAX_RETRIES", "3"))
+    logger.info(
+        "scrape_profile @%s start attempts=%s headless=%s proxy=%s",
+        username,
+        attempts,
+        headless,
+        bool(proxy),
+    )
     for attempt in range(max(attempts, 1)):
         try:
-            return await _scrape_live(
+            result = await _scrape_live(
                 username,
                 headless=headless,
                 proxy=proxy,
                 delay=delay_seconds + attempt,
             )
+            logger.info(
+                "scrape_profile @%s OK attempt=%s posts=%s/%s path=%s",
+                username,
+                attempt + 1,
+                len(result.posts),
+                result.posts_count,
+                (result.raw or {}).get("path"),
+            )
+            return result
         except ScrapeError as exc:
             # Don't burn retries on definitive not-found
             if exc.unavailable:
                 raise
             last_err = exc
+            logger.warning(
+                "scrape_profile @%s ScrapeError attempt=%s/%s: %s",
+                username,
+                attempt + 1,
+                attempts,
+                exc,
+            )
             await asyncio.sleep(delay_seconds * (attempt + 1))
         except Exception as exc:  # noqa: BLE001
             last_err = exc
+            logger.exception(
+                "scrape_profile @%s unexpected error attempt=%s/%s",
+                username,
+                attempt + 1,
+                attempts,
+            )
             await asyncio.sleep(delay_seconds * (attempt + 1))
 
     raise ScrapeError(_humanize_scrape_error(last_err or "Scrape failed after retries"))

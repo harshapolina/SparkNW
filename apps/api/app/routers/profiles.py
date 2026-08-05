@@ -48,9 +48,29 @@ def _dispatch_jobs(jobs: list) -> bool:
 
 @router.post("", response_model=ProfileResponse, status_code=status.HTTP_201_CREATED)
 async def add_profile(payload: AddProfileRequest, user: User = Depends(get_current_user)):
+    """Create profile and scrape in the background.
+
+    Awaiting the full scrape here caused browser "Failed to fetch" / connection
+    resets when enrichment + pagination ran for minutes on the request thread.
+    """
     profile = await profile_service.add_profile(str(user.id), payload)
-    # Immediate workable data: scrape inline (demo mode). Celery still handles daily batch.
-    await scrape_profile_inline(profile)
+
+    async def _bg(pid: str) -> None:
+        try:
+            fresh = await Profile.get(pid)
+            if fresh:
+                await scrape_profile_inline(fresh)
+        except Exception:
+            import logging
+            import traceback
+
+            logging.getLogger("instascope.api.profiles").error(
+                "background scrape after add failed profile_id=%s\n%s",
+                pid,
+                traceback.format_exc(),
+            )
+
+    asyncio.create_task(_bg(str(profile.id)))
     profile = await profile_service.get_profile(str(user.id), str(profile.id))
     return to_profile_response(profile)
 
@@ -117,7 +137,14 @@ async def refresh_profile(profile_id: str, user: User = Depends(get_current_user
                 if fresh:
                     await scrape_profile_inline(fresh)
             except Exception:
-                return
+                import logging
+                import traceback
+
+                logging.getLogger("instascope.api.profiles").error(
+                    "background refresh scrape failed profile_id=%s\n%s",
+                    pid,
+                    traceback.format_exc(),
+                )
 
         asyncio.create_task(_bg(str(profile.id)))
 
@@ -288,13 +315,21 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
         scraping = True
 
         async def _scrape_all(profiles: list) -> None:
+            import logging
+            import traceback
+
+            log = logging.getLogger("instascope.api.profiles")
             for profile in profiles:
                 try:
                     fresh = await Profile.get(str(profile.id))
                     if fresh:
                         await scrape_profile_inline(fresh)
                 except Exception:
-                    continue
+                    log.error(
+                        "bulk_import scrape failed username=%s\n%s",
+                        getattr(profile, "username", "?"),
+                        traceback.format_exc(),
+                    )
 
         asyncio.create_task(_scrape_all(to_scrape))
 
@@ -317,31 +352,67 @@ async def bulk_delete(payload: BulkIdsRequest, user: User = Depends(get_current_
 
 @router.post("/bulk/refresh", response_model=list[JobResponse])
 async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current_user)):
-    jobs = []
+    """Queue refreshes in the background — never await scrapes on the request.
+
+    Awaiting N sequential scrapes caused browser "Failed to fetch" timeouts.
+    """
+    from datetime import datetime
+
+    from instascope_shared.models import Job, JobStatus, JobType
+
+    out: list[JobResponse] = []
+    to_scrape: list[str] = []
+
     for pid in payload.ids:
         try:
             profile = await profile_service.get_profile(str(user.id), pid)
-            job = await scrape_profile_inline(profile)
-            jobs.append(job)
-        except Exception:
-            continue
-    out: list[JobResponse] = []
-    for j in jobs:
-        try:
+            job = Job(
+                user_id=str(user.id),
+                profile_id=str(profile.id),
+                job_type=JobType.SCRAPE_PROFILE,
+                status=JobStatus.PENDING,
+                priority=1,
+            )
+            await job.insert()
+            to_scrape.append(str(profile.id))
             out.append(
                 JobResponse(
-                    id=str(j.id),
-                    profile_id=str(j.profile_id),
-                    job_type=j.job_type.value if hasattr(j.job_type, "value") else str(j.job_type),
-                    status=j.status.value if hasattr(j.status, "value") else str(j.status),
-                    attempts=j.attempts,
-                    error_message=j.error_message,
-                    created_at=j.created_at,
-                    finished_at=j.finished_at,
+                    id=str(job.id),
+                    profile_id=str(profile.id),
+                    job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
+                    status=JobStatus.PENDING.value,
+                    attempts=0,
+                    error_message=None,
+                    created_at=getattr(job, "created_at", None) or datetime.utcnow(),
+                    finished_at=None,
                 )
             )
         except Exception:
+            import logging
+            import traceback
+
+            logging.getLogger("instascope.api.profiles").error(
+                "bulk_refresh enqueue failed profile_id=%s\n%s",
+                pid,
+                traceback.format_exc(),
+            )
             continue
+
+    async def _scrape_all(ids: list[str]) -> None:
+        import logging
+        import traceback
+
+        log = logging.getLogger("instascope.api.profiles")
+        for pid in ids:
+            try:
+                fresh = await Profile.get(pid)
+                if fresh:
+                    await scrape_profile_inline(fresh)
+            except Exception:
+                log.error("bulk_refresh scrape failed profile_id=%s\n%s", pid, traceback.format_exc())
+
+    if to_scrape:
+        asyncio.create_task(_scrape_all(to_scrape))
     return out
 
 

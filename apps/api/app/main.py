@@ -11,6 +11,16 @@ from instascope_shared.db.mongodb import close_db, connect_db
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    import logging
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        force=True,
+    )
+    logging.getLogger("instascope").setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     await connect_db()
     yield
     await close_db()
