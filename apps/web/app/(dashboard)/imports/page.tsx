@@ -18,11 +18,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { extractUsername, parseSheetMatrix, type SheetStudent } from "@/lib/student-sheet";
 
 type Row = {
   id: string;
   raw: string;
   username: string;
+  student: SheetStudent;
   selected: boolean;
 };
 
@@ -30,75 +32,21 @@ type BulkImportResponse = {
   imported: number;
   skipped: number;
   failed: number;
+  updated?: number;
   scraping: boolean;
   items: { url: string; username?: string; status: string; message?: string }[];
 };
 
 type SourceTab = "upload" | "sheet" | "paste";
 
-const USERNAME_KEYS = ["username", "user", "handle", "profile", "ig", "instagram", "url", "link", "account"];
-
-function normalizeCell(value: unknown): string {
-  return String(value ?? "").trim();
-}
-
-function extractUsername(raw: string): string {
-  const v = raw.trim();
-  if (!v) return "";
-  if (v.startsWith("@")) return v.slice(1).toLowerCase();
-  try {
-    const withProto = v.includes("://") ? v : `https://${v}`;
-    const u = new URL(withProto);
-    if (u.hostname.includes("instagram.com") || u.hostname.includes("instagr.am")) {
-      const part = u.pathname.split("/").filter(Boolean)[0] || "";
-      return part.replace("@", "").toLowerCase();
-    }
-  } catch {
-    /* plain username */
-  }
-  return v.replace(/^@/, "").toLowerCase();
-}
-
-function pickColumn(headers: string[]): string | null {
-  const lower = headers.map((h) => h.toLowerCase().trim());
-  for (const key of USERNAME_KEYS) {
-    const idx = lower.findIndex((h) => h === key || h.includes(key));
-    if (idx >= 0) return headers[idx];
-  }
-  return headers[0] || null;
-}
-
-function rowsFromValues(values: string[]): Row[] {
-  const seen = new Set<string>();
-  const out: Row[] = [];
-  for (const raw of values) {
-    const cleaned = raw.trim();
-    if (!cleaned) continue;
-    const lower = cleaned.toLowerCase();
-    if (["username", "url", "handle", "profile", "instagram"].includes(lower)) continue;
-    const username = extractUsername(cleaned);
-    if (!username || seen.has(username)) continue;
-    seen.add(username);
-    out.push({
-      id: `${username}-${out.length}`,
-      raw: cleaned.startsWith("http") ? cleaned : `@${username}`,
-      username,
-      selected: true,
-    });
-  }
-  return out;
-}
-
 function parseMatrix(matrix: string[][]): Row[] {
-  if (!matrix.length) return [];
-  const first = matrix[0].map((c) => c.trim());
-  const looksLikeHeader = first.some((c) => USERNAME_KEYS.some((k) => c.toLowerCase().includes(k)));
-  if (looksLikeHeader) {
-    const col = pickColumn(first);
-    const colIdx = col ? first.indexOf(col) : 0;
-    return rowsFromValues(matrix.slice(1).map((r) => normalizeCell(r[colIdx])));
-  }
-  return rowsFromValues(matrix.map((r) => normalizeCell(r.find((c) => c?.trim()) || "")));
+  return parseSheetMatrix(matrix).map((r, i) => ({
+    id: `${r.username}-${i}`,
+    raw: r.url,
+    username: r.username,
+    student: r.student,
+    selected: true,
+  }));
 }
 
 function googleSheetToCsvUrl(input: string): string | null {
@@ -207,34 +155,36 @@ export default function ImportsPage() {
 
   const importAll = useMutation({
     mutationFn: async () => {
-      const urls = selected.map((r) => r.raw);
-      setProgress({ done: 0, total: urls.length });
+      const payloadRows = selected.map((r) => ({ url: r.raw, student: r.student }));
+      setProgress({ done: 0, total: payloadRows.length });
       const chunkSize = 50;
       let imported = 0;
       let skipped = 0;
       let failed = 0;
+      let updated = 0;
       let scraping = false;
       const allItems: BulkImportResponse["items"] = [];
 
-      for (let i = 0; i < urls.length; i += chunkSize) {
-        const chunk = urls.slice(i, i + chunkSize);
+      for (let i = 0; i < payloadRows.length; i += chunkSize) {
+        const chunk = payloadRows.slice(i, i + chunkSize);
         const res = await api<BulkImportResponse>("/profiles/bulk/import", {
           method: "POST",
-          body: JSON.stringify({ urls: chunk, scrape_now: true }),
+          body: JSON.stringify({ rows: chunk, scrape_now: true }),
         });
         imported += res.imported;
         skipped += res.skipped;
         failed += res.failed;
+        updated += res.updated || 0;
         scraping = scraping || res.scraping;
         allItems.push(...res.items);
-        setProgress({ done: Math.min(i + chunk.length, urls.length), total: urls.length });
+        setProgress({ done: Math.min(i + chunk.length, payloadRows.length), total: payloadRows.length });
       }
 
-      return { imported, skipped, failed, scraping, items: allItems };
+      return { imported, skipped, failed, updated, scraping, items: allItems };
     },
     onSuccess: (r) => {
       setResult(
-        `Imported ${r.imported} · skipped ${r.skipped} · failed ${r.failed}` +
+        `Imported ${r.imported} · updated ${r.updated || 0} · skipped ${r.skipped} · failed ${r.failed}` +
           (r.scraping ? ". Live scraping started — open Profiles to watch updates." : ".")
       );
       setError("");

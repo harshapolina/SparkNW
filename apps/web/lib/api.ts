@@ -3,6 +3,32 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1
 export type Tokens = { access_token: string; refresh_token: string; token_type: string };
 export type User = { id: string; email: string; name: string; avatar_url?: string | null; created_at: string };
 
+export type StudentInfo = {
+  timestamp?: string;
+  full_name?: string;
+  student_id?: string;
+  program?: string;
+  year_of_study?: string;
+  mobile?: string;
+  email?: string;
+  university?: string;
+  instagram_handle?: string;
+  instagram_url?: string;
+  instagram_username?: string;
+  youtube_link?: string;
+  youtube_username?: string;
+  youtube_status?: string;
+  created_content_before?: string;
+  current_follower_count_raw?: string;
+  instagram_followers_declared?: string;
+  youtube_subscribers_declared?: string;
+  why_join_spark?: string;
+  content_interest?: string;
+  uid?: string;
+  duplicate_flag?: string;
+  missing_info?: string;
+};
+
 export type Profile = {
   id: string;
   username: string;
@@ -26,6 +52,7 @@ export type Profile = {
   highlight_reel_count?: number;
   follower_following_ratio?: number;
   insights?: Record<string, unknown>;
+  student?: StudentInfo;
   status: string;
   last_scraped_at?: string | null;
   last_success_at?: string | null;

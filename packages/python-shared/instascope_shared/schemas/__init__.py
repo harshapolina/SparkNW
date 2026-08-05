@@ -48,6 +48,35 @@ class AuthResponse(BaseModel):
 
 class AddProfileRequest(BaseModel):
     url: str = Field(min_length=5, description="Instagram profile URL or @username")
+    student: dict[str, Any] = Field(default_factory=dict)
+
+
+class StudentInfo(BaseModel):
+    """Registration-sheet fields shown on profile pages."""
+
+    timestamp: Optional[str] = None
+    full_name: Optional[str] = None
+    student_id: Optional[str] = None
+    program: Optional[str] = None
+    year_of_study: Optional[str] = None
+    mobile: Optional[str] = None
+    email: Optional[str] = None
+    university: Optional[str] = None
+    instagram_handle: Optional[str] = None
+    instagram_url: Optional[str] = None
+    instagram_username: Optional[str] = None
+    youtube_link: Optional[str] = None
+    youtube_username: Optional[str] = None
+    youtube_status: str = "Coming soon"
+    created_content_before: Optional[str] = None
+    current_follower_count_raw: Optional[str] = None
+    instagram_followers_declared: Optional[str] = None
+    youtube_subscribers_declared: Optional[str] = None
+    why_join_spark: Optional[str] = None
+    content_interest: Optional[str] = None
+    uid: Optional[str] = None
+    duplicate_flag: Optional[str] = None
+    missing_info: Optional[str] = None
 
 
 class ProfileResponse(BaseModel):
@@ -73,6 +102,7 @@ class ProfileResponse(BaseModel):
     highlight_reel_count: int = 0
     follower_following_ratio: float = 0.0
     insights: dict[str, Any] = Field(default_factory=dict)
+    student: dict[str, Any] = Field(default_factory=dict)
     status: str
     last_scraped_at: Optional[datetime] = None
     last_success_at: Optional[datetime] = None
@@ -92,8 +122,14 @@ class BulkIdsRequest(BaseModel):
     ids: list[str] = Field(min_length=1)
 
 
+class BulkImportRow(BaseModel):
+    url: str = Field(min_length=1)
+    student: dict[str, Any] = Field(default_factory=dict)
+
+
 class BulkImportRequest(BaseModel):
-    urls: list[str] = Field(min_length=1, max_length=2000)
+    urls: list[str] = Field(default_factory=list, max_length=2000)
+    rows: list[BulkImportRow] = Field(default_factory=list, max_length=2000)
     scrape_now: bool = True
 
 
@@ -109,6 +145,7 @@ class BulkImportResponse(BaseModel):
     imported: int
     skipped: int
     failed: int
+    updated: int = 0
     scraping: bool
     items: list[BulkImportItemResult]
 

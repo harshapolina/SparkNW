@@ -100,7 +100,7 @@ export default function ProfilesPage() {
             <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <Input
               className="pl-10"
-              placeholder="Search username…"
+              placeholder="Search username, name, student ID, university…"
               value={q}
               onChange={(e) => {
                 setQ(e.target.value);
@@ -158,6 +158,8 @@ export default function ProfilesPage() {
                     />
                   </th>
                   <th>Username</th>
+                  <th>Student</th>
+                  <th>University</th>
                   <th>Followers</th>
                   <th>Following</th>
                   <th>Posts</th>
@@ -186,9 +188,16 @@ export default function ProfilesPage() {
                         <Avatar name={p.username} size="md" />
                         <div>
                           <div className="font-medium group-hover:text-accent transition">@{p.username}</div>
-                          <div className="text-xs text-muted">{p.full_name}</div>
+                          <div className="text-xs text-muted">{p.full_name || p.student?.instagram_username || "—"}</div>
                         </div>
                       </Link>
+                    </td>
+                    <td>
+                      <div className="text-sm font-medium">{p.student?.full_name || "—"}</div>
+                      <div className="text-xs text-muted">{p.student?.student_id || ""}</div>
+                    </td>
+                    <td className="text-sm text-muted max-w-[160px] truncate" title={p.student?.university || ""}>
+                      {p.student?.university || "—"}
                     </td>
                     <td className="tabular font-medium">{formatNumber(p.followers)}</td>
                     <td className="tabular text-muted">{formatNumber(p.following)}</td>

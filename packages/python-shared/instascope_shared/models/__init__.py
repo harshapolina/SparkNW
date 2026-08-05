@@ -110,6 +110,8 @@ class Profile(Document):
     highlight_reel_count: int = 0
     follower_following_ratio: float = 0.0
     insights: dict = Field(default_factory=dict)
+    # SPARK student roster fields from registration sheet (never overwritten by scrape)
+    student: dict = Field(default_factory=dict)
 
     status: ProfileStatus = ProfileStatus.ACTIVE
     last_scraped_at: Optional[datetime] = None

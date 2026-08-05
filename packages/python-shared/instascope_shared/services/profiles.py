@@ -10,9 +10,12 @@ from fastapi import HTTPException, status
 from instascope_shared.domain.instagram import extract_username, profile_url_for
 from instascope_shared.models import Job, JobStatus, JobType, Profile, ProfileStatus
 from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse
+from instascope_shared.services.student_roster import merge_student
 
 
 def to_profile_response(p: Profile) -> ProfileResponse:
+    student = dict(getattr(p, "student", None) or {})
+    student.setdefault("youtube_status", "Coming soon")
     return ProfileResponse(
         id=str(p.id),
         username=p.username,
@@ -36,6 +39,7 @@ def to_profile_response(p: Profile) -> ProfileResponse:
         highlight_reel_count=int(getattr(p, "highlight_reel_count", 0) or 0),
         follower_following_ratio=float(getattr(p, "follower_following_ratio", 0.0) or 0.0),
         insights=dict(getattr(p, "insights", None) or {}),
+        student=student,
         status=p.status.value if hasattr(p.status, "value") else str(p.status),
         last_scraped_at=p.last_scraped_at,
         last_success_at=p.last_success_at,
@@ -45,14 +49,21 @@ def to_profile_response(p: Profile) -> ProfileResponse:
     )
 
 
-async def add_profile(user_id: str, payload: AddProfileRequest) -> Profile:
+async def add_profile(user_id: str, payload: AddProfileRequest, *, upsert_student: bool = False) -> Profile:
     try:
         username = extract_username(payload.url)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     existing = await Profile.find_one(Profile.user_id == user_id, Profile.username == username)
+    student = merge_student(None, getattr(payload, "student", None) or {})
     if existing:
+        if upsert_student:
+            if student:
+                existing.student = merge_student(getattr(existing, "student", None), student)
+                existing.updated_at = datetime.utcnow()
+                await existing.save()
+            return existing
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Profile already tracked")
 
     profile = Profile(
@@ -60,6 +71,7 @@ async def add_profile(user_id: str, payload: AddProfileRequest) -> Profile:
         username=username,
         profile_url=profile_url_for(username),
         status=ProfileStatus.ACTIVE,
+        student=student,
     )
     await profile.insert()
     return profile
@@ -83,7 +95,16 @@ async def list_profiles(
 
     if q:
         ql = q.lower()
-        profiles = [p for p in profiles if ql in p.username.lower() or (p.full_name and ql in p.full_name.lower())]
+        profiles = [
+            p
+            for p in profiles
+            if ql in p.username.lower()
+            or (p.full_name and ql in p.full_name.lower())
+            or ql in str((getattr(p, "student", None) or {}).get("full_name") or "").lower()
+            or ql in str((getattr(p, "student", None) or {}).get("student_id") or "").lower()
+            or ql in str((getattr(p, "student", None) or {}).get("university") or "").lower()
+            or ql in str((getattr(p, "student", None) or {}).get("email") or "").lower()
+        ]
 
     if status_filter:
         profiles = [p for p in profiles if str(p.status.value if hasattr(p.status, "value") else p.status) == status_filter]

@@ -85,7 +85,17 @@ async def apply_scrape_result(
     profile.last_success_at = datetime.utcnow()
     profile.last_error = None
     profile.updated_at = datetime.utcnow()
+    # Preserve SPARK roster fields if present (never wipe on scrape)
+    student = getattr(profile, "student", None)
+    if isinstance(student, dict) and student:
+        profile.student = student  # type: ignore[attr-defined]
     await profile.save()
+    if isinstance(student, dict) and student:
+        # Extra safety for older deploys / Beanie models without student field
+        await Profile.get_pymongo_collection().update_one(
+            {"_id": profile.id},
+            {"$set": {"student": student}},
+        )
 
     # Replace posts with this scrape's real set (avoid leftover demo/stale rows)
     await Post.find(Post.profile_id == str(profile.id)).delete()
@@ -216,7 +226,13 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
     profile.last_error = error
     profile.status = ProfileStatus.UNAVAILABLE if unavailable else ProfileStatus.FAILED
     profile.updated_at = datetime.utcnow()
+    student = getattr(profile, "student", None)
     await profile.save()
+    if isinstance(student, dict) and student:
+        await Profile.get_pymongo_collection().update_one(
+            {"_id": profile.id},
+            {"$set": {"student": student}},
+        )
 
     await ScrapeLog(
         job_id=str(job.id),

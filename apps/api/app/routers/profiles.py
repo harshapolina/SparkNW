@@ -173,50 +173,73 @@ async def list_history(profile_id: str, user: User = Depends(get_current_user)):
 @router.post("/bulk/import", response_model=BulkImportResponse)
 async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_current_user)):
     """Import many profile URLs/usernames from a sheet. Optionally scrape in background."""
+    from instascope_shared.schemas import BulkImportRow
+
     imported = 0
     skipped = 0
     failed = 0
+    updated = 0
     items: list[BulkImportItemResult] = []
     to_scrape: list = []
 
-    # De-dupe while preserving order
+    # Prefer rich rows (with student roster fields); fall back to bare URLs
+    work: list[BulkImportRow] = list(payload.rows or [])
+    if not work:
+        work = [BulkImportRow(url=u) for u in (payload.urls or [])]
+
     seen: set[str] = set()
-    urls: list[str] = []
-    for raw in payload.urls:
-        key = raw.strip().lower()
-        if not key or key in seen:
+    for row in work:
+        raw = (row.url or "").strip()
+        if not raw:
+            failed += 1
+            items.append(BulkImportItemResult(url="", status="failed", message="Missing Instagram URL"))
+            continue
+        key = raw.lower()
+        if key in seen:
+            skipped += 1
+            items.append(BulkImportItemResult(url=raw, status="skipped", message="Duplicate in batch"))
             continue
         seen.add(key)
-        urls.append(raw.strip())
 
-    for raw in urls:
         try:
-            profile = await profile_service.add_profile(str(user.id), AddProfileRequest(url=raw))
-            imported += 1
+            req = AddProfileRequest(url=raw, student=dict(row.student or {}))
+            try:
+                profile = await profile_service.add_profile(str(user.id), req, upsert_student=False)
+                imported += 1
+                status_label = "imported"
+                msg = None
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+                profile = await profile_service.add_profile(str(user.id), req, upsert_student=True)
+                if row.student:
+                    updated += 1
+                    status_label = "updated"
+                    msg = "Already tracked — student fields merged"
+                else:
+                    skipped += 1
+                    status_label = "skipped"
+                    msg = "Already tracked"
+
             to_scrape.append(profile)
             items.append(
                 BulkImportItemResult(
                     url=raw,
                     username=profile.username,
-                    status="imported",
+                    status=status_label,
                     profile_id=str(profile.id),
+                    message=msg,
                 )
             )
         except HTTPException as exc:
-            if exc.status_code == 409:
-                skipped += 1
-                items.append(
-                    BulkImportItemResult(url=raw, status="skipped", message="Already tracked")
+            failed += 1
+            items.append(
+                BulkImportItemResult(
+                    url=raw,
+                    status="failed",
+                    message=str(exc.detail),
                 )
-            else:
-                failed += 1
-                items.append(
-                    BulkImportItemResult(
-                        url=raw,
-                        status="failed",
-                        message=str(exc.detail),
-                    )
-                )
+            )
         except Exception as exc:  # noqa: BLE001
             failed += 1
             items.append(BulkImportItemResult(url=raw, status="failed", message=str(exc)))
@@ -228,7 +251,6 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
         async def _scrape_all(profiles: list) -> None:
             for profile in profiles:
                 try:
-                    # Reload to avoid stale refs
                     fresh = await Profile.get(str(profile.id))
                     if fresh:
                         await scrape_profile_inline(fresh)
@@ -241,6 +263,7 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
         imported=imported,
         skipped=skipped,
         failed=failed,
+        updated=updated,
         scraping=scraping,
         items=items,
     )
@@ -262,19 +285,24 @@ async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current
             jobs.append(job)
         except Exception:
             continue
-    return [
-        JobResponse(
-            id=str(j.id),
-            profile_id=j.profile_id,
-            job_type=j.job_type.value,
-            status=j.status.value,
-            attempts=j.attempts,
-            error_message=j.error_message,
-            created_at=j.created_at,
-            finished_at=j.finished_at,
-        )
-        for j in jobs
-    ]
+    out: list[JobResponse] = []
+    for j in jobs:
+        try:
+            out.append(
+                JobResponse(
+                    id=str(j.id),
+                    profile_id=str(j.profile_id),
+                    job_type=j.job_type.value if hasattr(j.job_type, "value") else str(j.job_type),
+                    status=j.status.value if hasattr(j.status, "value") else str(j.status),
+                    attempts=j.attempts,
+                    error_message=j.error_message,
+                    created_at=j.created_at,
+                    finished_at=j.finished_at,
+                )
+            )
+        except Exception:
+            continue
+    return out
 
 
 @router.post("/bulk/pause", response_model=MessageResponse)

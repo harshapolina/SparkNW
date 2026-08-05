@@ -93,7 +93,31 @@ type Insights = {
   posts_without_views?: number;
 };
 
-const tabs = ["overview", "insights", "posts", "growth", "analytics", "history"] as const;
+const tabs = ["overview", "student", "insights", "posts", "growth", "analytics", "history"] as const;
+
+function studentFields(s: NonNullable<Profile["student"]>) {
+  return [
+    ["Full name", s.full_name],
+    ["Student ID", s.student_id],
+    ["Program", s.program],
+    ["Year", s.year_of_study],
+    ["University", s.university],
+    ["Email", s.email],
+    ["Mobile", s.mobile],
+    ["Instagram", s.instagram_username || s.instagram_handle],
+    ["IG followers (declared)", s.instagram_followers_declared || s.current_follower_count_raw],
+    ["YouTube", s.youtube_status || "Coming soon"],
+    ["YouTube link", s.youtube_link],
+    ["YouTube username", s.youtube_username],
+    ["YT subs (declared)", s.youtube_subscribers_declared],
+    ["Created content before", s.created_content_before],
+    ["Content interest", s.content_interest],
+    ["UID", s.uid],
+    ["Duplicate flag", s.duplicate_flag],
+    ["Missing info", s.missing_info],
+    ["Submitted", s.timestamp],
+  ] as const;
+}
 
 function ChartTip({ active, payload, label }: { active?: boolean; payload?: { value: number }[]; label?: string }) {
   if (!active || !payload?.length) return null;
@@ -193,6 +217,13 @@ export default function ProfileDetailPage() {
                 <span className={p.status === "active" ? "badge-success" : "badge-neutral"}>{p.status}</span>
               </div>
               {p.bio && <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted line-clamp-3">{p.bio}</p>}
+              {p.student?.full_name && (
+                <p className="mt-2 text-sm text-muted">
+                  <span className="font-medium text-fg">{p.student.full_name}</span>
+                  {p.student.university ? ` · ${p.student.university}` : ""}
+                  {p.student.student_id ? ` · ${p.student.student_id}` : ""}
+                </p>
+              )}
               <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm">
                 <div><span className="font-semibold tabular">{formatNumber(p.followers)}</span> <span className="text-muted">followers</span></div>
                 <div><span className="font-semibold tabular">{formatNumber(p.following)}</span> <span className="text-muted">following</span></div>
@@ -237,6 +268,42 @@ export default function ProfileDetailPage() {
           </button>
         ))}
       </div>
+
+      {tab === "student" && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Card padding="lg">
+            <div className="mb-4 text-sm font-semibold">SPARK registration</div>
+            {p.student && Object.keys(p.student).length ? (
+              <dl className="grid gap-3 text-sm">
+                {studentFields(p.student).map(([label, value]) => (
+                  <div key={label} className="grid grid-cols-[140px_minmax(0,1fr)] gap-3 border-b border-border/60 pb-2 last:border-0">
+                    <dt className="text-muted">{label}</dt>
+                    <dd className="break-words font-medium">
+                      {label === "YouTube" ? (
+                        <span className="badge-neutral">{value || "Coming soon"}</span>
+                      ) : value ? (
+                        String(value)
+                      ) : (
+                        "—"
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            ) : (
+              <p className="text-sm text-muted">No registration sheet data for this profile yet.</p>
+            )}
+          </Card>
+          <Card padding="lg">
+            <div className="mb-4 text-sm font-semibold">Why join Spark?</div>
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted">
+              {p.student?.why_join_spark || "—"}
+            </p>
+            <div className="mt-6 mb-2 text-sm font-semibold">Content interest</div>
+            <p className="text-sm text-muted">{p.student?.content_interest || "—"}</p>
+          </Card>
+        </div>
+      )}
 
       {tab === "overview" && (
         <div className="grid gap-4 lg:grid-cols-3">
