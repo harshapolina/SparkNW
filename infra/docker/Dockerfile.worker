@@ -2,7 +2,12 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential curl \
+    fonts-unifont fonts-liberation \
+    libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
+    libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    libgbm1 libasound2 libpango-1.0-0 libcairo2 \
   && rm -rf /var/lib/apt/lists/*
 
 COPY packages/python-shared /app/packages/python-shared
@@ -12,10 +17,10 @@ COPY apps/api/requirements.txt /tmp/api-req.txt
 
 RUN pip install --no-cache-dir -r /tmp/api-req.txt \
   && pip install --no-cache-dir -e /app/packages/python-shared -e /app/scraper \
-  && pip install --no-cache-dir playwright==1.49.1 \
-  && playwright install --with-deps chromium || true
+  && pip install --no-cache-dir "playwright==1.49.1" \
+  && playwright install chromium
 
 ENV PYTHONPATH=/app/apps/worker:/app/packages/python-shared:/app/scraper
-ENV LIVE_SCRAPE=0
+ENV LIVE_SCRAPE=1
 WORKDIR /app/apps/worker
 CMD ["celery", "-A", "celery_app.celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
