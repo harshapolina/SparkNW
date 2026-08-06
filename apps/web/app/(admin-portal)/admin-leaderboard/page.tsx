@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Download, Search } from "lucide-react";
+import { Download, Search, X } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AdminOverviewResponse, LeaderboardResponse, SparkCreatorRow } from "@/lib/spark/api-types";
 import type { LeaderboardSort } from "@/lib/spark/types";
@@ -19,18 +19,31 @@ const sorts: { id: LeaderboardSort; label: string }[] = [
   { id: "engagement", label: "ENGAGEMENT" },
 ];
 
+function buildLeaderboardUrl(sort: LeaderboardSort, fromDate: string, toDate: string) {
+  const params = new URLSearchParams({ sort });
+  if (fromDate) params.set("from_date", fromDate);
+  if (toDate) params.set("to_date", toDate);
+  return `/spark/leaderboard?${params.toString()}`;
+}
+
 export default function AdminLeaderboardPage() {
   const [sort, setSort] = useState<LeaderboardSort>("overall");
   const [campus, setCampus] = useState<string>("all");
   const [tier, setTier] = useState<string>("all");
   const [teamOnly, setTeamOnly] = useState(false);
   const [q, setQ] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
   const [page, setPage] = useState(1);
   const perPage = 10;
 
+  const rangeActive = Boolean(fromDate || toDate);
+  const rangeInvalid = Boolean(fromDate && toDate && fromDate > toDate);
+
   const boardQ = useQuery({
-    queryKey: ["spark", "leaderboard", sort],
-    queryFn: () => api<LeaderboardResponse>(`/spark/leaderboard?sort=${sort}`),
+    queryKey: ["spark", "leaderboard", sort, fromDate || null, toDate || null],
+    queryFn: () => api<LeaderboardResponse>(buildLeaderboardUrl(sort, fromDate, toDate)),
+    enabled: !rangeInvalid,
   });
   const adminQ = useQuery({
     queryKey: ["spark", "admin"],
@@ -55,10 +68,27 @@ export default function AdminLeaderboardPage() {
     return list.map((c, i) => ({ ...c, rank: i + 1 }));
   }, [boardQ.data, campus, tier, teamOnly, q]);
 
+  const rangeKpis = useMemo(() => {
+    if (!rangeActive) return null;
+    const totalPoints = ranked.reduce((sum, c) => sum + (c.points || 0), 0);
+    const totalFollowers = ranked.reduce((sum, c) => sum + (c.followers || 0), 0);
+    const totalViews = ranked.reduce((sum, c) => sum + (c.views || 0), 0);
+    const totalEngagement = ranked.reduce((sum, c) => sum + (c.likes || 0) + (c.comments || 0), 0);
+    return { totalPoints, totalFollowers, totalViews, totalEngagement, creators: ranked.length };
+  }, [rangeActive, ranked]);
+
   const totalPages = Math.max(1, Math.ceil(ranked.length / perPage));
   const pageRows = ranked.slice((page - 1) * perPage, page * perPage);
   const admin = adminQ.data;
   const campuses = boardQ.data?.campuses || [];
+  const appliedFrom = boardQ.data?.from_date || fromDate || null;
+  const appliedTo = boardQ.data?.to_date || toDate || null;
+
+  const clearDates = () => {
+    setFromDate("");
+    setToDate("");
+    setPage(1);
+  };
 
   const exportCsv = () => {
     const header = ["Rank", "Name", "Handle", "Campus", "Team", "Tier", "Points", "Followers", "Views", "Engagement", "Trend"];
@@ -69,19 +99,50 @@ export default function AdminLeaderboardPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "spark-leaderboard.csv";
+    const rangeSuffix =
+      appliedFrom || appliedTo ? `-${appliedFrom || "start"}_to_${appliedTo || "end"}` : "";
+    a.download = `spark-leaderboard${rangeSuffix}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  if (boardQ.isPending && !boardQ.data) return <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />;
-  if (boardQ.error) {
+  if (boardQ.isPending && !boardQ.data && !rangeInvalid) return <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />;
+  if (boardQ.error && !rangeInvalid) {
     return (
       <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
         {(boardQ.error as Error).message}
       </div>
     );
   }
+
+  const kpiCards = rangeActive && rangeKpis
+    ? [
+        { label: "Total Creators", value: formatNumber(rangeKpis.creators), sub: "In selected range" },
+        {
+          label: "Total Points Distributed",
+          value: formatNumber(rangeKpis.totalPoints),
+          sub: "Period SPARK points",
+        },
+        { label: "Total Followers (All)", value: formatNumber(rangeKpis.totalFollowers), sub: "As of range end" },
+        { label: "Total Views (All)", value: formatNumber(rangeKpis.totalViews), sub: "Posts in range" },
+        { label: "Total Engagement (All)", value: formatNumber(rangeKpis.totalEngagement), sub: "Likes + comments in range" },
+      ]
+    : [
+        { label: "Total Creators", value: formatNumber(admin?.total_participants ?? ranked.length), sub: "Across campuses" },
+        {
+          label: "Total Points Distributed",
+          value: formatNumber(admin?.total_points_distributed ?? 0),
+          sub:
+            admin?.points_wow_pct != null
+              ? `${admin.points_wow_pct > 0 ? "+" : ""}${admin.points_wow_pct.toFixed(1)}% WoW`
+              : "SPARK point system",
+          subClass:
+            (admin?.points_wow_pct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400",
+        },
+        { label: "Total Followers (All)", value: formatNumber(admin?.total_followers ?? 0), sub: "Live scrapes" },
+        { label: "Total Views (All)", value: formatNumber(admin?.total_views ?? 0), sub: "Post views sum" },
+        { label: "Total Engagement (All)", value: formatNumber(admin?.total_engagement ?? 0), sub: "Likes + comments" },
+      ];
 
   return (
     <div className="space-y-6">
@@ -90,6 +151,34 @@ export default function AdminLeaderboardPage() {
           <h1 className="text-3xl font-semibold tracking-tight">Leaderboard</h1>
           <p className="mt-1 text-sm text-zinc-500">
             Sort pills reorder by real scraped metrics. OVERALL uses SPARK points calculated from those metrics.
+            {rangeActive && appliedFrom && appliedTo ? (
+              <>
+                {" "}
+                Showing period{" "}
+                <span className="text-zinc-300">
+                  {appliedFrom} → {appliedTo}
+                </span>
+                .
+              </>
+            ) : rangeActive ? (
+              <>
+                {" "}
+                Showing period filter
+                {appliedFrom ? (
+                  <>
+                    {" "}
+                    from <span className="text-zinc-300">{appliedFrom}</span>
+                  </>
+                ) : null}
+                {appliedTo ? (
+                  <>
+                    {" "}
+                    to <span className="text-zinc-300">{appliedTo}</span>
+                  </>
+                ) : null}
+                .
+              </>
+            ) : null}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -107,22 +196,7 @@ export default function AdminLeaderboardPage() {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        {[
-          { label: "Total Creators", value: formatNumber(admin?.total_participants ?? ranked.length), sub: "Across campuses" },
-          {
-            label: "Total Points Distributed",
-            value: formatNumber(admin?.total_points_distributed ?? 0),
-            sub:
-              admin?.points_wow_pct != null
-                ? `${admin.points_wow_pct > 0 ? "+" : ""}${admin.points_wow_pct.toFixed(1)}% WoW`
-                : "SPARK point system",
-            subClass:
-              (admin?.points_wow_pct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400",
-          },
-          { label: "Total Followers (All)", value: formatNumber(admin?.total_followers ?? 0), sub: "Live scrapes" },
-          { label: "Total Views (All)", value: formatNumber(admin?.total_views ?? 0), sub: "Post views sum" },
-          { label: "Total Engagement (All)", value: formatNumber(admin?.total_engagement ?? 0), sub: "Likes + comments" },
-        ].map((k) => (
+        {kpiCards.map((k) => (
           <div key={k.label} className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4">
             <div className="text-[11px] uppercase tracking-[0.1em] text-zinc-500">{k.label}</div>
             <div className="mt-2 text-2xl font-semibold tabular">{k.value}</div>
@@ -211,6 +285,55 @@ export default function AdminLeaderboardPage() {
             </button>
           </div>
         </div>
+
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
+          <label className="flex flex-col gap-1 text-[11px] uppercase tracking-[0.08em] text-zinc-500">
+            From
+            <input
+              type="date"
+              value={fromDate}
+              onChange={(e) => {
+                setFromDate(e.target.value);
+                setPage(1);
+              }}
+              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm normal-case tracking-normal text-zinc-200 [color-scheme:dark]"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-[11px] uppercase tracking-[0.08em] text-zinc-500">
+            To
+            <input
+              type="date"
+              value={toDate}
+              onChange={(e) => {
+                setToDate(e.target.value);
+                setPage(1);
+              }}
+              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm normal-case tracking-normal text-zinc-200 [color-scheme:dark]"
+            />
+          </label>
+          {rangeActive ? (
+            <button
+              type="button"
+              onClick={clearDates}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-300 hover:border-[#ff4d00]/40"
+            >
+              <X size={14} /> Clear dates
+            </button>
+          ) : null}
+          {rangeActive && appliedFrom && appliedTo ? (
+            <span className="rounded-full border border-[#ff4d00]/35 bg-[#ff4d00]/10 px-3 py-1.5 text-xs text-[#ff4d00]">
+              {appliedFrom} → {appliedTo}
+            </span>
+          ) : null}
+        </div>
+        {rangeInvalid ? (
+          <p className="mt-2 text-[11px] text-rose-400">From date must be on or before To date.</p>
+        ) : (
+          <p className="mt-2 text-[11px] text-zinc-500">
+            Date range ranks creators from posts still stored after the latest scrape. Very old ranges may under-count
+            if older posts aged out.
+          </p>
+        )}
 
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[900px] text-left text-sm">
@@ -307,7 +430,7 @@ export default function AdminLeaderboardPage() {
                   </td>
                 </tr>
               ))}
-              {!pageRows.length && (
+              {!pageRows.length && !rangeInvalid && (
                 <tr>
                   <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
                     No creators match these filters.
@@ -321,8 +444,9 @@ export default function AdminLeaderboardPage() {
         <p className="mt-3 text-[11px] text-zinc-500">
           <span className="text-zinc-300">OVERALL / POINTS</span> = SPARK score from scraped posts (consistency +
           performance + growth).{" "}
-          <span className="text-zinc-300">FOLLOWERS / VIEWS / ENGAGEMENT</span> = live Instagram metrics. Orange column
-          is the active sort.
+          <span className="text-zinc-300">FOLLOWERS / VIEWS / ENGAGEMENT</span> ={" "}
+          {rangeActive ? "metrics for the selected date range" : "live Instagram metrics"}. Orange column is the active
+          sort.
         </p>
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">

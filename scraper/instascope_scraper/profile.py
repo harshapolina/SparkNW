@@ -315,7 +315,24 @@ def _merge_posts(base: list[ScrapedPost], extra: list[ScrapedPost]) -> list[Scra
     return out
 
 
-async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: str | None) -> list[ScrapedPost]:
+async def _emit_progress(on_progress, **payload: Any) -> None:
+    if not on_progress:
+        return
+    try:
+        res = on_progress(payload)
+        if asyncio.iscoroutine(res):
+            await res
+    except Exception:
+        logger.exception("on_progress callback failed")
+
+
+async def _expand_all_posts(
+    username: str,
+    user: dict[str, Any],
+    *,
+    proxy_url: str | None,
+    on_progress=None,
+) -> list[ScrapedPost]:
     """Paginate until scraped posts reach Instagram posts_count (not just first ~12)."""
     from instascope_scraper.http_profile import _timeline_from_user, fetch_all_media_nodes
 
@@ -327,6 +344,12 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
     expected = _expected_posts_count(user)
     initial_nodes, cursor, has_next = _timeline_from_user(user)
     posts = _posts_from_nodes(initial_nodes)
+    await _emit_progress(
+        on_progress,
+        phase="timeline",
+        scraped_posts=len(posts),
+        total_posts=expected,
+    )
     logger.info(
         "expand @%s start expected=%s initial=%s has_next=%s cursor=%s proxy=%s",
         username,
@@ -395,6 +418,12 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
                 )
                 if len(posts) > before:
                     progressed = True
+                await _emit_progress(
+                    on_progress,
+                    phase="timeline",
+                    scraped_posts=len(posts),
+                    total_posts=expected,
+                )
             except Exception:
                 logger.exception(
                     "expand @%s round=%s proxy=%s FAILED",
@@ -424,11 +453,23 @@ async def _expand_all_posts(username: str, user: dict[str, Any], *, proxy_url: s
 
     # HTTP media-info pass for reel play counts (before browser enrich)
     try:
+        await _emit_progress(
+            on_progress,
+            phase="enriching",
+            scraped_posts=len(posts),
+            total_posts=expected or len(posts),
+        )
         posts = await _enrich_views_via_http(posts, username=username, proxy_url=proxy_url)
     except Exception:
         logger.exception("expand @%s view enrich failed", username)
 
     logger.info("expand @%s done collected=%s expected=%s", username, len(posts), expected)
+    await _emit_progress(
+        on_progress,
+        phase="timeline",
+        scraped_posts=len(posts),
+        total_posts=expected or len(posts),
+    )
     return posts
 
 
@@ -1420,9 +1461,11 @@ async def _scrape_live(
     headless: bool,
     proxy: Optional[ProxyConfig],
     delay: float,
+    on_progress=None,
 ) -> ScrapeResult:
     # 1) Fast path: public web_profile_info over HTTP — paginate until posts_count
     http_result: ScrapeResult | None = None
+    await _emit_progress(on_progress, phase="starting", scraped_posts=0, total_posts=0)
     try:
         from instascope_scraper.http_profile import (
             fetch_timeline_via_username_feed,
@@ -1440,7 +1483,9 @@ async def _scrape_live(
         if user:
             if not bool(user.get("is_private")):
                 try:
-                    all_posts = await _expand_all_posts(username, user, proxy_url=proxy_url)
+                    all_posts = await _expand_all_posts(
+                        username, user, proxy_url=proxy_url, on_progress=on_progress
+                    )
                     http_result = _result_from_user(username, user, posts_override=all_posts)
                 except Exception:
                     logger.exception("http expand @%s failed — falling back to card edges", username)
@@ -1907,6 +1952,7 @@ async def scrape_profile(
     proxy: Optional[ProxyConfig] = None,
     delay_seconds: float = 2.0,
     live: Optional[bool] = None,
+    on_progress=None,
 ) -> ScrapeResult:
     """Always scrapes live Instagram data. `live` is kept for API compatibility."""
     _ = live  # ignored — real data only
@@ -1940,6 +1986,7 @@ async def scrape_profile(
                 headless=headless,
                 proxy=proxy,
                 delay=delay_seconds + attempt,
+                on_progress=on_progress,
             )
             logger.info(
                 "scrape_profile @%s OK attempt=%s posts=%s/%s path=%s",
@@ -1948,6 +1995,12 @@ async def scrape_profile(
                 len(result.posts),
                 result.posts_count,
                 (result.raw or {}).get("path"),
+            )
+            await _emit_progress(
+                on_progress,
+                phase="done",
+                scraped_posts=len(result.posts),
+                total_posts=result.posts_count or len(result.posts),
             )
             return result
         except ScrapeError as exc:

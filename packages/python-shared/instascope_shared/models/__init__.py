@@ -131,6 +131,9 @@ class Profile(Document):
     # SPARK student roster fields from registration sheet (never overwritten by scrape)
     student: dict = Field(default_factory=dict)
 
+    # Live scrape progress for UI (scraped/total/percent/phase); cleared when done
+    scrape_progress: Optional[dict] = None
+
     status: ProfileStatus = ProfileStatus.ACTIVE
     last_scraped_at: Optional[datetime] = None
     last_success_at: Optional[datetime] = None

@@ -41,6 +41,7 @@ def to_profile_response(p: Profile) -> ProfileResponse:
         follower_following_ratio=float(getattr(p, "follower_following_ratio", 0.0) or 0.0),
         insights=dict(getattr(p, "insights", None) or {}),
         student=student,
+        scrape_progress=dict(getattr(p, "scrape_progress", None) or {}) or None,
         status=p.status.value if hasattr(p.status, "value") else str(p.status),
         last_scraped_at=p.last_scraped_at,
         last_success_at=p.last_success_at,

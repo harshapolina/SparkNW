@@ -131,14 +131,22 @@ def _post_performance_pts(post: Post) -> tuple[int, bool, str]:
     return pts, long_form, mt
 
 
+def _naive_dt(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value.replace(tzinfo=None) if value.tzinfo else value
+
+
 def compute_spark_points(
     posts: list[Post],
     followers: int,
     *,
     as_of: datetime | None = None,
+    from_date: datetime | None = None,
 ) -> int:
     """Raw SPARK points (consistency + capped performance + growth) as of a timestamp."""
-    now = as_of.replace(tzinfo=None) if as_of and as_of.tzinfo else (as_of or datetime.utcnow())
+    now = _naive_dt(as_of) or datetime.utcnow()
+    window_start = _naive_dt(from_date)
     week_ago = now - timedelta(days=7)
     consistency = 0
     posts_7d = 0
@@ -148,7 +156,10 @@ def compute_spark_points(
 
     for post in posts:
         posted = post.posted_at
-        posted_naive = posted.replace(tzinfo=None) if posted else None
+        posted_naive = _naive_dt(posted)
+        if window_start is not None:
+            if posted_naive is None or posted_naive < window_start:
+                continue
         if as_of and posted_naive and posted_naive > now:
             continue
         pts, long_form, mt = _post_performance_pts(post)
@@ -171,10 +182,12 @@ def score_profile(
     posts: list[Post],
     *,
     as_of: datetime | None = None,
+    from_date: datetime | None = None,
     followers_override: int | None = None,
 ) -> dict[str, Any]:
     """Compute SPARK points from real scrape metrics."""
-    now = as_of.replace(tzinfo=None) if as_of and as_of.tzinfo else (as_of or datetime.utcnow())
+    now = _naive_dt(as_of) or datetime.utcnow()
+    window_start = _naive_dt(from_date)
     week_ago = now - timedelta(days=7)
     follower_count = int(followers_override if followers_override is not None else (profile.followers or 0))
 
@@ -190,7 +203,11 @@ def score_profile(
 
     for post in posts:
         posted = post.posted_at
-        posted_naive = posted.replace(tzinfo=None) if posted else None
+        posted_naive = _naive_dt(posted)
+        if window_start is not None:
+            # Period mode: posts without posted_at cannot be attributed to the window.
+            if posted_naive is None or posted_naive < window_start:
+                continue
         if as_of and posted_naive and posted_naive > now:
             continue
 
@@ -299,24 +316,42 @@ def score_profile(
 
     # Consistency score 0-100 from recent posting
     insights = profile.insights or {}
-    posts_30 = int(insights.get("posts_last_30d") or 0)
+    posts_30 = int(insights.get("posts_last_30d") or 0) if window_start is None else 0
     if posts_30 == 0:
         posts_30 = sum(
             1
             for p in posts
-            if p.posted_at and p.posted_at.replace(tzinfo=None) >= now - timedelta(days=30)
+            if p.posted_at
+            and (window_start is None or _naive_dt(p.posted_at) >= window_start)
+            and _naive_dt(p.posted_at) >= now - timedelta(days=30)
+            and (not as_of or _naive_dt(p.posted_at) <= now)
         )
     consistency_score = min(100, int((posts_7d / 3) * 40 + min(posts_30, 12) / 12 * 60))
 
     engagement = float(profile.engagement_rate or 0)
-    if engagement <= 0 and profile.followers:
+    if window_start is not None:
+        # Period board: rate from posts in the selected window only.
+        period_posts = sum(
+            1
+            for p in posts
+            if p.posted_at
+            and _naive_dt(p.posted_at) is not None
+            and _naive_dt(p.posted_at) >= window_start
+            and (not as_of or _naive_dt(p.posted_at) <= now)
+        )
+        if follower_count > 0 and period_posts > 0:
+            avg_eng = (total_likes + total_comments) / period_posts
+            engagement = round((avg_eng / follower_count) * 100, 2)
+        else:
+            engagement = 0.0
+    elif engagement <= 0 and profile.followers:
         avg_eng = (float(profile.avg_likes or 0) + float(profile.avg_comments or 0))
         engagement = round((avg_eng / max(profile.followers, 1)) * 100, 2)
 
     grit = "not_eligible"
-    if profile.followers >= 50_000:
+    if follower_count >= 50_000:
         grit = "qualified"
-    elif profile.followers >= 30_000 or points >= 2000:
+    elif follower_count >= 30_000 or points >= 2000:
         grit = "striking"
     elif profile.status == ProfileStatus.FAILED or posts_7d == 0:
         grit = "at_risk"
@@ -331,6 +366,7 @@ def score_profile(
 
     next_tier, remaining = _points_to_next(points)
 
+    use_period_totals = window_start is not None
     return {
         "id": str(profile.id),
         "profile_id": str(profile.id),
@@ -349,9 +385,11 @@ def score_profile(
             "bonus": max(0, bonus),
         },
         "followers": follower_count,
-        "views": int(total_views or insights.get("total_views_sampled") or 0),
-        "likes": int(total_likes or insights.get("total_likes_sampled") or 0),
-        "comments": int(total_comments or insights.get("total_comments_sampled") or 0),
+        "views": int(total_views if use_period_totals else (total_views or insights.get("total_views_sampled") or 0)),
+        "likes": int(total_likes if use_period_totals else (total_likes or insights.get("total_likes_sampled") or 0)),
+        "comments": int(
+            total_comments if use_period_totals else (total_comments or insights.get("total_comments_sampled") or 0)
+        ),
         "engagement": engagement,
         "avg_likes": float(profile.avg_likes or 0),
         "avg_views": float(profile.avg_views or 0),
@@ -400,6 +438,15 @@ async def _posts_for_profiles(profile_ids: list[str]) -> dict[str, list[Post]]:
     return by
 
 
+def _latest_snap_by_profile(snaps: list[ProfileSnapshot]) -> dict[str, ProfileSnapshot]:
+    latest: dict[str, ProfileSnapshot] = {}
+    for s in snaps:
+        cur = latest.get(s.profile_id)
+        if not cur or s.snapshot_date > cur.snapshot_date:
+            latest[s.profile_id] = s
+    return latest
+
+
 async def build_leaderboard(
     org_id: str | None = None,
     *,
@@ -407,6 +454,8 @@ async def build_leaderboard(
     profiles: list[Profile] | None = None,
     posts_map: dict[str, list[Post]] | None = None,
     you_profile_id: str | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
 ) -> list[dict[str, Any]]:
     oid = org_id or DEFAULT_ORG_ID
     if profiles is None:
@@ -415,22 +464,47 @@ async def build_leaderboard(
     if posts_map is None:
         posts_map = await _posts_for_profiles(profile_ids)
 
-    # Previous ranks from last week's snapshot ordering by followers as proxy
-    week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
-    snaps = await ProfileSnapshot.find(
-        {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": week_ago}}
-    ).to_list() if profile_ids else []
-    # latest snap per profile on/before week_ago
-    latest_prev: dict[str, ProfileSnapshot] = {}
-    for s in snaps:
-        cur = latest_prev.get(s.profile_id)
-        if not cur or s.snapshot_date > cur.snapshot_date:
-            latest_prev[s.profile_id] = s
+    window_start = _naive_dt(from_date)
+    window_end = _naive_dt(to_date)
+    period_mode = window_start is not None or window_end is not None
+
+    # Previous ranks: on/before from_date when ranged, else ~7 days ago (followers proxy)
+    if period_mode and window_start is not None:
+        prev_cutoff = window_start.strftime("%Y-%m-%d")
+    else:
+        prev_cutoff = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    prev_snaps = (
+        await ProfileSnapshot.find(
+            {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": prev_cutoff}}
+        ).to_list()
+        if profile_ids
+        else []
+    )
+    latest_prev = _latest_snap_by_profile(prev_snaps)
     prev_followers = {pid: s.followers for pid, s in latest_prev.items()}
     prev_order = sorted(prev_followers.items(), key=lambda x: x[1], reverse=True)
     prev_rank = {pid: i + 1 for i, (pid, _) in enumerate(prev_order)}
 
-    rows = [score_profile(p, posts_map.get(str(p.id), [])) for p in profiles]
+    followers_at_end: dict[str, int] = {}
+    if period_mode and window_end is not None and profile_ids:
+        end_cutoff = window_end.strftime("%Y-%m-%d")
+        end_snaps = await ProfileSnapshot.find(
+            {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": end_cutoff}}
+        ).to_list()
+        for pid, snap in _latest_snap_by_profile(end_snaps).items():
+            followers_at_end[pid] = int(snap.followers or 0)
+
+    rows: list[dict[str, Any]] = []
+    for p in profiles:
+        pid = str(p.id)
+        score_kwargs: dict[str, Any] = {}
+        if period_mode:
+            score_kwargs["from_date"] = window_start
+            score_kwargs["as_of"] = window_end
+            if pid in followers_at_end:
+                score_kwargs["followers_override"] = followers_at_end[pid]
+        rows.append(score_profile(p, posts_map.get(pid, []), **score_kwargs))
 
     def sort_key(r: dict[str, Any]) -> tuple:
         if sort == "followers":

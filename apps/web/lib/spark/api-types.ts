@@ -54,6 +54,10 @@ export type LeaderboardResponse = {
   sort: LeaderboardSort;
   you?: SparkCreatorRow | null;
   in_top_10?: boolean;
+  /** Inclusive period start when date-range filter is applied */
+  from_date?: string | null;
+  /** Inclusive period end when date-range filter is applied */
+  to_date?: string | null;
 };
 
 export type Top10Response = {

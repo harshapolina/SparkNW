@@ -112,6 +112,7 @@ class ProfileResponse(BaseModel):
     follower_following_ratio: float = 0.0
     insights: dict[str, Any] = Field(default_factory=dict)
     student: dict[str, Any] = Field(default_factory=dict)
+    scrape_progress: Optional[dict[str, Any]] = None
     status: str
     last_scraped_at: Optional[datetime] = None
     last_success_at: Optional[datetime] = None
