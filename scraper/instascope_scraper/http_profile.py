@@ -34,27 +34,35 @@ class InstagramUserNotFound(Exception):
 
 
 def _looks_like_user_not_found(status: int, payload: Any, snip: str = "") -> bool:
-    if status == 404:
+    """True only when Instagram *explicitly* says the username is missing.
+
+    Important: anonymous ``web_profile_info`` often returns HTTP 404 HTML titled
+    "Page Not Found" for accounts that **do exist** (login wall / rate limit).
+    Treating bare 404 as not-found incorrectly marks real handles like
+    ``samaaa.says`` as unavailable.
+    """
+    if isinstance(payload, dict):
+        msg = str(payload.get("message") or "").lower()
+        err_type = str(payload.get("error_type") or "").lower()
+        title = str(payload.get("error_title") or "").lower()
+        if (
+            "user not found" in msg
+            or "no users found" in msg
+            or "user_not_found" in err_type
+            or "user not found" in title
+        ):
+            return True
+
+    low = (snip or "").lower()
+    # Soft-404 copy on the *profile page* — not the generic API 404 shell.
+    if "sorry, this page isn't available" in low or "the link you followed may be broken" in low:
         return True
-    blob = " ".join(
-        [
-            snip or "",
-            str((payload or {}).get("message") if isinstance(payload, dict) else ""),
-            str((payload or {}).get("error_title") if isinstance(payload, dict) else ""),
-            str((payload or {}).get("error_type") if isinstance(payload, dict) else ""),
-        ]
-    ).lower()
-    needles = (
-        "user not found",
-        "no users found",
-        "page not found",
-        "doesn't exist",
-        "does not exist",
-        "isn't available",
-        "isnt available",
-        "not available right now",
-    )
-    return any(n in blob for n in needles)
+    if "user not found" in low or "no users found" in low:
+        return True
+
+    # Bare HTTP 404 / title "Page Not Found • Instagram" is NOT enough.
+    _ = status  # kept for call-site compatibility
+    return False
 
 IG_APP_ID = "936619743392459"
 UA = (
@@ -274,15 +282,17 @@ async def fetch_profile_meta_card(
             headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout
         ) as client:
             res = await client.get(url)
-            if res.status_code == 404:
+            html = res.text or ""
+            low = html.lower()
+            # Soft-404 only — bare HTTP 404 is unreliable for existing private/login-walled accounts.
+            if (
+                "sorry, this page isn't available" in low
+                or "the link you followed may be broken" in low
+            ):
                 raise InstagramUserNotFound(username)
             if res.status_code != 200:
                 logger.warning("meta_card @%s → HTTP %s", username, res.status_code)
                 return None
-            html = res.text or ""
-            low = html.lower()
-            if "sorry, this page isn't available" in low or "the link you followed may be broken" in low:
-                raise InstagramUserNotFound(username)
     except InstagramUserNotFound:
         raise
     except Exception:

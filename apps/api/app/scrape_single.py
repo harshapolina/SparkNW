@@ -19,7 +19,7 @@ from app.scrape_lease import (
     current_generation,
     release,
 )
-from instascope_shared.models import Job, Profile
+from instascope_shared.models import Job, Profile, ProfileStatus
 from instascope_shared.services.scrape_core import progress_payload, run_profile_scrape
 
 log = logging.getLogger("instascope.api.scrape_single")
@@ -54,6 +54,9 @@ async def mark_single_queued(profile: Profile) -> None:
         source="single",
     )
     profile.last_error = None
+    # Allow Refresh to retry handles wrongly marked unavailable (false IG 404s).
+    if profile.status == ProfileStatus.UNAVAILABLE:
+        profile.status = ProfileStatus.ACTIVE
     profile.updated_at = datetime.utcnow()
     await profile.save()
 

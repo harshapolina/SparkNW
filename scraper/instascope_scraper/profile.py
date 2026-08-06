@@ -2236,17 +2236,12 @@ async def _scrape_live_browser(
 
         await asyncio.sleep(max(delay, 2.0))
 
-        if response and response.status == 404:
-            await context.close()
-            raise ScrapeError(
-                f"Profile @{username} does not exist on Instagram",
-                unavailable=True,
-            )
-
         try:
             body_text = (await page.locator("body").inner_text(timeout=5_000))[:2000].lower()
         except Exception:
             body_text = ""
+        # Soft-404 copy only. Bare HTTP 404 from IG is often a login/API shell for
+        # accounts that still exist (e.g. bare handles like samaaa.says).
         if (
             "sorry, this page isn't available" in body_text
             or "the link you followed may be broken" in body_text
