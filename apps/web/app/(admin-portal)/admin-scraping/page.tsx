@@ -231,6 +231,20 @@ export default function AdminScrapingPage() {
           </button>
           {error && <p className="text-sm text-rose-400">{error}</p>}
         </div>
+        {addProgress ? (
+          <div className="mt-4 space-y-2 rounded-xl border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-200">
+            <div className="flex items-center justify-between gap-3">
+              <span>{addProgress.label}</span>
+              <span className="tabular text-xs text-sky-300">{addProgress.percent}%</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-black/40">
+              <div
+                className="h-full rounded-full bg-[#ff3b30] transition-all duration-500"
+                style={{ width: `${Math.min(100, Math.max(0, addProgress.percent))}%` }}
+              />
+            </div>
+          </div>
+        ) : null}
       </form>
 
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">

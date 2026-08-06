@@ -19,7 +19,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { api, type Profile } from "@/lib/api";
 import { studentDetailFields } from "@/lib/student-fields";
 import { formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
-import { waitForProfileScrape } from "@/lib/wait-for-scrape";
+import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
 
 type Post = {
   id: string;
@@ -155,23 +155,44 @@ export default function ProfileDetailPage() {
     placeholderData: (prev) => prev,
   });
 
+  const [refreshError, setRefreshError] = useState("");
+  const [progress, setProgress] = useState<{ percent: number; label: string } | null>(null);
+
   const refresh = useMutation({
     mutationFn: async () => {
       const before = profileQ.data;
+      setProgress({ percent: 0, label: "Queued…" });
       await api(`/profiles/${profileId}/refresh`, { method: "POST" });
       return waitForProfileScrape(profileId, {
         since: before?.last_scraped_at,
         prevFollowers: before?.followers,
         prevPosts: before?.posts_count,
+        onProgress: (prog) => {
+          setProgress({
+            percent: prog?.percent ?? 0,
+            label: formatScrapeProgress(prog),
+          });
+        },
       });
     },
-    onSuccess: () => {
+    onSuccess: (done) => {
+      if (done.status === "failed") {
+        setProgress(null);
+        setRefreshError(humanizeScrapeError(done.last_error) || "Scrape failed");
+      } else {
+        setRefreshError("");
+        setProgress({ percent: 100, label: "Done" });
+      }
       void qc.invalidateQueries({ queryKey: ["profile", profileId] });
       void qc.invalidateQueries({ queryKey: ["posts", profileId] });
       void qc.invalidateQueries({ queryKey: ["history", profileId] });
       void qc.invalidateQueries({ queryKey: ["analytics", profileId] });
       void qc.invalidateQueries({ queryKey: ["overview"] });
       void qc.invalidateQueries({ queryKey: ["profiles"] });
+    },
+    onError: (e: Error) => {
+      setProgress(null);
+      setRefreshError(humanizeScrapeError(e.message) || e.message);
     },
   });
 
@@ -262,12 +283,24 @@ export default function ProfileDetailPage() {
                 <Trash2 size={15} /> Delete
               </Button>
             </div>
-            {refresh.isError && (
-              <p className="max-w-xs text-right text-xs text-danger">
-                {(refresh.error as Error)?.message || "Refresh request failed"}
-              </p>
+            {refreshError && (
+              <p className="max-w-xs text-right text-xs text-danger">{refreshError}</p>
             )}
-            {refresh.isSuccess && !refresh.isError && (
+            {progress && !refreshError && (
+              <div className="w-full max-w-xs space-y-1.5 text-left">
+                <div className="flex items-center justify-between gap-2 text-xs text-muted">
+                  <span className="line-clamp-2">{progress.label}</span>
+                  <span className="tabular shrink-0">{progress.percent}%</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-black/10">
+                  <div
+                    className="h-full rounded-full bg-accent transition-all duration-500"
+                    style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            {refresh.isSuccess && !refresh.isError && !refresh.isPending && !refreshError && progress?.percent === 100 && (
               <p className="max-w-xs text-right text-xs text-muted">
                 Scrape finished — Insights and posts are updated.
               </p>

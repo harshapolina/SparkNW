@@ -65,7 +65,19 @@ async def add_profile(payload: AddProfileRequest, user: User = Depends(get_curre
     10+ minutes and often aborted the work. The durable scrape queue runs the
     same inline scraper after we return.
     """
+    from datetime import datetime
+
     profile = await profile_service.add_profile(str(user.id), payload)
+    profile.scrape_progress = {
+        "active": True,
+        "phase": "queued",
+        "scraped_posts": 0,
+        "total_posts": int(profile.posts_count or 0),
+        "posts_left": int(profile.posts_count or 0),
+        "percent": 0,
+    }
+    profile.updated_at = datetime.utcnow()
+    await profile.save()
     await enqueue_profile_ids([str(profile.id)])
     profile = await profile_service.get_profile(str(user.id), str(profile.id))
     return to_profile_response(profile)
