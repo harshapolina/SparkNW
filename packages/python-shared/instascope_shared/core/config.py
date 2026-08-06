@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     scrape_delay_seconds: float = 2.0
     scrape_max_retries: int = 3
     scrape_proxy_url: str | None = None
+    # Optional multi-proxy (Decodo ports). Prefer these over a single URL when set.
+    scrape_proxy_urls: str | None = None
+    scrape_proxy_host: str | None = None
+    scrape_proxy_user: str | None = None
+    scrape_proxy_pass: str | None = None
+    scrape_proxy_ports: str | None = None
+    scrape_proxy_scheme: str = "http"
     scrape_headless: bool = True
     daily_scrape_hour_utc: int = 3
 

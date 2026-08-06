@@ -191,6 +191,9 @@ async def fetch_web_profile_http(username: str, *, proxy: str | None = None) -> 
     headers = _client_headers(username)
     url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
     timeout = httpx.Timeout(45.0)
+    # Proxies should fail fast so we can rotate to the next Decodo port.
+    if proxy:
+        timeout = httpx.Timeout(connect=15.0, read=30.0, write=30.0, pool=15.0)
     async with httpx.AsyncClient(headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout) as client:
         await _bootstrap_session(client, username)
         headers = _client_headers(username)

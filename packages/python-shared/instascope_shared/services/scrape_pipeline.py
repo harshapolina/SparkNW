@@ -61,32 +61,14 @@ def _is_complete_enough(posts_count: int, scraped: int, followers: int) -> bool:
             return True
         return False
 
-    # Full-timeline mode (legacy strictness).
+    # Full-timeline mode — still accept a strong partial rather than failing to zeros
+    # when Instagram rate-limits mid-pagination (common on VPS / shared IPs).
+    if followers > 0 and scraped >= 12:
+        return True
     if posts_count > 0:
         need = posts_count if posts_count <= 12 else max(posts_count - 2, 1)
         return scraped >= need
     return scraped > 0 or followers > 0
-
-
-def humanize_scrape_error(err: BaseException | str) -> str:
-    """User-facing scrape failure text."""
-    raw = str(err)
-    low = raw.lower()
-    if "err_tunnel" in low or "tunnel_connection" in low:
-        return "Proxy tunnel failed opening Instagram. Check Decodo credentials, then Refresh."
-    if "net::err_" in low or "page.goto" in low:
-        return "Network error reaching Instagram via proxy. Refresh to retry (HTTP fallback enabled)."
-    if "login wall" in low or ("login" in low and "blocked" in low):
-        return "Instagram showed a login wall. Verify residential proxy session."
-    if "incomplete timeline" in low:
-        return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
-    if "refusing to save" in low:
-        return "Scrape was incomplete and was not saved over existing data. Please Refresh again."
-    if "not found" in low:
-        return raw
-    if len(raw) > 220:
-        return raw[:217] + "..."
-    return raw
 
 
 def is_soft_scrape_failure(error: BaseException | str | None) -> bool:
@@ -99,8 +81,43 @@ def is_soft_scrape_failure(error: BaseException | str | None) -> bool:
         or "refusing to save" in low
         or "pagination" in low
         or "still short" in low
+        or "rate-limited" in low
+        or "rate limited" in low
+        or "please wait" in low
+        or "timed out" in low
         or ("attribute" in low and "collection" in low)  # leftover AttributeError junk in DB
     )
+
+
+def humanize_scrape_error(err: BaseException | str) -> str:
+    """User-facing scrape failure text."""
+    raw = str(err)
+    low = raw.lower()
+    if "err_tunnel" in low or "tunnel_connection" in low:
+        return "Proxy tunnel failed opening Instagram. Check Decodo credentials, then Refresh."
+    if "net::err_" in low or "page.goto" in low:
+        return "Network error reaching Instagram via proxy. Refresh to retry (HTTP fallback enabled)."
+    if "login wall" in low or ("login" in low and "blocked" in low):
+        return "Instagram showed a login wall. Verify residential proxy session."
+    if "could not extract" in low:
+        return (
+            "Instagram blocked this server IP. Wait a few minutes and Refresh, "
+            "or configure SCRAPE_PROXY_URL (residential)."
+        )
+    if "rate-limited" in low or "rate limited" in low or "please wait" in low:
+        return (
+            "Instagram rate-limited this server. Wait a few minutes, then Refresh. "
+            "A residential SCRAPE_PROXY_URL avoids this."
+        )
+    if "incomplete timeline" in low:
+        return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
+    if "refusing to save" in low:
+        return "Scrape was incomplete and was not saved over existing data. Please Refresh again."
+    if "not found" in low:
+        return raw
+    if len(raw) > 220:
+        return raw[:217] + "..."
+    return raw
 
 
 async def heal_soft_scrape_failure(profile: Profile) -> bool:

@@ -375,10 +375,20 @@ async def _expand_all_posts(
         return seed
 
     # Keep going until we hit posts_count (or exhaust rounds).
-    # Alternate proxy ↔ direct so residential stalls don't freeze at page 1.
+    # Rotate residential proxies so one rate-limited port doesn't stall pagination.
     rounds = max(1, int(os.getenv("SCRAPE_EXPAND_ROUNDS") or "8"))
-    proxy_cycle: list[str | None] = [proxy_url]
-    if proxy_url and os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0":
+    from instascope_scraper.proxy_pool import all_proxy_httpx_urls
+
+    pool_urls = all_proxy_httpx_urls()
+    proxy_cycle: list[str | None] = []
+    if proxy_url:
+        proxy_cycle.append(proxy_url)
+    for u in pool_urls:
+        if u not in proxy_cycle:
+            proxy_cycle.append(u)
+    if not proxy_cycle:
+        proxy_cycle = [None]
+    if os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0" and None not in proxy_cycle:
         proxy_cycle.append(None)
 
     stagnant_rounds = 0
@@ -1474,11 +1484,29 @@ async def _scrape_live(
 
         proxy_url = proxy_to_httpx_url(proxy)
         await _emit_progress(on_progress, phase="http_profile", scraped_posts=0, total_posts=0)
-        http_json = await fetch_web_profile_http(username, proxy=proxy_url)
-        # If proxy fails profile card, try direct once
-        if not http_json and proxy_url and os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0":
-            http_json = await fetch_web_profile_http(username, proxy=None)
-            proxy_url = None
+
+        # Try each residential port until we get a profile card (avoids one hot IP).
+        from instascope_scraper.proxy_pool import all_proxy_httpx_urls, mark_proxy_bad
+
+        candidate_proxies: list[str | None] = []
+        if proxy_url:
+            candidate_proxies.append(proxy_url)
+        for u in all_proxy_httpx_urls():
+            if u not in candidate_proxies:
+                candidate_proxies.append(u)
+        if os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0" and None not in candidate_proxies:
+            candidate_proxies.append(None)
+        if not candidate_proxies:
+            candidate_proxies = [None]
+
+        http_json = None
+        for cand in candidate_proxies:
+            http_json = await fetch_web_profile_http(username, proxy=cand)
+            if http_json:
+                proxy_url = cand
+                break
+            if cand:
+                mark_proxy_bad(cand, seconds=60)
 
         user = _user_from_web_profile(http_json) if http_json else None
         if user:
@@ -1589,12 +1617,23 @@ async def _scrape_live(
                                     http_result.followers,
                                 )
                                 return _finalize_result(http_result, path="username_feed_full")
+                            # Keep posts even without followers — browser login-wall
+                            # used to wipe this and show "Could not extract".
                             logger.info(
-                                "username_feed_posts @%s posts=%s/%s but followers=0 — browser for card",
+                                "username_feed_posts @%s posts=%s/%s followers=0 — keeping HTTP posts",
                                 username,
                                 len(http_result.posts),
                                 http_result.posts_count,
                             )
+                            return _finalize_result(http_result, path="username_feed_posts")
+                    if http_result and _result_is_usable(http_result):
+                        logger.warning(
+                            "username_feed_partial @%s posts=%s/%s — keeping usable HTTP",
+                            username,
+                            len(http_result.posts),
+                            http_result.posts_count,
+                        )
+                        return _finalize_result(http_result, path="username_feed_partial")
                     logger.warning(
                         "username_feed_partial @%s posts=%s/%s — escalating to browser",
                         username,
@@ -1607,7 +1646,29 @@ async def _scrape_live(
         logger.exception("http fast-path @%s crashed", username)
         http_result = None
 
-    # 2) Browser path only when HTTP timeline is still short
+    # Prefer any usable HTTP result over Playwright. Browser on datacenter IPs
+    # is the #1 source of "Could not extract real profile data" after rate-limits.
+    if http_result and _result_is_usable(http_result):
+        if not _posts_complete(http_result.posts, http_result.posts_count):
+            logger.warning(
+                "http_usable @%s posts=%s/%s followers=%s — returning without browser",
+                username,
+                len(http_result.posts),
+                http_result.posts_count,
+                http_result.followers,
+            )
+            return _finalize_result(http_result, path="http_usable")
+        return _finalize_result(http_result, path="http_full")
+
+    use_browser = os.getenv("SCRAPE_USE_BROWSER", "1").strip() not in {"0", "false", "no"}
+    if not use_browser:
+        raise ScrapeError(
+            "Instagram rate-limited this server IP (no profile card/posts via HTTP). "
+            "Wait a few minutes and Refresh, or set SCRAPE_PROXY_URL to a residential proxy. "
+            "Set SCRAPE_INLINE_USE_BROWSER=1 only if Playwright+proxy is configured."
+        )
+
+    # 2) Browser path only when HTTP returned nothing usable
     try:
         await _emit_progress(
             on_progress,
@@ -1687,6 +1748,77 @@ async def _scrape_live(
                 http_result.followers,
             )
             return _finalize_result(http_result, path="http_partial_after_browser_fail")
+
+        # Always attempt HTTP rescue after browser/extract failures (not only proxy tunnels).
+        # Datacenter IPs often fail browser login-wall while HTTP still returns a card.
+        try:
+            from instascope_scraper.http_profile import (
+                fetch_timeline_via_username_feed,
+                fetch_web_profile_http,
+            )
+
+            proxy_candidates: list[str | None] = []
+            if proxy is not None:
+                proxy_candidates.append(proxy_to_httpx_url(proxy))
+            proxy_candidates.append(None)  # direct
+            for use_proxy in proxy_candidates:
+                try:
+                    await _emit_progress(
+                        on_progress,
+                        phase="http_rescue",
+                        scraped_posts=0,
+                        total_posts=0,
+                    )
+                    http_json = await fetch_web_profile_http(username, proxy=use_proxy)
+                    user = _user_from_web_profile(http_json) if http_json else None
+                    if user:
+                        posts = await _expand_all_posts(
+                            username, user, proxy_url=use_proxy, on_progress=on_progress
+                        )
+                        rescued = _result_from_user(username, user, posts_override=posts)
+                        if _result_is_usable(rescued):
+                            if _posts_complete(rescued.posts, rescued.posts_count):
+                                return _finalize_result(rescued, path="http_rescue_full")
+                            return _finalize_result(rescued, path="http_rescue_partial")
+                    feed_user, feed_nodes = await fetch_timeline_via_username_feed(
+                        username,
+                        expected_count=0,
+                        proxy=use_proxy,
+                        on_progress=on_progress,
+                    )
+                    if feed_nodes:
+                        posts = _posts_from_nodes(feed_nodes)
+                        if feed_user:
+                            rescued = _result_from_user(
+                                username, feed_user, posts_override=posts
+                            )
+                        else:
+                            rescued = ScrapeResult(
+                                username=username,
+                                ig_user_id=None,
+                                full_name=None,
+                                bio=None,
+                                website=None,
+                                avatar_url=None,
+                                is_verified=False,
+                                followers=0,
+                                following=0,
+                                posts_count=len(posts),
+                                posts=posts,
+                                raw={"source": "username_feed_rescue"},
+                            )
+                        if rescued.posts_count <= 0:
+                            rescued.posts_count = len(posts)
+                        if _result_is_usable(rescued):
+                            return _finalize_result(rescued, path="username_feed_rescue")
+                except Exception:
+                    logger.exception(
+                        "http rescue @%s proxy=%s failed", username, bool(use_proxy)
+                    )
+                    continue
+        except Exception:
+            logger.exception("http rescue outer @%s failed", username)
+
         if _is_tunnel_or_proxy_error(exc) and proxy is not None:
             try:
                 from instascope_scraper.http_profile import (
@@ -1719,6 +1851,12 @@ async def _scrape_live(
             except Exception:
                 logger.exception("tunnel fallback outer @%s failed", username)
         if isinstance(exc, ScrapeError):
+            msg = str(exc)
+            if "proxy" not in msg.lower() and "blocked" not in msg.lower():
+                raise ScrapeError(
+                    f"{msg} Set SCRAPE_PROXY_URL to a residential proxy if this server "
+                    f"IP is blocked by Instagram."
+                ) from exc
             raise
         raise ScrapeError(str(exc)) from exc
 
@@ -1889,11 +2027,24 @@ async def _scrape_live_browser(
         if not result:
             title = await page.title()
             await context.close()
+            if http_result and _result_is_usable(http_result):
+                logger.warning(
+                    "browser @%s empty page (title=%r) — keeping HTTP result posts=%s followers=%s",
+                    username,
+                    title,
+                    len(http_result.posts),
+                    http_result.followers,
+                )
+                return _finalize_result(http_result, path="http_kept_after_empty_browser")
             if "login" in (title or "").lower():
                 raise ScrapeError(
-                    "Instagram login wall blocked scraping. Check residential proxy credentials."
+                    "Instagram login wall blocked scraping. Set SCRAPE_PROXY_URL to a "
+                    "residential proxy (datacenter/VPS IPs are usually blocked)."
                 )
-            raise ScrapeError("Could not extract real profile data from Instagram")
+            raise ScrapeError(
+                "Could not extract real profile data from Instagram "
+                "(IP likely blocked). Set SCRAPE_PROXY_URL to a residential proxy."
+            )
 
         og_image = await page.locator('meta[property="og:image"]').get_attribute("content")
         og_title = await page.locator('meta[property="og:title"]').get_attribute("content")
@@ -2016,42 +2167,57 @@ async def scrape_profile(
     if os.getenv("LIVE_SCRAPE", "1") == "0":
         raise ScrapeError("LIVE_SCRAPE=0 — enable LIVE_SCRAPE=1 for real scraping")
 
-    if proxy is None:
-        from instascope_scraper.types import parse_proxy_url
+    from instascope_scraper.proxy_pool import mark_proxy_bad, next_proxy, pool_size, proxy_label
+    from instascope_scraper.types import parse_proxy_url
 
-        proxy = parse_proxy_url(os.getenv("SCRAPE_PROXY_URL") or None)
-    elif proxy.server and "@" in proxy.server:
-        from instascope_scraper.types import parse_proxy_url
-
+    if proxy is not None and proxy.server and "@" in proxy.server:
         parsed = parse_proxy_url(proxy.server)
         if parsed:
             proxy = parsed
 
+    # Prefer rotating residential pool; fall back to a single SCRAPE_PROXY_URL.
+    rotate = pool_size() > 0
+    if proxy is None:
+        proxy = next_proxy() if rotate else parse_proxy_url(os.getenv("SCRAPE_PROXY_URL") or None)
+
     last_err: Exception | None = None
     attempts = int(os.getenv("SCRAPE_MAX_RETRIES", "3"))
+    # When we have multiple ports, try up to pool size (capped) so rate-limits rotate away.
+    if rotate:
+        attempts = max(attempts, min(pool_size(), 5))
     logger.info(
-        "scrape_profile @%s start attempts=%s headless=%s proxy=%s",
+        "scrape_profile @%s start attempts=%s headless=%s proxy=%s pool=%s",
         username,
         attempts,
         headless,
-        bool(proxy),
+        proxy_label(proxy),
+        pool_size(),
     )
     for attempt in range(max(attempts, 1)):
+        if attempt > 0 and rotate:
+            proxy = next_proxy(exclude=proxy)
         try:
+            await _emit_progress(
+                on_progress,
+                phase="starting",
+                scraped_posts=0,
+                total_posts=0,
+            )
             result = await _scrape_live(
                 username,
                 headless=headless,
                 proxy=proxy,
-                delay=delay_seconds + attempt,
+                delay=delay_seconds + min(attempt, 2),
                 on_progress=on_progress,
             )
             logger.info(
-                "scrape_profile @%s OK attempt=%s posts=%s/%s path=%s",
+                "scrape_profile @%s OK attempt=%s posts=%s/%s path=%s proxy=%s",
                 username,
                 attempt + 1,
                 len(result.posts),
                 result.posts_count,
                 (result.raw or {}).get("path"),
+                proxy_label(proxy),
             )
             await _emit_progress(
                 on_progress,
@@ -2065,21 +2231,41 @@ async def scrape_profile(
             if exc.unavailable:
                 raise
             last_err = exc
+            msg = str(exc).lower()
+            if any(
+                n in msg
+                for n in (
+                    "rate-limited",
+                    "rate limited",
+                    "please wait",
+                    "login wall",
+                    "could not extract",
+                    "tunnel",
+                    "proxy",
+                    "timed out",
+                    "timeout",
+                )
+            ):
+                mark_proxy_bad(proxy)
             logger.warning(
-                "scrape_profile @%s ScrapeError attempt=%s/%s: %s",
+                "scrape_profile @%s ScrapeError attempt=%s/%s proxy=%s: %s",
                 username,
                 attempt + 1,
                 attempts,
+                proxy_label(proxy),
                 exc,
             )
             await asyncio.sleep(delay_seconds * (attempt + 1))
         except Exception as exc:  # noqa: BLE001
             last_err = exc
-            logger.exception(
-                "scrape_profile @%s unexpected error attempt=%s/%s",
+            mark_proxy_bad(proxy)
+            logger.warning(
+                "scrape_profile @%s error attempt=%s/%s proxy=%s: %s",
                 username,
                 attempt + 1,
                 attempts,
+                proxy_label(proxy),
+                exc,
             )
             await asyncio.sleep(delay_seconds * (attempt + 1))
 

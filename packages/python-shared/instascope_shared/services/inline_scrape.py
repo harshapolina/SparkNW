@@ -12,6 +12,7 @@ from instascope_shared.core.config import get_settings
 from instascope_shared.models import Job, JobStatus, JobType, Profile
 from instascope_shared.services.scrape_pipeline import apply_scrape_result, mark_scrape_failed
 from instascope_scraper.profile import ScrapeError, scrape_profile
+from instascope_scraper.proxy_pool import next_proxy, pool_size
 from instascope_scraper.types import parse_proxy_url
 
 
@@ -30,8 +31,18 @@ def _inline_scrape_caps() -> Iterator[None]:
     - Posts: default ALL (SCRAPE_INLINE_MAX_POSTS=0) — full public timeline.
     - Enrich: keep capped so per-post page opens don't make scrapes hang for hours.
     - Retries: keep low so a hung attempt fails and frees the queue.
+    - Browser: OFF by default — Playwright on a VPS almost always hits Instagram's
+      login wall after daytime rate-limits and produces "Could not extract…".
+      Morning successes were HTTP-only; keep that path.
     """
-    keys = ("SCRAPE_MAX_POSTS", "SCRAPE_ENRICH_MAX", "SCRAPE_MAX_RETRIES")
+    keys = (
+        "SCRAPE_MAX_POSTS",
+        "SCRAPE_ENRICH_MAX",
+        "SCRAPE_MAX_RETRIES",
+        "SCRAPE_USE_BROWSER",
+        "SCRAPE_BROWSER_ON_PARTIAL",
+        "SCRAPE_STRICT",
+    )
     previous = {k: os.environ.get(k) for k in keys}
 
     max_posts = (os.getenv("SCRAPE_INLINE_MAX_POSTS") or "0").strip() or "0"
@@ -40,6 +51,16 @@ def _inline_scrape_caps() -> Iterator[None]:
     os.environ["SCRAPE_MAX_POSTS"] = max_posts
     os.environ["SCRAPE_ENRICH_MAX"] = enrich_max
     os.environ["SCRAPE_MAX_RETRIES"] = retries
+    # Only enable browser when explicitly requested for API scrapes.
+    if "SCRAPE_INLINE_USE_BROWSER" in os.environ:
+        os.environ["SCRAPE_USE_BROWSER"] = (
+            os.environ.get("SCRAPE_INLINE_USE_BROWSER") or "0"
+        ).strip() or "0"
+    else:
+        os.environ["SCRAPE_USE_BROWSER"] = "0"
+    os.environ["SCRAPE_BROWSER_ON_PARTIAL"] = "0"
+    # Don't hard-fail partial HTTP timelines on API scrapes.
+    os.environ["SCRAPE_STRICT"] = (os.getenv("SCRAPE_INLINE_STRICT") or "0").strip() or "0"
     prev_page_delay = os.environ.get("SCRAPE_PAGE_DELAY_SECONDS")
     if prev_page_delay is None:
         os.environ["SCRAPE_PAGE_DELAY_SECONDS"] = (
@@ -109,7 +130,7 @@ async def scrape_profile_inline(profile: Profile) -> Job:
     )
     await job.insert()
 
-    proxy = parse_proxy_url(settings.scrape_proxy_url)
+    proxy = next_proxy() if pool_size() > 0 else parse_proxy_url(settings.scrape_proxy_url)
     last_progress = _progress_payload(
         scraped=0, total=int(profile.posts_count or 0), phase="starting"
     )
