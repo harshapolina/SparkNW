@@ -53,7 +53,14 @@ export function ScrapeProgressCard({
   const left = progress?.posts_left ?? (total > 0 ? Math.max(0, total - scraped) : 0);
   const pct = progressPercent(progress);
   const phase = formatPhase(progress?.phase);
-  const source = progress?.source === "bulk" ? "Bulk queue" : progress?.source === "single" ? "Single refresh" : null;
+  const source =
+    progress?.source === "bulk"
+      ? "Sample (fast)"
+      : progress?.source === "deep"
+        ? "Full scrape (auto)"
+        : progress?.source === "single"
+          ? "Single refresh"
+          : null;
 
   return (
     <div
@@ -125,7 +132,12 @@ export function ScrapeActivityBanner({ status, className }: ActivityProps) {
           </div>
           <p className="mt-1 text-sm text-zinc-200">
             {status.active_count} account{status.active_count === 1 ? "" : "s"} in progress
-            {status.pending_bulk > 0 ? ` · ${status.pending_bulk} in bulk queue` : ""}
+            {status.pending_bulk > 0 ? ` · ${status.pending_bulk} in fast sample queue` : ""}
+            {(status.pending_deep || 0) > 0
+              ? ` · ${status.pending_deep} waiting for full scrape`
+              : ""}
+            {status.running_mode === "deep" ? " · now on full pass" : ""}
+            {status.running_mode === "bulk" ? " · now on fast sample" : ""}
           </p>
         </div>
       </div>

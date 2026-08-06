@@ -29,6 +29,8 @@ export type ScrapeStatusResponse = {
   queue: ScrapeStatusItem[];
   active_count: number;
   pending_bulk: number;
+  pending_deep?: number;
+  running_mode?: string | null;
   single_running: number;
 };
 
@@ -44,8 +46,9 @@ export function progressPercent(p?: ScrapeProgress | null): number {
 }
 
 export function formatPhase(phase?: string | null): string {
-  const p = (phase || "scraping").replace(/_/g, " ");
-  return p.charAt(0).toUpperCase() + p.slice(1);
+  const raw = (phase || "scraping").replace(/_/g, " ");
+  if (raw === "queued full") return "Queued for full scrape";
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
 export function formatScrapeProgress(p?: ScrapeProgress | null, username?: string): string {

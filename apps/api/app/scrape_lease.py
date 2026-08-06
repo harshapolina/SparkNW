@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import AsyncIterator, Literal
 
-LeaseOwner = Literal["single", "bulk"]
+LeaseOwner = Literal["single", "bulk", "deep"]
 
 
 @dataclass(frozen=True)

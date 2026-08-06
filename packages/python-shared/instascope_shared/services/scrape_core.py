@@ -20,7 +20,7 @@ from instascope_scraper.profile import ScrapeError, scrape_profile
 from instascope_scraper.proxy_pool import next_proxy, pool_size
 from instascope_scraper.types import parse_proxy_url
 
-ScrapeSource = Literal["single", "bulk"]
+ScrapeSource = Literal["single", "bulk", "deep"]
 
 _PROGRESS_INTERVAL_S = 20.0
 

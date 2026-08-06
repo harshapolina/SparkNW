@@ -73,16 +73,19 @@ def _env_truthy(raw: str) -> bool:
 
 
 def caps_for_api(source: str) -> ScrapeCaps:
-    """Build ScrapeCaps from SCRAPE_INLINE_* env (API single/bulk scrapes)."""
+    """Build ScrapeCaps from SCRAPE_INLINE_* env (API single/bulk/deep scrapes)."""
     from instascope_scraper.proxy_pool import pool_size
 
     max_posts = int((os.getenv("SCRAPE_INLINE_MAX_POSTS") or "0").strip() or "0")
     if source == "bulk":
         # Bulk sheets must finish — default first-pass sample for large accounts.
-        # Full timeline still available via single Refresh (or SCRAPE_BULK_MAX_POSTS=0).
+        # Phase-2 deep follow-up (or SCRAPE_BULK_MAX_POSTS=0 / single Refresh) does full.
         bulk_raw = (os.getenv("SCRAPE_BULK_MAX_POSTS") or "48").strip()
         if bulk_raw:
             max_posts = int(bulk_raw)
+    elif source == "deep":
+        # Auto full timeline after capped bulk sample — never inherit the 48-post cap.
+        max_posts = int((os.getenv("SCRAPE_INLINE_MAX_POSTS") or "0").strip() or "0")
 
     enrich_max = int((os.getenv("SCRAPE_INLINE_ENRICH_MAX") or "12").strip() or "12")
     max_retries = int((os.getenv("SCRAPE_INLINE_MAX_RETRIES") or "1").strip() or "1")

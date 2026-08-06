@@ -29,7 +29,10 @@ from app.scrape_bulk import (
     enqueue_bulk_profile_ids,
     mark_profiles_queued,
     pending_count as bulk_pending_count,
+    sample_pending_count,
+    deep_pending_count,
     running_profile_id as bulk_running_id,
+    running_mode as bulk_running_mode,
 )
 from app.scrape_single import schedule_single_scrape, single_scrape_running
 
@@ -156,7 +159,10 @@ async def scrape_status(user: User = Depends(get_current_user)):
         "running": running,
         "queue": queue,
         "active_count": len(queue),
-        "pending_bulk": bulk_pending_count(),
+        "pending_bulk": sample_pending_count(),
+        "pending_deep": deep_pending_count(),
+        "pending_total": bulk_pending_count(),
+        "running_mode": bulk_running_mode(),
         "single_running": sum(1 for it in queue if single_scrape_running(it["profile_id"])),
     }
 
