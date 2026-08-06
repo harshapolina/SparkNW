@@ -38,13 +38,15 @@ export default function AdminLeaderboardPage() {
   const [page, setPage] = useState(1);
   const perPage = 10;
 
-  const rangeActive = Boolean(fromDate || toDate);
+  const rangeActive = Boolean(fromDate && toDate);
   const rangeInvalid = Boolean(fromDate && toDate && fromDate > toDate);
+  // Don't refetch while only one end is set (should not happen; picker waits for both).
+  const rangeReady = (!fromDate && !toDate) || (Boolean(fromDate) && Boolean(toDate));
 
   const boardQ = useQuery({
     queryKey: ["spark", "leaderboard", sort, fromDate || null, toDate || null],
     queryFn: () => api<LeaderboardResponse>(buildLeaderboardUrl(sort, fromDate, toDate)),
-    enabled: !rangeInvalid,
+    enabled: !rangeInvalid && rangeReady,
   });
   const adminQ = useQuery({
     queryKey: ["spark", "admin"],

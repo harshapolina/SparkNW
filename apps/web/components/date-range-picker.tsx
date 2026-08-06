@@ -51,18 +51,21 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
   const [mounted, setMounted] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  /** First click = start only; second click = end + commit. DayPicker often sets from=to on first click. */
+  const phaseRef = useRef<"idle" | "awaiting_end">("idle");
 
-  const active = Boolean(fromDate || toDate);
-  const displayFrom = draft?.from ? toYmd(draft.from) : fromDate;
-  const displayTo = draft?.to ? toYmd(draft.to) : draft?.from ? "" : toDate;
+  const active = Boolean(fromDate && toDate);
+  const displayFrom = draft?.from ? toYmd(draft.from) : "";
+  const displayTo = draft?.to ? toYmd(draft.to) : "";
 
   useEffect(() => setMounted(true), []);
 
   useEffect(() => {
     if (!open) return;
+    phaseRef.current = "idle";
     setDraft(
-      fromDate
-        ? { from: fromYmd(fromDate), to: toDate ? fromYmd(toDate) : undefined }
+      fromDate && toDate
+        ? { from: fromYmd(fromDate), to: fromYmd(toDate) }
         : undefined
     );
   }, [open, fromDate, toDate]);
@@ -104,7 +107,6 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
     }
-    // blur any open native <select> so its options don't sit over the calendar
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
@@ -116,26 +118,51 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
     };
   }, [open]);
 
+  function commitRange(from: Date, to: Date) {
+    const [a, b] = from.getTime() <= to.getTime() ? [from, to] : [to, from];
+    setDraft({ from: a, to: b });
+    onChange(toYmd(a), toYmd(b));
+    phaseRef.current = "idle";
+    setOpen(false);
+  }
+
   function handleSelect(range: DateRange | undefined) {
-    setDraft(range);
-    // Only commit to parent (and refetch leaderboard) when range is complete.
-    if (range?.from && range?.to) {
-      onChange(toYmd(range.from), toYmd(range.to));
-      setOpen(false);
+    if (!range?.from) {
+      setDraft(undefined);
+      phaseRef.current = "idle";
+      return;
     }
+
+    // First click (or restart after a completed range): keep start only — do NOT filter yet.
+    if (phaseRef.current === "idle") {
+      phaseRef.current = "awaiting_end";
+      setDraft({ from: range.from, to: undefined });
+      return;
+    }
+
+    // Second click: choose end date, then commit.
+    const start = draft?.from ?? range.from;
+    // Prefer explicit end; if library only moved `from`, use that as end.
+    let end = range.to ?? range.from;
+    if (toYmd(end) === toYmd(start) && range.from && toYmd(range.from) !== toYmd(start)) {
+      end = range.from;
+    }
+    // Same day as start → stay waiting (user Apply for single-day)
+    if (toYmd(end) === toYmd(start)) {
+      setDraft({ from: start, to: undefined });
+      return;
+    }
+    commitRange(start, end);
   }
 
   function applyDraft() {
     if (draft?.from && draft?.to) {
-      onChange(toYmd(draft.from), toYmd(draft.to));
-      setOpen(false);
+      commitRange(draft.from, draft.to);
       return;
     }
     if (draft?.from) {
-      // single-day range
-      const d = toYmd(draft.from);
-      onChange(d, d);
-      setOpen(false);
+      // Explicit single-day only via Apply
+      commitRange(draft.from, draft.from);
     }
   }
 
@@ -258,6 +285,7 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
                       <button
                         type="button"
                         onClick={() => {
+                          phaseRef.current = "idle";
                           setDraft(undefined);
                           onClear();
                         }}
@@ -315,6 +343,7 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
           <button
             type="button"
             onClick={() => {
+              phaseRef.current = "idle";
               onClear();
               setDraft(undefined);
               setOpen(false);
