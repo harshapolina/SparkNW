@@ -57,12 +57,13 @@ async def _worker_loop() -> None:
                 continue
             log.info("bulk scrape start @%s id=%s (queue=%s)", profile.username, profile_id, q.qsize())
             await scrape_profile_inline(profile)
+            fresh = await Profile.get(profile_id)
             log.info(
                 "bulk scrape done @%s followers=%s posts=%s status=%s",
-                profile.username,
-                getattr(profile, "followers", "?"),
-                getattr(profile, "posts_count", "?"),
-                getattr(profile, "status", "?"),
+                getattr(fresh, "username", profile.username),
+                getattr(fresh, "followers", "?") if fresh else "?",
+                getattr(fresh, "posts_count", "?") if fresh else "?",
+                getattr(fresh, "status", "?") if fresh else "?",
             )
         except Exception:
             log.error("bulk scrape failed profile_id=%s\n%s", profile_id, traceback.format_exc())

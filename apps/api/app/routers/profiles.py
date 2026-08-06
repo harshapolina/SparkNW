@@ -22,7 +22,6 @@ from instascope_shared.schemas import (
     SnapshotResponse,
 )
 from instascope_shared.services import profiles as profile_service
-from instascope_shared.services.inline_scrape import scrape_profile_inline
 from instascope_shared.services.profiles import to_profile_response
 from fastapi import HTTPException
 
@@ -60,9 +59,14 @@ def _dispatch_jobs(jobs: list) -> bool:
 
 @router.post("", response_model=ProfileResponse, status_code=status.HTTP_201_CREATED)
 async def add_profile(payload: AddProfileRequest, user: User = Depends(get_current_user)):
-    """Create profile and scrape immediately so the UI gets real results on add."""
+    """Create profile and queue scrape in the background (fast HTTP response).
+
+    Awaiting the full scrape here left the browser Network tab on Pending for
+    10+ minutes and often aborted the work. The durable scrape queue runs the
+    same inline scraper after we return.
+    """
     profile = await profile_service.add_profile(str(user.id), payload)
-    await scrape_profile_inline(profile)
+    await enqueue_profile_ids([str(profile.id)])
     profile = await profile_service.get_profile(str(user.id), str(profile.id))
     return to_profile_response(profile)
 
@@ -330,33 +334,41 @@ async def delete_profile(profile_id: str, user: User = Depends(get_current_user)
 
 @router.post("/{profile_id}/refresh", response_model=list[JobResponse])
 async def refresh_profile(profile_id: str, user: User = Depends(get_current_user)):
-    """Refresh by scraping inline in the API process and returning when done.
+    """Queue a scrape and return immediately — do not await Instagram on the request.
 
-    Awaits the scrape so Add/Refresh feel instantaneous in the UI (results ready
-    when the request completes). Celery is not used here — volume-mounted scraper
-    code on the API must run so full timelines land after git pull.
+    Website Refresh used to await the full scrape; the browser stayed Pending and
+    often cancelled the server work. Queue uses the same scraper as terminal/API.
     """
     from datetime import datetime
 
+    from instascope_shared.models import Job, JobStatus, JobType
+
     try:
         profile = await profile_service.get_profile(str(user.id), profile_id)
-        job = await scrape_profile_inline(profile)
+        job = Job(
+            user_id=str(user.id),
+            profile_id=str(profile.id),
+            job_type=JobType.SCRAPE_PROFILE,
+            status=JobStatus.PENDING,
+            priority=1,
+        )
+        await job.insert()
+        await enqueue_profile_ids([str(profile.id)])
         return [
             JobResponse(
                 id=str(job.id),
                 profile_id=str(profile.id),
                 job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
-                status=job.status.value if hasattr(job.status, "value") else str(job.status),
-                attempts=job.attempts,
-                error_message=job.error_message,
+                status=JobStatus.PENDING.value,
+                attempts=0,
+                error_message=None,
                 created_at=getattr(job, "created_at", None) or datetime.utcnow(),
-                finished_at=getattr(job, "finished_at", None),
+                finished_at=None,
             )
         ]
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001
-        # Never surface as opaque CORS "Failed to fetch" — return a clear JSON error
         raise HTTPException(status_code=500, detail=f"Refresh failed: {str(exc)[:240]}") from exc
 
 

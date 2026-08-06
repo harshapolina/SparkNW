@@ -26,9 +26,16 @@ def _inline_scrape_caps() -> Iterator[None]:
 
     # 0 = all posts (matches server SCRAPE_MAX_POSTS=0 intent).
     max_posts = (os.getenv("SCRAPE_INLINE_MAX_POSTS") or "0").strip() or "0"
-    enrich_max = (os.getenv("SCRAPE_INLINE_ENRICH_MAX") or "24").strip() or "24"
+    # Cap enrich so full timelines still finish in reasonable time.
+    enrich_max = (os.getenv("SCRAPE_INLINE_ENRICH_MAX") or "12").strip() or "12"
     os.environ["SCRAPE_MAX_POSTS"] = max_posts
     os.environ["SCRAPE_ENRICH_MAX"] = enrich_max
+    # Slightly snappier pagination on the API path (still polite to Instagram).
+    prev_page_delay = os.environ.get("SCRAPE_PAGE_DELAY_SECONDS")
+    if prev_page_delay is None:
+        os.environ["SCRAPE_PAGE_DELAY_SECONDS"] = (
+            os.getenv("SCRAPE_INLINE_PAGE_DELAY_SECONDS") or "0.35"
+        ).strip() or "0.35"
     try:
         yield
     finally:
@@ -37,6 +44,10 @@ def _inline_scrape_caps() -> Iterator[None]:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+        if prev_page_delay is None:
+            os.environ.pop("SCRAPE_PAGE_DELAY_SECONDS", None)
+        else:
+            os.environ["SCRAPE_PAGE_DELAY_SECONDS"] = prev_page_delay
 
 
 async def scrape_profile_inline(profile: Profile) -> Job:

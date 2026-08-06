@@ -7,6 +7,7 @@ import { AlertCircle, Download, Plus, RefreshCw, Search } from "lucide-react";
 import { api, type Profile } from "@/lib/api";
 import { cn, formatNumber, formatPct } from "@/lib/utils";
 import { SparkAvatar } from "@/components/spark/ui";
+import { waitForProfileScrape } from "@/lib/wait-for-scrape";
 
 type ListResponse = { items: Profile[]; total: number; page: number; page_size: number };
 
@@ -41,8 +42,8 @@ export default function AdminScrapingPage() {
   });
 
   const add = useMutation({
-    mutationFn: () =>
-      api<Profile>("/profiles", {
+    mutationFn: async () => {
+      const created = await api<Profile>("/profiles", {
         method: "POST",
         body: JSON.stringify({
           url: ig.trim(),
@@ -53,13 +54,25 @@ export default function AdminScrapingPage() {
             instagram_username: ig.trim().replace(/^@/, ""),
           },
         }),
-      }),
-    onSuccess: () => {
+      });
+      // POST returns immediately; scrape runs in queue — wait until data lands.
+      return waitForProfileScrape(created.id, {
+        since: created.last_scraped_at,
+        prevFollowers: created.followers,
+        prevPosts: created.posts_count,
+      });
+    },
+    onSuccess: (p) => {
       setIg("");
       setStudentId("");
       setFullName("");
       setUniversity("");
       setError("");
+      setBulkNote(
+        p.followers > 0 || p.posts_count > 0
+          ? `Scraped @${p.username} — ${formatNumber(p.followers)} followers · ${formatNumber(p.posts_count)} posts`
+          : `Added @${p.username} — scrape still running or no public posts yet`
+      );
       qc.invalidateQueries({ queryKey: ["profiles"] });
       qc.invalidateQueries({ queryKey: ["spark"] });
     },

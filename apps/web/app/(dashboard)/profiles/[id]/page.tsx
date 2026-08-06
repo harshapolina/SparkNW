@@ -19,6 +19,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { api, type Profile } from "@/lib/api";
 import { studentDetailFields } from "@/lib/student-fields";
 import { formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
+import { waitForProfileScrape } from "@/lib/wait-for-scrape";
 
 type Post = {
   id: string;
@@ -155,7 +156,15 @@ export default function ProfileDetailPage() {
   });
 
   const refresh = useMutation({
-    mutationFn: () => api(`/profiles/${profileId}/refresh`, { method: "POST" }),
+    mutationFn: async () => {
+      const before = profileQ.data;
+      await api(`/profiles/${profileId}/refresh`, { method: "POST" });
+      return waitForProfileScrape(profileId, {
+        since: before?.last_scraped_at,
+        prevFollowers: before?.followers,
+        prevPosts: before?.posts_count,
+      });
+    },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["profile", profileId] });
       void qc.invalidateQueries({ queryKey: ["posts", profileId] });
