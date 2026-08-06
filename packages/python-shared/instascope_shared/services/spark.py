@@ -6,7 +6,15 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
-from instascope_shared.models import Job, JobStatus, Post, Profile, ProfileSnapshot, ProfileStatus
+from instascope_shared.models import (
+    DEFAULT_ORG_ID,
+    Job,
+    JobStatus,
+    Post,
+    Profile,
+    ProfileSnapshot,
+    ProfileStatus,
+)
 
 SortKey = Literal["overall", "points", "followers", "views", "engagement"]
 
@@ -97,7 +105,13 @@ SPARK_CAMPUSES = (
 
 
 def _campus(profile: Profile) -> str:
-    """Prefer explicit campus on the profile; otherwise spread creators across campuses."""
+    """Prefer roster university, then explicit campus insights."""
+    student = getattr(profile, "student", None) or {}
+    for key in ("university", "campus", "college"):
+        raw = student.get(key) if isinstance(student, dict) else None
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+
     insights = profile.insights or {}
     raw = insights.get("campus") or insights.get("spark_campus") or insights.get("school")
     if isinstance(raw, str) and raw.strip():
@@ -276,7 +290,12 @@ def score_profile(
 
     # Cap performance contribution for fairness (theoretical unbounded otherwise)
     performance_capped = min(performance, 3000)
-    points = consistency + performance_capped + growth
+    bonus = 0
+    try:
+        bonus = int((profile.insights or {}).get("spark_bonus_points") or 0)
+    except (TypeError, ValueError):
+        bonus = 0
+    points = consistency + performance_capped + growth + max(0, bonus)
 
     # Consistency score 0-100 from recent posting
     insights = profile.insights or {}
@@ -327,6 +346,7 @@ def score_profile(
             "consistency": consistency,
             "performance": performance_capped,
             "growth": growth,
+            "bonus": max(0, bonus),
         },
         "followers": follower_count,
         "views": int(total_views or insights.get("total_views_sampled") or 0),
@@ -353,32 +373,53 @@ def score_profile(
     }
 
 
-async def _posts_by_profile(user_id: str) -> dict[str, list[Post]]:
-    posts = await Post.find(Post.user_id == user_id).to_list()
+async def _profiles_for_org(org_id: str | None = None) -> list[Profile]:
+    oid = org_id or DEFAULT_ORG_ID
+    profiles = await Profile.find(Profile.org_id == oid).to_list()
+    # Include legacy profiles missing org_id so shared cohort works pre-backfill
+    all_profiles = await Profile.find_all().to_list()
+    legacy = [p for p in all_profiles if not getattr(p, "org_id", None)]
+    if not profiles and legacy:
+        return legacy
+    if legacy:
+        seen = {str(p.id) for p in profiles}
+        for p in legacy:
+            if str(p.id) not in seen:
+                profiles.append(p)
+    return profiles
+
+
+async def _posts_for_profiles(profile_ids: list[str]) -> dict[str, list[Post]]:
     by: dict[str, list[Post]] = defaultdict(list)
+    if not profile_ids:
+        return by
+    # Chunk to avoid huge $in if needed; day-1 load all matching
+    posts = await Post.find({"profile_id": {"$in": profile_ids}}).to_list()
     for p in posts:
         by[p.profile_id].append(p)
     return by
 
 
 async def build_leaderboard(
-    user_id: str,
+    org_id: str | None = None,
     *,
     sort: SortKey = "overall",
     profiles: list[Profile] | None = None,
     posts_map: dict[str, list[Post]] | None = None,
+    you_profile_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    oid = org_id or DEFAULT_ORG_ID
     if profiles is None:
-        profiles = await Profile.find(Profile.user_id == user_id).to_list()
+        profiles = await _profiles_for_org(oid)
+    profile_ids = [str(p.id) for p in profiles]
     if posts_map is None:
-        posts_map = await _posts_by_profile(user_id)
+        posts_map = await _posts_for_profiles(profile_ids)
 
     # Previous ranks from last week's snapshot ordering by followers as proxy
     week_ago = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
     snaps = await ProfileSnapshot.find(
-        ProfileSnapshot.user_id == user_id,
-        ProfileSnapshot.snapshot_date <= week_ago,
-    ).to_list()
+        {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": week_ago}}
+    ).to_list() if profile_ids else []
     # latest snap per profile on/before week_ago
     latest_prev: dict[str, ProfileSnapshot] = {}
     for s in snaps:
@@ -406,31 +447,34 @@ async def build_leaderboard(
         r["rank"] = i + 1
         r["prev_rank"] = prev_rank.get(r["id"], i + 1)
         r["rank_delta"] = r["prev_rank"] - r["rank"]
+        r["is_you"] = bool(you_profile_id and r["id"] == you_profile_id)
     return rows
 
 
-async def get_student_dashboard(user_id: str, profile_id: str | None = None) -> dict[str, Any]:
-    board = await build_leaderboard(user_id, sort="overall")
+async def get_top_10(org_id: str | None = None) -> dict[str, Any]:
+    board = await build_leaderboard(org_id, sort="overall")
+    return {
+        "items": board[:10],
+        "total_creators": len(board),
+        "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
+    }
+
+
+async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
+    board = await build_leaderboard(org_id, sort="overall", you_profile_id=profile_id)
     if not board:
         return {"empty": True, "creators": [], "creator": None}
 
-    creator = None
-    if profile_id:
-        creator = next((r for r in board if r["id"] == profile_id), None)
+    creator = next((r for r in board if r["id"] == profile_id), None)
     if not creator:
-        # Prefer highest points as "you" / primary
-        creator = board[0]
+        return {"empty": True, "creators": [], "creator": None, "error": "Profile not on leaderboard"}
 
-    # Mark you
-    for r in board:
-        r["is_you"] = r["id"] == creator["id"]
+    profile = await Profile.get(profile_id)
+    posts = await Post.find(Post.profile_id == profile_id).sort(-Post.posted_at).to_list()
 
     # Performance series from snapshots
     snaps = (
-        await ProfileSnapshot.find(
-            ProfileSnapshot.user_id == user_id,
-            ProfileSnapshot.profile_id == creator["id"],
-        )
+        await ProfileSnapshot.find(ProfileSnapshot.profile_id == creator["id"])
         .sort(+ProfileSnapshot.snapshot_date)
         .to_list()
     )
@@ -440,8 +484,10 @@ async def get_student_dashboard(user_id: str, profile_id: str | None = None) -> 
             "views": s.avg_views,
             "points": 0,
             "followers": s.followers,
+            "likes": s.avg_likes,
+            "engagement": s.engagement_rate,
         }
-        for s in snaps[-14:]
+        for s in snaps[-30:]
     ]
     if not performance:
         performance = [
@@ -450,8 +496,12 @@ async def get_student_dashboard(user_id: str, profile_id: str | None = None) -> 
                 "views": creator["avg_views"],
                 "points": creator["points"],
                 "followers": creator["followers"],
+                "likes": creator["avg_likes"],
+                "engagement": creator["engagement"],
             }
         ]
+    if performance:
+        performance[-1]["points"] = creator["points"]
 
     followers_delta = 0
     if len(snaps) >= 2:
@@ -460,6 +510,37 @@ async def get_student_dashboard(user_id: str, profile_id: str | None = None) -> 
         followers_delta = int(creator["followers"] * (creator["growth_pct_today"] / 100))
 
     top = [r for r in board if not r.get("is_you")][:5]
+
+    recent_posts = [
+        {
+            "id": str(p.id),
+            "shortcode": p.shortcode,
+            "media_type": p.media_type.value if hasattr(p.media_type, "value") else str(p.media_type),
+            "caption": (p.caption or "")[:200],
+            "likes": int(p.likes or 0),
+            "comments": int(p.comments or 0),
+            "views": int(p.views or 0),
+            "posted_at": p.posted_at.isoformat() if p.posted_at else None,
+            "permalink": p.permalink,
+        }
+        for p in posts[:20]
+    ]
+
+    history = [
+        {
+            "id": str(s.id),
+            "snapshot_date": s.snapshot_date,
+            "followers": s.followers,
+            "following": s.following,
+            "posts_count": s.posts_count,
+            "avg_likes": s.avg_likes,
+            "avg_views": s.avg_views,
+            "engagement_rate": s.engagement_rate,
+            "followers_growth": s.followers_growth,
+            "followers_growth_pct": s.followers_growth_pct,
+        }
+        for s in reversed(snaps[-30:])
+    ]
 
     return {
         "empty": False,
@@ -472,13 +553,29 @@ async def get_student_dashboard(user_id: str, profile_id: str | None = None) -> 
         "followers_delta": followers_delta,
         "task_history": creator.get("task_history") or [],
         "total_participants": len(board),
+        "in_top_10": creator["rank"] <= 10,
+        "insights": dict(getattr(profile, "insights", None) or {}) if profile else {},
+        "recent_posts": recent_posts,
+        "history": history,
+        "profile": {
+            "bio": getattr(profile, "bio", None) if profile else None,
+            "website": getattr(profile, "website", None) if profile else None,
+            "is_verified": bool(getattr(profile, "is_verified", False)) if profile else False,
+            "is_private": bool(getattr(profile, "is_private", False)) if profile else False,
+            "is_business": bool(getattr(profile, "is_business", False)) if profile else False,
+            "category": getattr(profile, "category", None) if profile else None,
+            "following": int(getattr(profile, "following", 0) or 0) if profile else 0,
+            "student": dict(getattr(profile, "student", None) or {}) if profile else {},
+            "last_scraped_at": profile.last_scraped_at.isoformat() if profile and profile.last_scraped_at else None,
+        },
     }
 
 
-async def get_admin_overview(user_id: str) -> dict[str, Any]:
-    profiles = await Profile.find(Profile.user_id == user_id).to_list()
-    posts_map = await _posts_by_profile(user_id)
-    board = await build_leaderboard(user_id, sort="overall", profiles=profiles, posts_map=posts_map)
+async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
+    oid = org_id or DEFAULT_ORG_ID
+    profiles = await _profiles_for_org(oid)
+    posts_map = await _posts_for_profiles([str(p.id) for p in profiles])
+    board = await build_leaderboard(oid, sort="overall", profiles=profiles, posts_map=posts_map)
     # Flatten posts once (already loaded for scoring)
     posts = [p for bucket in posts_map.values() for p in bucket]
     today = datetime.utcnow().strftime("%Y-%m-%d")
@@ -506,10 +603,14 @@ async def get_admin_overview(user_id: str) -> dict[str, Any]:
 
     # Reuse 14d snaps for growth series + WoW growth deltas (skip full historical re-score)
     since = (datetime.utcnow() - timedelta(days=14)).strftime("%Y-%m-%d")
-    snaps = await ProfileSnapshot.find(
-        ProfileSnapshot.user_id == user_id,
-        ProfileSnapshot.snapshot_date >= since,
-    ).to_list()
+    profile_ids = [str(p.id) for p in profiles]
+    snaps = (
+        await ProfileSnapshot.find(
+            {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$gte": since}}
+        ).to_list()
+        if profile_ids
+        else []
+    )
 
     prev_snap_best: dict[str, tuple[str, int]] = {}
     for s in snaps:
@@ -550,8 +651,11 @@ async def get_admin_overview(user_id: str) -> dict[str, Any]:
         "at_risk": sum(1 for r in board if r["grit_status"] in {"at_risk", "not_eligible"}),
     }
 
-    # Jobs as submission proxy
-    jobs = await Job.find(Job.user_id == user_id).sort(-Job.created_at).limit(200).to_list()
+    # Jobs as submission proxy (org-wide via profile owners)
+    user_ids = list({p.user_id for p in profiles if p.user_id})
+    jobs = []
+    if user_ids:
+        jobs = await Job.find({"user_id": {"$in": user_ids}}).sort(-Job.created_at).limit(200).to_list()
     submissions = {
         "pending": sum(1 for j in jobs if j.status in {JobStatus.PENDING, JobStatus.RUNNING, JobStatus.RETRYING}),
         "approved": sum(1 for j in jobs if j.status == JobStatus.SUCCESS),
@@ -598,8 +702,148 @@ async def get_admin_overview(user_id: str) -> dict[str, Any]:
     ]
 
     avg_eng = round(sum(r["engagement"] for r in board) / len(board), 2) if board else 0.0
+    n_profiles = len(profiles) or 1
+    avg_followers = round(total_followers / n_profiles, 0) if profiles else 0
+    avg_likes = round(sum(int(p.avg_likes or 0) for p in profiles) / n_profiles, 0) if profiles else 0
+    avg_views = round(sum(int(p.avg_views or 0) for p in profiles) / n_profiles, 0) if profiles else 0
+    follower_growth_today = sum(
+        max(0, int(p.followers * (p.growth_pct_today / 100))) for p in profiles
+    )
 
     last_sync_dt = max((p.last_success_at for p in profiles if p.last_success_at), default=None)
+
+    # Content mix + posts/day + heatmap (InstaScope overview parity)
+    type_counts: dict[str, int] = defaultdict(int)
+    posts_by_day: dict[str, int] = defaultdict(int)
+    heatmap: dict[tuple[int, int], int] = defaultdict(int)
+    for post in posts:
+        mt = str(getattr(post.media_type, "value", post.media_type) or "unknown").lower()
+        type_counts[mt] += 1
+        if post.posted_at:
+            posts_by_day[post.posted_at.strftime("%Y-%m-%d")] += 1
+            heatmap[(post.posted_at.weekday(), post.posted_at.hour)] += 1
+    content_types = [
+        {"name": k, "value": float(v)} for k, v in sorted(type_counts.items(), key=lambda x: -x[1])
+    ]
+    posts_per_day = [
+        {"date": d, "value": float(c)} for d, c in sorted(posts_by_day.items())[-30:]
+    ]
+    posting_heatmap = [{"day": d, "hour": h, "count": c} for (d, h), c in heatmap.items()]
+
+    # Portfolio-average followers over time (old overview chart)
+    by_date_followers: dict[str, list[int]] = defaultdict(list)
+    for s in snaps:
+        by_date_followers[s.snapshot_date].append(int(s.followers or 0))
+    followers_over_time = [
+        {"date": d, "value": round(sum(vals) / len(vals), 2)}
+        for d, vals in sorted(by_date_followers.items())
+    ]
+
+    recent_sorted = sorted(
+        profiles,
+        key=lambda p: p.last_scraped_at or p.updated_at or datetime.min,
+        reverse=True,
+    )
+    recent_updates = [
+        {
+            "id": str(p.id),
+            "username": p.username,
+            "full_name": p.full_name or (p.student or {}).get("full_name"),
+            "followers": int(p.followers or 0),
+            "following": int(p.following or 0),
+            "posts_count": int(p.posts_count or 0),
+            "avg_likes": int(p.avg_likes or 0),
+            "avg_views": int(p.avg_views or 0),
+            "avg_comments": int(getattr(p, "avg_comments", 0) or 0),
+            "engagement_rate": float(p.engagement_rate or 0),
+            "growth_pct_today": float(p.growth_pct_today or 0),
+            "status": p.status.value if hasattr(p.status, "value") else str(p.status),
+            "is_verified": bool(p.is_verified),
+            "is_private": bool(p.is_private),
+            "is_business": bool(getattr(p, "is_business", False)),
+            "category": getattr(p, "category", None),
+            "bio": (p.bio or "")[:160] if getattr(p, "bio", None) else None,
+            "website": getattr(p, "website", None),
+            "follower_following_ratio": float(getattr(p, "follower_following_ratio", 0) or 0),
+            "highlight_reel_count": int(getattr(p, "highlight_reel_count", 0) or 0),
+            "last_scraped_at": p.last_scraped_at.isoformat() if p.last_scraped_at else None,
+            "last_error": p.last_error,
+            "student_id": (p.student or {}).get("student_id"),
+            "campus": (p.student or {}).get("university") or "—",
+            "full_name_student": (p.student or {}).get("full_name"),
+        }
+        for p in recent_sorted[:50]
+    ]
+
+    # Full portfolio cards for analytics grid (all tracked creators)
+    portfolio = [
+        {
+            "id": str(p.id),
+            "username": p.username,
+            "full_name": p.full_name or (p.student or {}).get("full_name"),
+            "followers": int(p.followers or 0),
+            "following": int(p.following or 0),
+            "posts_count": int(p.posts_count or 0),
+            "avg_likes": int(p.avg_likes or 0),
+            "avg_views": int(p.avg_views or 0),
+            "avg_comments": int(getattr(p, "avg_comments", 0) or 0),
+            "engagement_rate": float(p.engagement_rate or 0),
+            "growth_pct_today": float(p.growth_pct_today or 0),
+            "status": p.status.value if hasattr(p.status, "value") else str(p.status),
+            "is_verified": bool(p.is_verified),
+            "is_private": bool(p.is_private),
+            "campus": (p.student or {}).get("university") or "—",
+            "student_id": (p.student or {}).get("student_id"),
+            "last_scraped_at": p.last_scraped_at.isoformat() if p.last_scraped_at else None,
+        }
+        for p in sorted(profiles, key=lambda x: int(x.followers or 0), reverse=True)
+    ]
+
+    # Live alerts from scrape health + growth (complements /notifications)
+    alerts: list[dict[str, Any]] = []
+    for p in profiles:
+        if p.status == ProfileStatus.FAILED or p.status == ProfileStatus.UNAVAILABLE:
+            alerts.append(
+                {
+                    "id": f"fail-{p.id}",
+                    "type": "scrape_failed",
+                    "severity": "high",
+                    "title": f"Scrape failed for @{p.username}",
+                    "body": (p.last_error or "Unknown scrape error")[:220],
+                    "profile_id": str(p.id),
+                    "username": p.username,
+                    "created_at": (p.last_scraped_at or p.updated_at or datetime.utcnow()).isoformat(),
+                }
+            )
+        elif p.is_private:
+            alerts.append(
+                {
+                    "id": f"priv-{p.id}",
+                    "type": "profile_private",
+                    "severity": "medium",
+                    "title": f"@{p.username} is private",
+                    "body": "Private accounts block full post pagination and metrics.",
+                    "profile_id": str(p.id),
+                    "username": p.username,
+                    "created_at": (p.updated_at or datetime.utcnow()).isoformat(),
+                }
+            )
+        g = float(p.growth_pct_today or 0)
+        if abs(g) >= 2.0 and int(p.followers or 0) > 0:
+            alerts.append(
+                {
+                    "id": f"growth-{p.id}",
+                    "type": "followers_up" if g > 0 else "followers_down",
+                    "severity": "medium",
+                    "title": f"@{p.username} {'grew' if g > 0 else 'dropped'} {g:+.2f}%",
+                    "body": f"Follower change vs previous scrape · {int(p.followers):,} followers now.",
+                    "profile_id": str(p.id),
+                    "username": p.username,
+                    "created_at": (p.last_success_at or p.updated_at or datetime.utcnow()).isoformat(),
+                }
+            )
+    alerts.sort(key=lambda a: a["created_at"], reverse=True)
+    alerts = alerts[:25]
 
     return {
         "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
@@ -614,9 +858,22 @@ async def get_admin_overview(user_id: str) -> dict[str, Any]:
         "points_wow_pct": points_wow_pct,
         "total_engagement": total_likes + total_comments,
         "average_engagement": avg_eng,
+        "average_followers": avg_followers,
+        "average_likes": avg_likes,
+        "average_views": avg_views,
+        "follower_growth_today": follower_growth_today,
+        "profiles_updated_today": updated_today,
+        "failed_updates": failed,
         "reels_posted": reels,
-        "new_followers": sum(max(0, int(p.followers * (p.growth_pct_today / 100))) for p in profiles),
+        "new_followers": follower_growth_today,
         "growth_series": growth_series,
+        "followers_over_time": followers_over_time,
+        "content_types": content_types,
+        "posts_per_day": posts_per_day,
+        "posting_heatmap": posting_heatmap,
+        "recent_updates": recent_updates,
+        "portfolio": portfolio,
+        "alerts": alerts,
         "insights": insights,
         "needing_attention": needing,
         "scrape": {

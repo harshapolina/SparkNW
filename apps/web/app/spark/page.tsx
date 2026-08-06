@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
-export default function SparkIndex() {
-  redirect("/spark/dashboard");
+export default function SparkIndexPage() {
+  redirect("/student-dashboard");
 }

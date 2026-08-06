@@ -20,6 +20,11 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class StudentLoginRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=64)
+    instagram_username: str = Field(min_length=1, max_length=64)
+
+
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
@@ -32,9 +37,13 @@ class TokenResponse(BaseModel):
 
 class UserResponse(BaseModel):
     id: str
-    email: EmailStr
+    email: str  # str (not EmailStr) — student accounts use synthetic emails
     name: str
     avatar_url: Optional[str] = None
+    role: str = "admin"
+    org_id: str = "spark"
+    profile_id: Optional[str] = None
+    student_id: Optional[str] = None
     created_at: datetime
 
 

@@ -1,7 +1,19 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
+export type UserRole = "admin" | "student";
+
 export type Tokens = { access_token: string; refresh_token: string; token_type: string };
-export type User = { id: string; email: string; name: string; avatar_url?: string | null; created_at: string };
+export type User = {
+  id: string;
+  email: string;
+  name: string;
+  avatar_url?: string | null;
+  role?: UserRole;
+  org_id?: string;
+  profile_id?: string | null;
+  student_id?: string | null;
+  created_at: string;
+};
 
 export type StudentInfo = {
   timestamp?: string;
@@ -87,6 +99,42 @@ export function getStoredUser(): User | null {
   return raw ? (JSON.parse(raw) as User) : null;
 }
 
+export function getUserRole(user?: User | null): UserRole | null {
+  const u = user ?? getStoredUser();
+  if (!u?.role) return u ? "admin" : null;
+  return u.role;
+}
+
+async function parseError(res: Response): Promise<string> {
+  let detail = "Request failed";
+  try {
+    const data = await res.json();
+    detail = data.detail || JSON.stringify(data);
+  } catch {
+    /* ignore */
+  }
+  return typeof detail === "string" ? detail : "Request failed";
+}
+
+/** Public fetch — never redirects to login on 401. */
+export async function publicApi<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers || {});
+  if (!headers.has("Content-Type") && options.body) headers.set("Content-Type", "application/json");
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Cannot reach API at ${API_URL} (${cause}). Check NEXT_PUBLIC_API_URL / CORS and that the API is running.`
+    );
+  }
+  if (!res.ok) throw new Error(await parseError(res));
+  if (res.status === 204) return undefined as T;
+  const text = await res.text();
+  return text ? (JSON.parse(text) as T) : (undefined as T);
+}
+
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers || {});
   if (!headers.has("Content-Type") && options.body) headers.set("Content-Type", "application/json");
@@ -104,22 +152,28 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     );
   }
   if (res.status === 401) {
-    clearTokens();
-    if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-      window.location.href = "/login";
+    const detail = await parseError(res.clone());
+    const isAuthAttempt =
+      path.startsWith("/auth/login") ||
+      path.startsWith("/auth/student-login") ||
+      path.startsWith("/auth/signup");
+    if (!isAuthAttempt) {
+      clearTokens();
+      if (typeof window !== "undefined") {
+        const pathName = window.location.pathname;
+        if (
+          !pathName.startsWith("/login") &&
+          !pathName.startsWith("/admin-login") &&
+          !pathName.startsWith("/student-login") &&
+          !pathName.startsWith("/top-10")
+        ) {
+          window.location.href = "/admin-login";
+        }
+      }
     }
-    throw new Error("Unauthorized");
+    throw new Error(detail || "Unauthorized");
   }
-  if (!res.ok) {
-    let detail = "Request failed";
-    try {
-      const data = await res.json();
-      detail = data.detail || JSON.stringify(data);
-    } catch {
-      /* ignore */
-    }
-    throw new Error(typeof detail === "string" ? detail : "Request failed");
-  }
+  if (!res.ok) throw new Error(await parseError(res));
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   return text ? (JSON.parse(text) as T) : (undefined as T);

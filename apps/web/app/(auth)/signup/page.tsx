@@ -27,8 +27,8 @@ export default function SignupPage() {
         { method: "POST", body: JSON.stringify({ name, email, password }) }
       );
       setTokens(res.tokens);
-      saveUser(res.user);
-      router.push("/overview");
+      saveUser({ ...res.user, role: res.user.role || "admin" });
+      router.push("/admin-dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed");
     } finally {

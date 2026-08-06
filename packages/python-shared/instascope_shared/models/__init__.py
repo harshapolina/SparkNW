@@ -48,17 +48,34 @@ class NotificationType(str, Enum):
     SYSTEM = "system"
 
 
+class UserRole(str, Enum):
+    ADMIN = "admin"
+    STUDENT = "student"
+
+
+DEFAULT_ORG_ID = "spark"
+
+
 class User(Document):
     email: Indexed(str, unique=True)  # type: ignore[valid-type]
     password_hash: str
     name: str
     avatar_url: Optional[str] = None
+    role: UserRole = UserRole.ADMIN
+    org_id: str = DEFAULT_ORG_ID
+    profile_id: Optional[str] = None
+    student_id: Optional[str] = None
     is_active: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Settings:
         name = "users"
+        indexes = [
+            IndexModel([("student_id", ASCENDING), ("org_id", ASCENDING)]),
+            IndexModel([("profile_id", ASCENDING)]),
+            IndexModel([("role", ASCENDING), ("org_id", ASCENDING)]),
+        ]
 
 
 class UserSettings(Document):
@@ -84,6 +101,7 @@ class Profile(Document):
     """Current profile state. Historical metrics live in ProfileSnapshot."""
 
     user_id: Indexed(str)  # type: ignore[valid-type]
+    org_id: str = DEFAULT_ORG_ID
     username: Indexed(str)  # type: ignore[valid-type]
     ig_user_id: Optional[str] = None
     full_name: Optional[str] = None
@@ -126,6 +144,8 @@ class Profile(Document):
         indexes = [
             IndexModel([("user_id", ASCENDING), ("username", ASCENDING)], unique=True),
             IndexModel([("user_id", ASCENDING), ("status", ASCENDING)]),
+            IndexModel([("org_id", ASCENDING), ("status", ASCENDING)]),
+            IndexModel([("org_id", ASCENDING), ("username", ASCENDING)]),
             IndexModel([("status", ASCENDING), ("last_scraped_at", ASCENDING)]),
         ]
 

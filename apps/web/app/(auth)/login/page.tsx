@@ -26,8 +26,8 @@ export default function LoginPage() {
         { method: "POST", body: JSON.stringify({ email, password }) }
       );
       setTokens(res.tokens);
-      saveUser(res.user);
-      router.push("/overview");
+      saveUser({ ...res.user, role: res.user.role || "admin" });
+      router.push(res.user.role === "student" ? "/student-dashboard" : "/admin-dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

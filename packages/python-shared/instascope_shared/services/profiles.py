@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import HTTPException, status
 
 from instascope_shared.domain.instagram import extract_username, profile_url_for
-from instascope_shared.models import Job, JobStatus, JobType, Profile, ProfileStatus
+from instascope_shared.models import DEFAULT_ORG_ID, Job, JobStatus, JobType, Profile, ProfileStatus
 from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse
 from instascope_shared.services.scrape_pipeline import heal_soft_scrape_failure
 from instascope_shared.services.student_roster import merge_student
@@ -62,6 +62,8 @@ async def add_profile(user_id: str, payload: AddProfileRequest, *, upsert_studen
         if upsert_student:
             if student:
                 existing.student = merge_student(getattr(existing, "student", None), student)
+                if not getattr(existing, "org_id", None):
+                    existing.org_id = DEFAULT_ORG_ID
                 existing.updated_at = datetime.utcnow()
                 await existing.save()
             return existing
@@ -69,6 +71,7 @@ async def add_profile(user_id: str, payload: AddProfileRequest, *, upsert_studen
 
     profile = Profile(
         user_id=user_id,
+        org_id=DEFAULT_ORG_ID,
         username=username,
         profile_url=profile_url_for(username),
         status=ProfileStatus.ACTIVE,

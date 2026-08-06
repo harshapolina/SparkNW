@@ -16,10 +16,11 @@ import { prefetchSparkData, sparkQueryKeyForApi } from "@/lib/spark/prefetch";
 import { cn } from "@/lib/utils";
 
 const SPARK_ROUTES = [
-  "/spark/dashboard",
-  "/spark/leaderboard",
-  "/spark/admin",
-  "/spark/admin/leaderboard",
+  "/student-dashboard",
+  "/student-leaderboard",
+  "/admin-dashboard",
+  "/admin-leaderboard",
+  "/top-10",
 ] as const;
 
 const nav = [
@@ -28,10 +29,9 @@ const nav = [
   { href: "/imports", label: "Import" },
   { href: "/imports/duplicates", label: "Duplicates" },
   { href: "/analytics", label: "Analytics", prefetch: "/analytics/overview" },
-  { href: "/spark/dashboard", label: "Student", prefetchApi: "/spark/student" },
-  { href: "/spark/leaderboard", label: "Leaderboard", prefetchApi: "/spark/leaderboard?sort=overall" },
-  { href: "/spark/admin", label: "Admin", prefetchApi: "/spark/admin" },
-  { href: "/spark/admin/leaderboard", label: "Admin Board", prefetchApi: "/spark/leaderboard?sort=overall" },
+  { href: "/admin-dashboard", label: "SPARK Admin", prefetchApi: "/spark/admin" },
+  { href: "/admin-leaderboard", label: "Admin Board", prefetchApi: "/spark/leaderboard?sort=overall" },
+  { href: "/top-10", label: "Top 10" },
   { href: "/notifications", label: "Alerts", prefetch: "/notifications" },
   { href: "/settings", label: "Settings", prefetch: "/settings" },
 ];
@@ -118,8 +118,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
           <nav className="ml-1 hidden items-center gap-0.5 xl:flex">
             {nav.map((item) => {
               const active =
-                item.href === "/spark/admin"
-                  ? pathname === "/spark/admin"
+                item.href === "/admin-dashboard"
+                  ? pathname === "/admin-dashboard"
                   : pathname === item.href || pathname.startsWith(item.href + "/");
               return (
                 <Link
@@ -187,8 +187,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
         <div className="flex gap-1 overflow-x-auto border-t border-stone-200/60 px-3 py-2 xl:hidden">
           {nav.map((item) => {
             const active =
-              item.href === "/spark/admin"
-                ? pathname === "/spark/admin"
+              item.href === "/admin-dashboard"
+                ? pathname === "/admin-dashboard"
                 : pathname === item.href || pathname.startsWith(item.href + "/");
             return (
               <Link

@@ -8,6 +8,7 @@ from instascope_shared.schemas import (
     LoginRequest,
     MessageResponse,
     SignupRequest,
+    StudentLoginRequest,
     TokenResponse,
     UserResponse,
 )
@@ -24,6 +25,11 @@ async def signup(payload: SignupRequest):
 @router.post("/login", response_model=AuthResponse)
 async def login(payload: LoginRequest):
     return await auth_service.login(payload)
+
+
+@router.post("/student-login", response_model=AuthResponse)
+async def student_login(payload: StudentLoginRequest):
+    return await auth_service.student_login(payload)
 
 
 @router.post("/refresh", response_model=TokenResponse)
@@ -44,10 +50,4 @@ async def forgot_password(payload: ForgotPasswordRequest):
 
 @router.get("/me", response_model=UserResponse)
 async def me(user: User = Depends(get_current_user)):
-    return UserResponse(
-        id=str(user.id),
-        email=user.email,
-        name=user.name,
-        avatar_url=user.avatar_url,
-        created_at=user.created_at,
-    )
+    return auth_service.user_response(user)
