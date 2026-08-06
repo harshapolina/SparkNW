@@ -666,26 +666,27 @@ def _enrich_limit(total_posts: int) -> int:
 
 
 def _result_from_meta(username: str, *, meta_desc: str | None, og_image: str | None, og_title: str | None) -> ScrapeResult | None:
-    if not meta_desc:
+    if not meta_desc and not og_title:
         return None
     followers = following = posts_count = 0
-    m = re.search(r"([\d.,]+[KMB]?)\s+Followers", meta_desc, flags=re.I)
-    if m:
-        followers = _parse_count(m.group(1))
-    m = re.search(r"([\d.,]+[KMB]?)\s+Following", meta_desc, flags=re.I)
-    if m:
-        following = _parse_count(m.group(1))
-    m = re.search(r"([\d.,]+[KMB]?)\s+Posts", meta_desc, flags=re.I)
-    if m:
-        posts_count = _parse_count(m.group(1))
-    if followers == 0 and posts_count == 0:
-        return None
+    if meta_desc:
+        m = re.search(r"([\d.,]+[KMB]?)\s+Followers", meta_desc, flags=re.I)
+        if m:
+            followers = _parse_count(m.group(1))
+        m = re.search(r"([\d.,]+[KMB]?)\s+Following", meta_desc, flags=re.I)
+        if m:
+            following = _parse_count(m.group(1))
+        m = re.search(r"([\d.,]+[KMB]?)\s+Posts", meta_desc, flags=re.I)
+        if m:
+            posts_count = _parse_count(m.group(1))
     full_name = None
     if og_title:
         full_name = og_title.split("(")[0].strip() or None
         # Strip trailing "• Instagram photos and videos"
         if full_name and "instagram" in full_name.lower():
             full_name = re.split(r"\s*[•|]\s*", full_name)[0].strip()
+    if followers == 0 and posts_count == 0 and not full_name and not og_image:
+        return None
     return ScrapeResult(
         username=username,
         ig_user_id=None,
@@ -699,6 +700,57 @@ def _result_from_meta(username: str, *, meta_desc: str | None, og_image: str | N
         posts_count=posts_count,
         posts=[],
         raw={"source": "meta_tags"},
+    )
+
+
+async def _try_private_from_html(
+    username: str, *, proxy_url: str | None
+) -> ScrapeResult | None:
+    """When API card is blocked, detect private accounts from the public HTML page."""
+    try:
+        from instascope_scraper.http_profile import InstagramUserNotFound, fetch_profile_meta_card
+
+        meta = await fetch_profile_meta_card(username, proxy=proxy_url)
+    except InstagramUserNotFound:
+        raise
+    except Exception:
+        logger.exception("private html probe @%s failed", username)
+        return None
+    if not meta or not meta.get("is_private"):
+        return None
+    card = _result_from_meta(
+        username,
+        meta_desc=meta.get("meta_desc"),
+        og_image=meta.get("og_image"),
+        og_title=meta.get("og_title"),
+    )
+    if card:
+        card.is_private = True
+        logger.info(
+            "html_private @%s followers=%s posts=%s — saving private card",
+            username,
+            card.followers,
+            card.posts_count,
+        )
+        return _finalize_result(card, path="html_private")
+    logger.info("html_private @%s — private page with no meta counts", username)
+    return _finalize_result(
+        ScrapeResult(
+            username=username,
+            ig_user_id=None,
+            full_name=None,
+            bio=None,
+            website=None,
+            avatar_url=meta.get("og_image"),
+            is_verified=False,
+            followers=0,
+            following=0,
+            posts_count=0,
+            posts=[],
+            is_private=True,
+            raw={"source": "html_private"},
+        ),
+        path="html_private",
     )
 
 
@@ -1609,6 +1661,8 @@ async def _fill_card_via_html_meta(
         meta = await fetch_profile_meta_card(username, proxy=proxy_url)
         if not meta:
             return http_result
+        if meta.get("is_private"):
+            http_result.is_private = True
         card = _result_from_meta(
             username,
             meta_desc=meta.get("meta_desc"),
@@ -1623,6 +1677,8 @@ async def _fill_card_via_html_meta(
                 card.following,
             )
             return _merge_card_metrics(http_result, card)
+        if http_result.is_private:
+            return http_result
     except InstagramUserNotFound as exc:
         raise ScrapeError(
             f"Profile @{username} does not exist on Instagram",
@@ -1926,6 +1982,8 @@ async def _scrape_live(
         http_result = await _fill_card_via_html_meta(
             username, http_result, proxy_url=proxy_url
         )
+    if http_result and http_result.is_private:
+        return _finalize_result(http_result, path="http_private")
     if http_result and _result_is_usable(http_result) and _has_card_metrics(http_result):
         if not _posts_complete(http_result.posts, http_result.posts_count):
             logger.warning(
@@ -1937,6 +1995,24 @@ async def _scrape_live(
             )
             return _finalize_result(http_result, path="http_usable")
         return _finalize_result(http_result, path="http_full")
+
+    # API card blocked (common for private) — detect private from HTML before failing.
+    proxy_url = proxy_to_httpx_url(proxy) if proxy is not None else None
+    try:
+        from instascope_scraper.http_profile import InstagramUserNotFound as _IgNotFound
+
+        private_card = await _try_private_from_html(username, proxy_url=proxy_url)
+        if private_card:
+            return private_card
+    except Exception as exc:
+        from instascope_scraper.http_profile import InstagramUserNotFound as _IgNotFound
+
+        if isinstance(exc, _IgNotFound):
+            raise ScrapeError(
+                f"Profile @{username} does not exist on Instagram",
+                unavailable=True,
+            ) from exc
+        logger.exception("private html fallback @%s failed", username)
 
     use_browser = caps_env("SCRAPE_USE_BROWSER", "1").strip() not in {"0", "false", "no"}
     if not use_browser:
@@ -2251,6 +2327,35 @@ async def _scrape_live_browser(
             raise ScrapeError(
                 f"Profile @{username} does not exist on Instagram",
                 unavailable=True,
+            )
+        if (
+            "this account is private" in body_text
+            or "account is private" in body_text
+            or "follow to see their photos and videos" in body_text
+        ):
+            # Prefer any HTTP card we already have; otherwise save a private stub.
+            if http_result:
+                http_result.is_private = True
+                await context.close()
+                return _finalize_result(http_result, path="browser_private")
+            await context.close()
+            return _finalize_result(
+                ScrapeResult(
+                    username=username,
+                    ig_user_id=None,
+                    full_name=None,
+                    bio=None,
+                    website=None,
+                    avatar_url=None,
+                    is_verified=False,
+                    followers=0,
+                    following=0,
+                    posts_count=0,
+                    posts=[],
+                    is_private=True,
+                    raw={"source": "browser_private"},
+                ),
+                path="browser_private",
             )
 
         for label in ("Allow all cookies", "Allow essential and optional cookies", "Accept"):

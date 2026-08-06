@@ -90,6 +90,8 @@ def _is_confirmed_empty_profile(result: dict[str, Any]) -> bool:
         "username_feed_empty",
         "http_private",
         "http_empty_card",
+        "html_private",
+        "browser_private",
     }:
         return True
     if bool(result.get("is_private")):

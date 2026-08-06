@@ -312,12 +312,27 @@ async def fetch_profile_meta_card(
                 return m.group(1)
         return None
 
+    is_private = any(
+        n in low
+        for n in (
+            "this account is private",
+            "this account is private.",
+            "account is private",
+            "follow to see their photos and videos",
+            "follow this account to see their photos",
+        )
+    )
     meta_desc = _meta("description")
     og_image = _meta("og:image")
     og_title = _meta("og:title")
-    if not meta_desc and not og_title:
+    if not meta_desc and not og_title and not is_private:
         return None
-    return {"meta_desc": meta_desc, "og_image": og_image, "og_title": og_title}
+    return {
+        "meta_desc": meta_desc,
+        "og_image": og_image,
+        "og_title": og_title,
+        "is_private": "1" if is_private else None,
+    }
 
 
 def _timeline_from_user(user: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None, bool]:
