@@ -3,7 +3,9 @@
 Import-center / bulk refresh use this path. Single Add/Refresh must NOT use it —
 see ``scrape_single.schedule_single_scrape``.
 
-Both paths call the same core: ``instascope_shared.services.scrape_core.run_profile_scrape``.
+Execution plane: in-API worker only (Celery path intentionally unused).
+Queue state prefers Redis when REDIS_URL is reachable; falls back to in-process
+asyncio.Queue (document: run a single API worker if Redis is unavailable).
 """
 
 from __future__ import annotations
@@ -14,12 +16,26 @@ import os
 import time
 import traceback
 from datetime import datetime
-from typing import Iterable
+from typing import Any, Iterable
 
+from bson import ObjectId
+
+from instascope_shared.core.config import get_settings
 from instascope_shared.models import Profile
 from instascope_shared.services.scrape_core import progress_payload, run_profile_scrape
 
+from app.scrape_lease import (
+    acquire,
+    bump_generation,
+    current_generation,
+    owner_of,
+    release,
+)
+
 log = logging.getLogger("instascope.api.scrape_bulk")
+
+_REDIS_KEY = "instascope:bulk_scrape_queue"
+_REDIS_PENDING = "instascope:bulk_scrape_pending"
 
 _queue: asyncio.Queue[str] | None = None
 _worker: asyncio.Task | None = None
@@ -27,6 +43,8 @@ _pending: set[str] = set()
 _lock = asyncio.Lock()
 _running_id: str | None = None
 _running_started: float | None = None
+_redis: Any = None
+_use_redis: bool | None = None
 
 
 def _delay_seconds() -> float:
@@ -57,6 +75,29 @@ def _get_queue() -> asyncio.Queue[str]:
     return _queue
 
 
+async def _get_redis():
+    global _redis, _use_redis
+    if _use_redis is False:
+        return None
+    if _redis is not None:
+        return _redis
+    try:
+        import redis.asyncio as redis_async
+
+        url = get_settings().redis_url
+        client = redis_async.from_url(url, decode_responses=True)
+        await client.ping()
+        _redis = client
+        _use_redis = True
+        log.info("bulk scrape queue using Redis at %s", url.split("@")[-1])
+        return _redis
+    except Exception as exc:
+        _use_redis = False
+        _redis = None
+        log.warning("bulk scrape queue Redis unavailable (%s) — using in-memory queue", exc)
+        return None
+
+
 async def _mark_profile_interrupted(profile_id: str, reason: str) -> None:
     try:
         profile = await Profile.get(profile_id)
@@ -81,7 +122,6 @@ async def _mark_profile_interrupted(profile_id: str, reason: str) -> None:
 
 
 async def clear_stale_scrape_progress() -> int:
-    """Clear orphaned active scrape_progress left by API restarts / hung jobs."""
     cleared = 0
     try:
         profiles = await Profile.find({"scrape_progress.active": True}).to_list()
@@ -114,13 +154,18 @@ async def clear_stale_scrape_progress() -> int:
         await profile.save()
         cleared += 1
         _pending.discard(str(profile.id))
+        r = await _get_redis()
+        if r:
+            try:
+                await r.srem(_REDIS_PENDING, str(profile.id))
+            except Exception:
+                pass
     if cleared:
         log.warning("cleared %s stale scrape_progress marker(s)", cleared)
     return cleared
 
 
 async def resume_incomplete_bulk_scrapes() -> int:
-    """Re-enqueue BULK scrapes only after API restart (never touch single-path jobs)."""
     try:
         profiles = await Profile.find(
             {
@@ -183,47 +228,67 @@ async def resume_incomplete_bulk_scrapes() -> int:
     return queued
 
 
-# Back-compat alias used by main.py
 resume_incomplete_scrapes = resume_incomplete_bulk_scrapes
 
 
 async def mark_profiles_queued(profile_ids: Iterable[str]) -> int:
-    """Mark bulk jobs as queued (source=bulk) before the worker picks them up."""
-    marked = 0
-    for raw in profile_ids:
-        pid = str(raw or "").strip()
-        if not pid:
-            continue
+    """Batch-mark bulk jobs as queued via update_many."""
+    ids = [str(pid).strip() for pid in profile_ids if str(pid or "").strip()]
+    if not ids:
+        return 0
+    now = datetime.utcnow()
+    oids: list[ObjectId] = []
+    for pid in ids:
         try:
-            profile = await Profile.get(pid)
-            if not profile:
-                continue
-            total = int(profile.posts_count or 0)
-            profile.scrape_progress = progress_payload(
-                scraped=0,
-                total=total,
-                phase="queued",
-                active=True,
-                source="bulk",
-            )
-            profile.last_error = None
-            profile.updated_at = datetime.utcnow()
-            await profile.save()
-            marked += 1
+            oids.append(ObjectId(pid))
         except Exception:
-            log.exception("mark_profiles_queued failed profile_id=%s", pid)
-    return marked
+            continue
+    if not oids:
+        return 0
+    payload = progress_payload(
+        scraped=0, total=0, phase="queued", active=True, source="bulk"
+    )
+    # Keep per-profile total_posts when possible via pipeline is heavy; set zeros
+    # then worker will refresh. Prefer one round-trip.
+    result = await Profile.get_motor_collection().update_many(
+        {"_id": {"$in": oids}},
+        {
+            "$set": {
+                "scrape_progress": payload,
+                "last_error": None,
+                "updated_at": now,
+            }
+        },
+    )
+    return int(result.matched_count or 0)
+
+
+async def _pop_next() -> tuple[str, bool]:
+    """Return (profile_id, from_memory_queue)."""
+    r = await _get_redis()
+    if r is not None:
+        while True:
+            q = _get_queue()
+            if not q.empty():
+                return await q.get(), True
+            item = await r.blpop(_REDIS_KEY, timeout=1)
+            if item:
+                _key, pid = item
+                return str(pid), False
+            await asyncio.sleep(0.05)
+    return await _get_queue().get(), True
 
 
 async def _worker_loop() -> None:
     global _running_id, _running_started
-    q = _get_queue()
     log.info("bulk scrape worker started")
     while True:
-        profile_id = await q.get()
+        profile_id, from_memory = await _pop_next()
         _running_id = profile_id
         _running_started = time.time()
         deferred = False
+        owned = False
+        generation: int | None = None
         try:
             profile = await Profile.get(profile_id)
             if not profile:
@@ -231,30 +296,51 @@ async def _worker_loop() -> None:
             else:
                 from app.scrape_single import single_scrape_running
 
-                if single_scrape_running(profile_id):
+                if single_scrape_running(profile_id) or owner_of(profile_id) == "single":
                     log.info(
                         "bulk scrape deferred @%s — single scrape owns this profile",
                         profile.username,
                     )
                     deferred = True
                     await asyncio.sleep(5)
-                    await q.put(profile_id)
+                    await enqueue_bulk_profile_ids([profile_id], force=True)
                 else:
-                    log.info(
-                        "bulk scrape start @%s id=%s (queue=%s)",
-                        profile.username,
-                        profile_id,
-                        q.qsize(),
-                    )
-                    await run_profile_scrape(profile, source="bulk")
-                    fresh = await Profile.get(profile_id)
-                    log.info(
-                        "bulk scrape done @%s followers=%s posts=%s status=%s",
-                        getattr(fresh, "username", profile.username),
-                        getattr(fresh, "followers", "?") if fresh else "?",
-                        getattr(fresh, "posts_count", "?") if fresh else "?",
-                        getattr(fresh, "status", "?") if fresh else "?",
-                    )
+                    generation = bump_generation(profile_id)
+                    owned = await acquire(profile_id, "bulk", generation)
+                    if not owned:
+                        log.info(
+                            "bulk scrape deferred @%s — lease not acquired",
+                            profile.username,
+                        )
+                        deferred = True
+                        await asyncio.sleep(5)
+                        await enqueue_bulk_profile_ids([profile_id], force=True)
+                    else:
+                        gen = generation
+
+                        def is_current() -> bool:
+                            return current_generation(profile_id) == gen
+
+                        log.info(
+                            "bulk scrape start @%s id=%s gen=%s",
+                            profile.username,
+                            profile_id,
+                            generation,
+                        )
+                        await run_profile_scrape(
+                            profile,
+                            source="bulk",
+                            generation=generation,
+                            is_current=is_current,
+                        )
+                        fresh = await Profile.get(profile_id)
+                        log.info(
+                            "bulk scrape done @%s followers=%s posts=%s status=%s",
+                            getattr(fresh, "username", profile.username),
+                            getattr(fresh, "followers", "?") if fresh else "?",
+                            getattr(fresh, "posts_count", "?") if fresh else "?",
+                            getattr(fresh, "status", "?") if fresh else "?",
+                        )
         except Exception:
             log.error("bulk scrape failed profile_id=%s\n%s", profile_id, traceback.format_exc())
             if not deferred:
@@ -262,14 +348,34 @@ async def _worker_loop() -> None:
                     profile_id, "Bulk scrape worker error — click Refresh to retry."
                 )
         finally:
+            if owned and generation is not None:
+                await release(profile_id, "bulk", generation)
             _running_id = None
             _running_started = None
             if not deferred:
                 _pending.discard(profile_id)
-            q.task_done()
+                r = await _get_redis()
+                if r:
+                    try:
+                        await r.srem(_REDIS_PENDING, profile_id)
+                    except Exception:
+                        pass
+            if from_memory:
+                try:
+                    _get_queue().task_done()
+                except Exception:
+                    pass
             delay = _delay_seconds()
-            if delay > 0 and not q.empty() and not deferred:
-                await asyncio.sleep(delay)
+            if delay > 0 and not deferred:
+                r = await _get_redis()
+                pending_more = bool(_pending)
+                if r is not None:
+                    try:
+                        pending_more = pending_more or (await r.llen(_REDIS_KEY) > 0)
+                    except Exception:
+                        pass
+                if pending_more:
+                    await asyncio.sleep(delay)
 
 
 def _ensure_worker() -> None:
@@ -295,14 +401,28 @@ def _ensure_worker() -> None:
 
 async def enqueue_bulk_profile_ids(profile_ids: Iterable[str], *, force: bool = False) -> int:
     """Enqueue profile IDs for sequential BULK scraping only."""
-    q = _get_queue()
     _ensure_worker()
+    r = await _get_redis()
     queued = 0
     async with _lock:
         for raw in profile_ids:
             pid = str(raw or "").strip()
             if not pid:
                 continue
+            if r is not None:
+                try:
+                    if not force and await r.sismember(_REDIS_PENDING, pid):
+                        continue
+                    if pid == _running_id and not force:
+                        continue
+                    await r.sadd(_REDIS_PENDING, pid)
+                    await r.rpush(_REDIS_KEY, pid)
+                    _pending.add(pid)
+                    queued += 1
+                    continue
+                except Exception:
+                    log.exception("redis enqueue failed for %s — memory fallback", pid)
+
             if pid in _pending:
                 if not force:
                     continue
@@ -312,14 +432,13 @@ async def enqueue_bulk_profile_ids(profile_ids: Iterable[str], *, force: bool = 
                 else:
                     _pending.discard(pid)
             _pending.add(pid)
-            await q.put(pid)
+            await _get_queue().put(pid)
             queued += 1
     if queued:
         log.info("enqueued %s profile(s) for BULK scrape (pending=%s)", queued, len(_pending))
     return queued
 
 
-# Back-compat names (bulk import used these)
 enqueue_profile_ids = enqueue_bulk_profile_ids
 
 

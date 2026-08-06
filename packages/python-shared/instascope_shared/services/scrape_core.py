@@ -8,18 +8,21 @@ from __future__ import annotations
 
 import asyncio
 import os
-from contextlib import contextmanager
+import time
 from datetime import datetime
-from typing import Any, Iterator, Literal
+from typing import Any, Callable, Literal
 
 from instascope_shared.core.config import get_settings
 from instascope_shared.models import Job, JobStatus, JobType, Profile
 from instascope_shared.services.scrape_pipeline import apply_scrape_result, mark_scrape_failed
+from instascope_scraper.caps import caps_for_api, use_caps
 from instascope_scraper.profile import ScrapeError, scrape_profile
 from instascope_scraper.proxy_pool import next_proxy, pool_size
 from instascope_scraper.types import parse_proxy_url
 
 ScrapeSource = Literal["single", "bulk"]
+
+_PROGRESS_INTERVAL_S = 20.0
 
 
 def _job_timeout_seconds() -> float:
@@ -28,57 +31,6 @@ def _job_timeout_seconds() -> float:
         return max(60.0, float(raw))
     except ValueError:
         return 480.0
-
-
-@contextmanager
-def _scrape_caps() -> Iterator[None]:
-    """Env caps for API-driven scrapes (single or bulk)."""
-    keys = (
-        "SCRAPE_MAX_POSTS",
-        "SCRAPE_ENRICH_MAX",
-        "SCRAPE_MAX_RETRIES",
-        "SCRAPE_USE_BROWSER",
-        "SCRAPE_BROWSER_ON_PARTIAL",
-        "SCRAPE_STRICT",
-    )
-    previous = {k: os.environ.get(k) for k in keys}
-
-    max_posts = (os.getenv("SCRAPE_INLINE_MAX_POSTS") or "0").strip() or "0"
-    enrich_max = (os.getenv("SCRAPE_INLINE_ENRICH_MAX") or "12").strip() or "12"
-    retries = (os.getenv("SCRAPE_INLINE_MAX_RETRIES") or "1").strip() or "1"
-    os.environ["SCRAPE_MAX_POSTS"] = max_posts
-    os.environ["SCRAPE_ENRICH_MAX"] = enrich_max
-    os.environ["SCRAPE_MAX_RETRIES"] = retries
-
-    from instascope_scraper.proxy_pool import pool_size as _proxy_pool_size
-
-    if "SCRAPE_INLINE_USE_BROWSER" in os.environ:
-        os.environ["SCRAPE_USE_BROWSER"] = (
-            os.environ.get("SCRAPE_INLINE_USE_BROWSER") or "0"
-        ).strip() or "0"
-    else:
-        os.environ["SCRAPE_USE_BROWSER"] = "1" if _proxy_pool_size() > 0 else "0"
-    os.environ["SCRAPE_BROWSER_ON_PARTIAL"] = (
-        os.getenv("SCRAPE_INLINE_BROWSER_ON_PARTIAL") or "0"
-    ).strip() or "0"
-    os.environ["SCRAPE_STRICT"] = (os.getenv("SCRAPE_INLINE_STRICT") or "0").strip() or "0"
-    prev_page_delay = os.environ.get("SCRAPE_PAGE_DELAY_SECONDS")
-    if prev_page_delay is None:
-        os.environ["SCRAPE_PAGE_DELAY_SECONDS"] = (
-            os.getenv("SCRAPE_INLINE_PAGE_DELAY_SECONDS") or "0.35"
-        ).strip() or "0.35"
-    try:
-        yield
-    finally:
-        for k, v in previous.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        if prev_page_delay is None:
-            os.environ.pop("SCRAPE_PAGE_DELAY_SECONDS", None)
-        else:
-            os.environ["SCRAPE_PAGE_DELAY_SECONDS"] = prev_page_delay
 
 
 def progress_payload(
@@ -110,26 +62,79 @@ def progress_payload(
     return out
 
 
-async def _set_progress(profile: Profile, job: Job, payload: dict[str, Any]) -> None:
-    profile.scrape_progress = payload
-    profile.updated_at = datetime.utcnow()
-    await profile.save()
+async def _resolve_job(
+    profile: Profile,
+    *,
+    source: ScrapeSource,
+    job: Job | None,
+    generation: int | None,
+) -> Job:
+    """Reuse a PENDING job from the router when present; otherwise create one."""
+    now = datetime.utcnow()
+    if job is None:
+        pending = (
+            await Job.find(
+                Job.profile_id == str(profile.id),
+                Job.status == JobStatus.PENDING,
+                Job.job_type == JobType.SCRAPE_PROFILE,
+            )
+            .sort([("created_at", -1)])
+            .first_or_none()
+        )
+        job = pending
+    if job is None:
+        meta: dict[str, Any] = {"phase": "starting", "source": source}
+        if generation is not None:
+            meta["generation"] = int(generation)
+        job = Job(
+            user_id=profile.user_id,
+            profile_id=str(profile.id),
+            job_type=JobType.SCRAPE_PROFILE,
+            status=JobStatus.RUNNING,
+            priority=1,
+            started_at=now,
+            attempts=1,
+            meta=meta,
+        )
+        await job.insert()
+        return job
+
+    job.status = JobStatus.RUNNING
+    job.started_at = now
+    job.attempts = max(1, int(job.attempts or 0) + 1)
     meta = dict(job.meta or {})
-    meta.update(payload)
+    meta["phase"] = "starting"
+    meta["source"] = source
+    if generation is not None:
+        meta["generation"] = int(generation)
     job.meta = meta
-    job.updated_at = datetime.utcnow()
+    job.updated_at = now
     await job.save()
+    return job
 
 
 async def run_profile_scrape(
     profile: Profile,
     *,
     source: ScrapeSource = "single",
+    job: Job | None = None,
+    generation: int | None = None,
+    is_current: Callable[[], bool] | None = None,
 ) -> Job:
     """Run one live Instagram scrape and persist results.
 
-    Used by both the single-profile runner and the bulk queue worker.
+    ``is_current`` should return False when the caller cancelled / superseded this
+    run (stale generation). Shared code must not import API lease modules.
     """
+
+    def _current() -> bool:
+        if is_current is None:
+            return True
+        try:
+            return bool(is_current())
+        except Exception:  # noqa: BLE001
+            return False
+
     try:
         from instascope_shared.services.app_config import apply_proxy_config_to_env
 
@@ -138,17 +143,15 @@ async def run_profile_scrape(
         pass
 
     settings = get_settings()
-    job = Job(
-        user_id=profile.user_id,
-        profile_id=str(profile.id),
-        job_type=JobType.SCRAPE_PROFILE,
-        status=JobStatus.RUNNING,
-        priority=1,
-        started_at=datetime.utcnow(),
-        attempts=1,
-        meta={"phase": "starting", "source": source},
-    )
-    await job.insert()
+    job = await _resolve_job(profile, source=source, job=job, generation=generation)
+
+    if not _current():
+        job.status = JobStatus.CANCELLED
+        job.finished_at = datetime.utcnow()
+        job.error_message = "Superseded by a newer scrape"
+        job.updated_at = datetime.utcnow()
+        await job.save()
+        return job
 
     proxy = next_proxy() if pool_size() > 0 else parse_proxy_url(settings.scrape_proxy_url)
     last_progress = progress_payload(
@@ -157,31 +160,64 @@ async def run_profile_scrape(
         phase="starting",
         source=source,
     )
-    await _set_progress(profile, job, last_progress)
+    last_profile_save = 0.0
+    last_phase = "starting"
+
+    async def _save_profile_progress(payload: dict[str, Any], *, force: bool = False) -> None:
+        nonlocal last_profile_save
+        now_m = time.monotonic()
+        if not force and (now_m - last_profile_save) < _PROGRESS_INTERVAL_S:
+            return
+        profile.scrape_progress = payload
+        profile.updated_at = datetime.utcnow()
+        await profile.save()
+        last_profile_save = now_m
+
+    async def _save_job_meta(payload: dict[str, Any]) -> None:
+        meta = dict(job.meta or {})
+        meta.update(payload)
+        job.meta = meta
+        job.updated_at = datetime.utcnow()
+        await job.save()
+
+    profile.scrape_progress = last_progress
+    profile.updated_at = datetime.utcnow()
+    await profile.save()
+    last_profile_save = time.monotonic()
+    await _save_job_meta(last_progress)
 
     async def on_progress(info: dict[str, Any]) -> None:
-        nonlocal last_progress
+        nonlocal last_progress, last_phase
+        if not _current():
+            return
         scraped = int(info.get("scraped_posts") or info.get("scraped") or 0)
         total = int(info.get("total_posts") or info.get("total") or 0)
         phase = str(info.get("phase") or "scraping")
+        phase_changed = phase != last_phase
+        last_phase = phase
         last_progress = progress_payload(
             scraped=scraped, total=total, phase=phase, active=True, source=source
         )
-        await _set_progress(profile, job, last_progress)
+        await _save_profile_progress(last_progress, force=phase_changed)
+        if phase_changed:
+            await _save_job_meta(last_progress)
 
     async def _heartbeat() -> None:
         while True:
-            await asyncio.sleep(8)
+            await asyncio.sleep(_PROGRESS_INTERVAL_S)
+            if not _current():
+                return
             payload = dict(last_progress)
             payload["updated_at"] = datetime.utcnow().isoformat() + "Z"
             payload["active"] = True
             payload["source"] = source
             try:
-                await _set_progress(profile, job, payload)
+                await _save_profile_progress(payload, force=True)
             except Exception:  # noqa: BLE001
                 return
 
-    with _scrape_caps():
+    caps = caps_for_api(source)
+    with use_caps(caps):
         heartbeat = asyncio.create_task(
             _heartbeat(), name=f"scrape-hb-{source}-{profile.username}"
         )
@@ -195,6 +231,7 @@ async def run_profile_scrape(
                         delay_seconds=settings.scrape_delay_seconds,
                         live=True,
                         on_progress=on_progress,
+                        caps=caps,
                     ),
                     timeout=_job_timeout_seconds(),
                 )
@@ -204,18 +241,32 @@ async def run_profile_scrape(
                     f"(Instagram/proxy too slow). Try Refresh again."
                 ) from exc
 
-            await _set_progress(
-                profile,
-                job,
-                progress_payload(
-                    scraped=len(result.posts),
-                    total=int(result.posts_count or len(result.posts)),
-                    phase="saving",
-                    active=True,
-                    source=source,
-                ),
+            if not _current():
+                job.status = JobStatus.CANCELLED
+                job.finished_at = datetime.utcnow()
+                job.error_message = "Superseded by a newer scrape"
+                await job.save()
+                return job
+
+            saving = progress_payload(
+                scraped=len(result.posts),
+                total=int(result.posts_count or len(result.posts)),
+                phase="saving",
+                active=True,
+                source=source,
             )
+            last_progress = saving
+            await _save_profile_progress(saving, force=True)
+            await _save_job_meta(saving)
+
+            if not _current():
+                return job
+
             await apply_scrape_result(job=job, profile=profile, result=result.to_dict())
+
+            if not _current():
+                return job
+
             profile.scrape_progress = progress_payload(
                 scraped=len(result.posts),
                 total=int(result.posts_count or len(result.posts)),
@@ -223,9 +274,31 @@ async def run_profile_scrape(
                 active=False,
                 source=source,
             )
+            profile.updated_at = datetime.utcnow()
             await profile.save()
+        except asyncio.CancelledError:
+            if _current():
+                profile.scrape_progress = progress_payload(
+                    scraped=int(last_progress.get("scraped_posts") or 0),
+                    total=int(last_progress.get("total_posts") or profile.posts_count or 0),
+                    phase="interrupted",
+                    active=False,
+                    source=source,
+                )
+                profile.last_error = "Scrape cancelled — click Refresh to retry."
+                profile.updated_at = datetime.utcnow()
+                await profile.save()
+                job.status = JobStatus.CANCELLED
+                job.finished_at = datetime.utcnow()
+                job.error_message = "Cancelled"
+                await job.save()
+            raise
         except ScrapeError as exc:
+            if not _current():
+                return job
             await mark_scrape_failed(job, profile, str(exc), unavailable=exc.unavailable)
+            if not _current():
+                return job
             profile.scrape_progress = progress_payload(
                 scraped=int(last_progress.get("scraped_posts") or 0),
                 total=int(last_progress.get("total_posts") or profile.posts_count or 0),
@@ -235,7 +308,11 @@ async def run_profile_scrape(
             )
             await profile.save()
         except Exception as exc:  # noqa: BLE001
+            if not _current():
+                return job
             await mark_scrape_failed(job, profile, str(exc))
+            if not _current():
+                return job
             profile.scrape_progress = progress_payload(
                 scraped=0,
                 total=int(profile.posts_count or 0),

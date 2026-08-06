@@ -19,6 +19,8 @@ from urllib.parse import quote
 
 import httpx
 
+from instascope_scraper.caps import caps_env
+
 logger = logging.getLogger("instascope.scraper.http_profile")
 
 IG_APP_ID = "936619743392459"
@@ -53,7 +55,7 @@ TIMELINE_DOC_IDS = (
 
 def _max_posts() -> int:
     """0 / unset = fetch all (hard safety cap 50_000)."""
-    raw = (os.getenv("SCRAPE_MAX_POSTS") or "0").strip()
+    raw = (caps_env("SCRAPE_MAX_POSTS", "0") or "0").strip()
     try:
         n = int(raw)
     except ValueError:
@@ -539,7 +541,7 @@ async def fetch_all_media_nodes(
     if expected_count > 0:
         limit = min(limit, expected_count)
     page_size = _page_size()
-    delay = float(os.getenv("SCRAPE_PAGE_DELAY_SECONDS") or "0.8")
+    delay = float(caps_env("SCRAPE_PAGE_DELAY_SECONDS", "0.8") or "0.8")
 
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
@@ -874,7 +876,7 @@ async def fetch_timeline_via_username_feed(
     if expected_count > 0:
         limit = min(limit, expected_count)
     page_size = _page_size()
-    delay = float(os.getenv("SCRAPE_PAGE_DELAY_SECONDS") or "0.8")
+    delay = float(caps_env("SCRAPE_PAGE_DELAY_SECONDS", "0.8") or "0.8")
 
     async def _emit(phase: str = "username_feed") -> None:
         if not on_progress:

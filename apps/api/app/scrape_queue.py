@@ -1,6 +1,6 @@
-"""Back-compat: bulk queue module was renamed to scrape_bulk.
+"""Deprecated shim — use scrape_bulk / scrape_single.
 
-New code should import from ``app.scrape_bulk`` or ``app.scrape_single``.
+Kept so older imports (`from app.scrape_queue import …`) keep working.
 """
 
 from app.scrape_bulk import (  # noqa: F401

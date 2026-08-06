@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from instascope_scraper.browser import browser_session
+from instascope_scraper.caps import ScrapeCaps, caps_env, use_caps
 from instascope_scraper.types import ProxyConfig, ScrapedPost, ScrapeResult, proxy_to_httpx_url
 
 logger = logging.getLogger("instascope.scraper.profile")
@@ -428,13 +429,30 @@ async def _expand_all_posts(
                 )
                 if len(posts) > before:
                     progressed = True
-                await _emit_progress(
-                    on_progress,
-                    phase="timeline",
-                    scraped_posts=len(posts),
-                    total_posts=expected,
-                )
-            except Exception:
+                    stagnant_rounds = 0
+                    cursor = None  # resume via seed from posts; avoid full re-page from start
+                    await _emit_progress(
+                        on_progress,
+                        phase="timeline",
+                        scraped_posts=len(posts),
+                        total_posts=expected,
+                    )
+                else:
+                    # Fail-fast when this proxy adds nothing — rotate, don't re-walk forever.
+                    stagnant_rounds += 1
+                    if stagnant_rounds >= 2:
+                        logger.warning(
+                            "expand @%s stagnant — stopping early posts=%s/%s",
+                            username,
+                            len(posts),
+                            expected,
+                        )
+                        return posts
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "please wait" in msg or "rate" in msg:
+                    logger.warning("expand @%s please-wait on proxy — rotate", username)
+                    continue
                 logger.exception(
                     "expand @%s round=%s proxy=%s FAILED",
                     username,
@@ -551,7 +569,7 @@ async def _enrich_views_via_http(
 
 def _enrich_limit(total_posts: int) -> int:
     """How many posts to open for missing likes/comments/views. 0 = all."""
-    raw = (os.getenv("SCRAPE_ENRICH_MAX") or "0").strip()
+    raw = (caps_env("SCRAPE_ENRICH_MAX", "0") or "0").strip()
     try:
         n = int(raw)
     except ValueError:
@@ -1225,7 +1243,7 @@ async def _paginate_feed_in_browser(
     more = True
     stagnant = 0
     pages = 0
-    delay = float(os.getenv("SCRAPE_PAGE_DELAY_SECONDS") or "0.75")
+    delay = float(caps_env("SCRAPE_PAGE_DELAY_SECONDS", "0.75") or "0.75")
     page_size = _page_size()
     max_pages = max(80, (limit // max(page_size, 1)) + 40)
 
@@ -1609,7 +1627,7 @@ async def _scrape_live(
                 )
                 # Under IG rate limits, browser often hangs forever. Prefer a usable
                 # card+sample over zeros unless explicitly forced.
-                force_browser = os.getenv("SCRAPE_BROWSER_ON_PARTIAL", "0").strip() == "1"
+                force_browser = caps_env("SCRAPE_BROWSER_ON_PARTIAL", "0").strip() == "1"
                 if (
                     not force_browser
                     and _result_is_usable(http_result)
@@ -1749,7 +1767,7 @@ async def _scrape_live(
             return _finalize_result(http_result, path="http_usable")
         return _finalize_result(http_result, path="http_full")
 
-    use_browser = os.getenv("SCRAPE_USE_BROWSER", "1").strip() not in {"0", "false", "no"}
+    use_browser = caps_env("SCRAPE_USE_BROWSER", "1").strip() not in {"0", "false", "no"}
     if not use_browser:
         # Keep posts-only HTTP rather than failing the whole queue job.
         if http_result and _result_is_usable(http_result):
@@ -2216,7 +2234,7 @@ async def _scrape_live_browser(
             missing.sort(
                 key=lambda p: 0 if (p.media_type in {"reel", "video"} or p.is_video) else 1
             )
-            enrich_cap_env = int(os.getenv("SCRAPE_ENRICH_MAX") or "0")
+            enrich_cap_env = int(caps_env("SCRAPE_ENRICH_MAX", "0") or "0")
             if enrich_cap_env <= 0:
                 enrich_cap = len(missing)
             else:
@@ -2258,6 +2276,37 @@ async def scrape_profile(
     delay_seconds: float = 2.0,
     live: Optional[bool] = None,
     on_progress=None,
+    caps: ScrapeCaps | None = None,
+) -> ScrapeResult:
+    """Always scrapes live Instagram data. `live` is kept for API compatibility."""
+    if caps is not None:
+        with use_caps(caps):
+            return await _scrape_profile_inner(
+                username,
+                headless=headless,
+                proxy=proxy,
+                delay_seconds=delay_seconds,
+                live=live,
+                on_progress=on_progress,
+            )
+    return await _scrape_profile_inner(
+        username,
+        headless=headless,
+        proxy=proxy,
+        delay_seconds=delay_seconds,
+        live=live,
+        on_progress=on_progress,
+    )
+
+
+async def _scrape_profile_inner(
+    username: str,
+    *,
+    headless: bool = True,
+    proxy: Optional[ProxyConfig] = None,
+    delay_seconds: float = 2.0,
+    live: Optional[bool] = None,
+    on_progress=None,
 ) -> ScrapeResult:
     """Always scrapes live Instagram data. `live` is kept for API compatibility."""
     _ = live  # ignored — real data only
@@ -2278,7 +2327,7 @@ async def scrape_profile(
         proxy = next_proxy() if rotate else parse_proxy_url(os.getenv("SCRAPE_PROXY_URL") or None)
 
     last_err: Exception | None = None
-    attempts = int(os.getenv("SCRAPE_MAX_RETRIES", "3"))
+    attempts = int(caps_env("SCRAPE_MAX_RETRIES", "3") or "3")
     # When we have multiple ports, try up to pool size (capped) so rate-limits rotate away.
     if rotate:
         attempts = max(attempts, min(pool_size(), 5))

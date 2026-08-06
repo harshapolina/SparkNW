@@ -41,28 +41,21 @@ def _spawn_background(coro) -> asyncio.Task:
     return task
 
 
-def _dispatch_jobs(jobs: list) -> bool:
-    """Returns True if at least one job was handed to Celery."""
-    dispatched = False
-    try:
-        from worker_client import dispatch_scrape_job
-
-        for job in jobs:
-            if job.profile_id:
-                task_id = dispatch_scrape_job(str(job.id), str(job.profile_id))
-                if task_id:
-                    job.celery_task_id = task_id
-                    dispatched = True
-    except Exception:
-        return False
-    return dispatched
-
-
 @router.post("", response_model=ProfileResponse, status_code=status.HTTP_201_CREATED)
 async def add_profile(payload: AddProfileRequest, user: User = Depends(get_current_user)):
     """Create profile and scrape via the SINGLE runner (not the bulk queue)."""
+    from instascope_shared.models import Job, JobStatus, JobType
+
     profile = await profile_service.add_profile(str(user.id), payload)
-    await schedule_single_scrape(str(profile.id), force=True)
+    job = Job(
+        user_id=str(user.id),
+        profile_id=str(profile.id),
+        job_type=JobType.SCRAPE_PROFILE,
+        status=JobStatus.PENDING,
+        priority=1,
+    )
+    await job.insert()
+    await schedule_single_scrape(str(profile.id), force=True, job=job)
     profile = await profile_service.get_profile(str(user.id), str(profile.id))
     return to_profile_response(profile)
 
@@ -179,11 +172,15 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
 
     scraping = False
     if payload.scrape_now and to_scrape:
-        # BULK queue only — one at a time, spaced. Does not touch single runner.
+        # BULK queue only. Enqueue off the request so large sheets return quickly.
         ids = [str(p.id) for p in to_scrape]
-        await mark_profiles_queued(ids)
-        queued = await enqueue_bulk_profile_ids(ids)
-        scraping = queued > 0
+
+        async def _queue_scrapes(profile_ids: list[str]) -> None:
+            await mark_profiles_queued(profile_ids)
+            await enqueue_bulk_profile_ids(profile_ids)
+
+        _spawn_background(_queue_scrapes(ids))
+        scraping = True
 
     return BulkImportResponse(
         imported=imported,
@@ -344,7 +341,7 @@ async def refresh_profile(profile_id: str, user: User = Depends(get_current_user
             priority=1,
         )
         await job.insert()
-        await schedule_single_scrape(str(profile.id), force=True)
+        await schedule_single_scrape(str(profile.id), force=True, job=job)
         return [
             JobResponse(
                 id=str(job.id),

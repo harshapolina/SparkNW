@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any
 
+from instascope_scraper.caps import caps_env
 from instascope_shared.analytics.metrics import compute_post_metrics
 from instascope_shared.core.config import get_settings
 from instascope_shared.domain.instagram import growth_pct
@@ -23,6 +23,8 @@ from instascope_shared.models import (
     UserSettings,
 )
 
+_POST_INSERT_CHUNK = 200
+
 
 def _media_type(raw: str | None) -> MediaType:
     mapping = {
@@ -38,8 +40,8 @@ def _media_type(raw: str | None) -> MediaType:
 
 
 def _configured_max_posts() -> int:
-    """0 means uncapped (full timeline)."""
-    raw = (os.getenv("SCRAPE_MAX_POSTS") or "0").strip()
+    """0 means uncapped (full timeline). Reads active ScrapeCaps via caps_env."""
+    raw = (caps_env("SCRAPE_MAX_POSTS", "0") or "0").strip()
     try:
         return max(0, int(raw))
     except ValueError:
@@ -220,7 +222,8 @@ async def apply_scrape_result(
     profile.last_scraped_at = datetime.utcnow()
     profile.last_success_at = datetime.utcnow()
     profile.last_error = None
-    profile.scrape_progress = {
+    prev_source = (getattr(profile, "scrape_progress", None) or {}).get("source")
+    done_progress: dict[str, Any] = {
         "active": False,
         "phase": "done",
         "scraped_posts": len(posts_data),
@@ -228,6 +231,9 @@ async def apply_scrape_result(
         "posts_left": 0,
         "percent": 100,
     }
+    if prev_source:
+        done_progress["source"] = prev_source
+    profile.scrape_progress = done_progress
     profile.updated_at = datetime.utcnow()
     # Preserve SPARK roster fields if present (never wipe on scrape)
     student = getattr(profile, "student", None)
@@ -238,13 +244,12 @@ async def apply_scrape_result(
     # Replace posts with this scrape's real set (avoid leftover demo/stale rows)
     await Post.find(Post.profile_id == str(profile.id)).delete()
 
-    posts_saved = 0
+    post_docs: list[Post] = []
     for p in posts_data:
         try:
             ig_post_id = str(p.get("ig_post_id") or p.get("id") or "")
             if not ig_post_id:
                 continue
-            existing = await Post.find_one(Post.ig_post_id == ig_post_id)
             posted_at = p.get("posted_at")
             if isinstance(posted_at, str):
                 try:
@@ -252,32 +257,41 @@ async def apply_scrape_result(
                 except ValueError:
                     posted_at = None
 
-            payload = dict(
-                profile_id=str(profile.id),
-                user_id=profile.user_id,
-                ig_post_id=ig_post_id,
-                shortcode=str(p.get("shortcode") or ig_post_id),
-                media_type=_media_type(p.get("media_type")),
-                caption=p.get("caption"),
-                thumbnail_url=p.get("thumbnail_url"),
-                permalink=p.get("permalink") or f"https://instagram.com/p/{p.get('shortcode')}/",
-                likes=int(p.get("likes") or 0),
-                comments=int(p.get("comments") or 0),
-                views=int(p.get("views") or 0),
-                posted_at=posted_at,
-                scraped_at=datetime.utcnow(),
-                updated_at=datetime.utcnow(),
+            post_docs.append(
+                Post(
+                    profile_id=str(profile.id),
+                    user_id=profile.user_id,
+                    ig_post_id=ig_post_id,
+                    shortcode=str(p.get("shortcode") or ig_post_id),
+                    media_type=_media_type(p.get("media_type")),
+                    caption=p.get("caption"),
+                    thumbnail_url=p.get("thumbnail_url"),
+                    permalink=p.get("permalink") or f"https://instagram.com/p/{p.get('shortcode')}/",
+                    likes=int(p.get("likes") or 0),
+                    comments=int(p.get("comments") or 0),
+                    views=int(p.get("views") or 0),
+                    posted_at=posted_at,
+                    scraped_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
             )
-            if existing:
-                for k, v in payload.items():
-                    setattr(existing, k, v)
-                await existing.save()
-            else:
-                await Post(**payload).insert()
-            posts_saved += 1
         except Exception:
             # One bad post must never flip a successful scrape to failed
             continue
+
+    posts_saved = 0
+    for i in range(0, len(post_docs), _POST_INSERT_CHUNK):
+        chunk = post_docs[i : i + _POST_INSERT_CHUNK]
+        try:
+            await Post.insert_many(chunk)
+            posts_saved += len(chunk)
+        except Exception:
+            for doc in chunk:
+                try:
+                    await doc.insert()
+                    posts_saved += 1
+                except Exception:
+                    continue
 
     try:
         existing_snap = await ProfileSnapshot.find_one(

@@ -92,53 +92,52 @@ async def list_profiles(
     page: int = 1,
     page_size: int = 20,
 ) -> ProfileListResponse:
-    query = Profile.find(Profile.user_id == user_id)
+    filt: dict = {"user_id": user_id}
+    if status_filter:
+        filt["status"] = status_filter
+    q_raw = (q or "").strip()
+    if q_raw:
+        rx = {"$regex": q_raw, "$options": "i"}
+        filt["$or"] = [
+            {"username": rx},
+            {"full_name": rx},
+            {"student.full_name": rx},
+            {"student.student_id": rx},
+            {"student.university": rx},
+            {"student.email": rx},
+        ]
 
-    # Beanie FindMany — filter in Python for q/status when needed for simplicity at day-1;
-    # for 1M scale, push filters into Mongo queries.
-    profiles = await query.to_list()
+    sort_field_map = {
+        "username": "username",
+        "followers": "followers",
+        "following": "following",
+        "posts": "posts_count",
+        "avg_likes": "avg_likes",
+        "avg_views": "avg_views",
+        "growth": "growth_pct_today",
+        "updated_at": "updated_at",
+        "last_updated": "last_scraped_at",
+    }
+    sort_field = sort_field_map.get(sort_by, "updated_at")
+    direction = 1 if sort_dir == "asc" else -1
 
-    # Clear soft/stale "failed" when scrape card data is already good
-    for p in profiles:
+    collection = Profile.get_motor_collection()
+    total = await collection.count_documents(filt)
+    start = max(page - 1, 0) * page_size
+    page_items = (
+        await Profile.find(filt)
+        .sort([(sort_field, direction)])
+        .skip(start)
+        .limit(page_size)
+        .to_list()
+    )
+
+    # Clear soft/stale "failed" only for the current page
+    for p in page_items:
         try:
             await heal_soft_scrape_failure(p)
         except Exception:
             pass
-
-    if q:
-        ql = q.lower()
-        profiles = [
-            p
-            for p in profiles
-            if ql in p.username.lower()
-            or (p.full_name and ql in p.full_name.lower())
-            or ql in str((getattr(p, "student", None) or {}).get("full_name") or "").lower()
-            or ql in str((getattr(p, "student", None) or {}).get("student_id") or "").lower()
-            or ql in str((getattr(p, "student", None) or {}).get("university") or "").lower()
-            or ql in str((getattr(p, "student", None) or {}).get("email") or "").lower()
-        ]
-
-    if status_filter:
-        profiles = [p for p in profiles if str(p.status.value if hasattr(p.status, "value") else p.status) == status_filter]
-
-    reverse = sort_dir != "asc"
-    sort_key_map = {
-        "username": lambda p: p.username.lower(),
-        "followers": lambda p: p.followers,
-        "following": lambda p: p.following,
-        "posts": lambda p: p.posts_count,
-        "avg_likes": lambda p: p.avg_likes,
-        "avg_views": lambda p: p.avg_views,
-        "growth": lambda p: p.growth_pct_today,
-        "updated_at": lambda p: p.updated_at or p.created_at,
-        "last_updated": lambda p: p.last_scraped_at or p.created_at,
-    }
-    key_fn = sort_key_map.get(sort_by, sort_key_map["updated_at"])
-    profiles.sort(key=key_fn, reverse=reverse)
-
-    total = len(profiles)
-    start = max(page - 1, 0) * page_size
-    page_items = profiles[start : start + page_size]
 
     return ProfileListResponse(
         items=[to_profile_response(p) for p in page_items],
