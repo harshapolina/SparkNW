@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   Bell,
+  BookOpen,
   Database,
   Download,
   FileSpreadsheet,
@@ -30,6 +31,7 @@ const nav = [
   { href: "/admin-unimported", label: "Unimported", icon: FileSpreadsheet },
   { href: "/admin-settings", label: "Settings", icon: Settings },
   { href: "/top-10", label: "Public Top 10", icon: Medal },
+  { href: "/admin-how-it-works", label: "How it works", icon: BookOpen },
 ];
 
 export default function AdminPortalLayout({ children }: { children: React.ReactNode }) {
