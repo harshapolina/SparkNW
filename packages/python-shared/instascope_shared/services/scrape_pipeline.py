@@ -50,7 +50,7 @@ def _configured_max_posts() -> int:
 
 def _is_complete_enough(posts_count: int, scraped: int, followers: int) -> bool:
     """Accept capped scrapes and first-pass samples so timeouts don't leave zeros."""
-    # Instagram-reported empty timeline — card alone is enough.
+    # Instagram-reported empty timeline — card alone is enough (followers may be 0).
     if posts_count == 0 and scraped == 0:
         return True
 
@@ -75,6 +75,32 @@ def _is_complete_enough(posts_count: int, scraped: int, followers: int) -> bool:
         need = posts_count if posts_count <= 12 else max(posts_count - 2, 1)
         return scraped >= need
     return scraped > 0 or followers > 0
+
+
+def _is_confirmed_empty_profile(result: dict[str, Any]) -> bool:
+    """True when the scrape resolved a real IG profile that simply has 0 posts."""
+    posts_count = int(result.get("posts_count") or 0)
+    posts_data = result.get("posts") or []
+    if posts_count != 0 or posts_data:
+        return False
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    path = str(raw.get("path") or "")
+    if path in {
+        "http_empty",
+        "username_feed_empty",
+        "http_private",
+        "http_empty_card",
+    }:
+        return True
+    if bool(result.get("is_private")):
+        return True
+    # Card identity proves Instagram returned a profile (not a blank failure).
+    return bool(
+        result.get("ig_user_id")
+        or result.get("avatar_url")
+        or result.get("full_name")
+        or result.get("bio")
+    )
 
 
 def is_soft_scrape_failure(error: BaseException | str | None) -> bool:
@@ -185,8 +211,11 @@ async def apply_scrape_result(
         raise ValueError(
             f"Refusing to save empty scrape ({len(posts_data)}/{posts_count} posts)"
         )
+    # Real empty IG accounts (0 followers / 0 posts) must save as success — otherwise
+    # bulk leaves hundreds of "Failed / Refresh again" rows like @jonny_zuk.
     if followers <= 0 and posts_count <= 0 and not posts_data:
-        raise ValueError("Refusing to save empty scrape result")
+        if not _is_confirmed_empty_profile(result):
+            raise ValueError("Refusing to save empty scrape result")
 
     metrics = compute_post_metrics(posts_data, followers=followers)
     # Guard: never replace real insights with an all-zero metrics blob

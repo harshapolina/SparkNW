@@ -1552,6 +1552,11 @@ def _result_is_usable(result: ScrapeResult | None) -> bool:
         return True
     if result.posts:
         return True
+    # Confirmed empty public/private card still counts as a resolved profile.
+    if int(result.posts_count or 0) == 0 and (
+        result.ig_user_id or result.avatar_url or result.full_name or result.bio or result.is_private
+    ):
+        return True
     if result.full_name or result.bio or result.avatar_url:
         return True
     return False

@@ -36,6 +36,7 @@ async def lifespan(_app: FastAPI):
         from app.scrape_bulk import (
             clear_stale_scrape_progress,
             ensure_bulk_worker,
+            requeue_unfinished_bulk_profiles,
             resume_incomplete_bulk_scrapes,
         )
 
@@ -49,6 +50,11 @@ async def lifespan(_app: FastAPI):
         if cleared:
             logging.getLogger("instascope.api").warning(
                 "startup cleared %s stale scrape progress marker(s)", cleared
+            )
+        requeued = await requeue_unfinished_bulk_profiles()
+        if requeued:
+            logging.getLogger("instascope.api").warning(
+                "startup re-queued %s unfinished BULK profile(s)", requeued
             )
     except Exception:
         logging.getLogger("instascope.api").exception("startup scrape cleanup failed")

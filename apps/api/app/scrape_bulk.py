@@ -313,6 +313,75 @@ async def resume_incomplete_bulk_scrapes() -> int:
 resume_incomplete_scrapes = resume_incomplete_bulk_scrapes
 
 
+async def requeue_unfinished_bulk_profiles() -> int:
+    """Re-queue interrupted / soft-failed bulk rows that never got real IG data.
+
+    Covers the common post-import state: hundreds of profiles stuck at
+    phase=interrupted with 0 followers / 0 posts after worker restarts.
+    Skips UNAVAILABLE (missing IG) and profiles that already scraped successfully.
+    """
+    raw = (os.getenv("SCRAPE_REQUEUE_UNFINISHED") or "1").strip().lower()
+    if raw in {"0", "false", "no"}:
+        return 0
+    try:
+        profiles = await Profile.find(
+            {
+                "status": {"$nin": [ProfileStatus.UNAVAILABLE, ProfileStatus.PAUSED]},
+                "$or": [
+                    {"scrape_progress.phase": "interrupted"},
+                    {
+                        "status": ProfileStatus.FAILED,
+                        "followers": {"$lte": 0},
+                        "posts_count": {"$lte": 0},
+                    },
+                    {
+                        "scrape_progress.source": {"$in": ["bulk", "deep"]},
+                        "followers": {"$lte": 0},
+                        "posts_count": {"$lte": 0},
+                        "last_success_at": None,
+                    },
+                ],
+            }
+        ).to_list()
+    except Exception:
+        log.exception("requeue_unfinished_bulk_profiles query failed")
+        return 0
+
+    ids: list[str] = []
+    for profile in profiles:
+        if profile.status == ProfileStatus.UNAVAILABLE:
+            continue
+        if profile.last_success_at and (profile.followers or profile.posts_count):
+            continue
+        prog = dict(getattr(profile, "scrape_progress", None) or {})
+        phase = str(prog.get("phase") or "").lower()
+        if phase == "unavailable":
+            continue
+        # Clear stale failed badge so UI shows queued/scraping again.
+        profile.status = ProfileStatus.ACTIVE
+        profile.last_error = None
+        profile.scrape_progress = progress_payload(
+            scraped=0,
+            total=int(profile.posts_count or 0),
+            phase="queued",
+            active=True,
+            source="bulk",
+        )
+        profile.updated_at = datetime.utcnow()
+        await profile.save()
+        ids.append(str(profile.id))
+
+    if not ids:
+        return 0
+    queued = await enqueue_bulk_profile_ids(ids, force=True)
+    if queued:
+        log.warning(
+            "re-queued %s unfinished bulk profile(s) (zeros/interrupted/failed)",
+            queued,
+        )
+    return queued
+
+
 async def mark_profiles_queued(profile_ids: Iterable[str]) -> int:
     ids = [str(pid).strip() for pid in profile_ids if str(pid or "").strip()]
     if not ids:
