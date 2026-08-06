@@ -26,9 +26,11 @@ from instascope_shared.services.inline_scrape import scrape_profile_inline
 from instascope_shared.services.profiles import to_profile_response
 from fastapi import HTTPException
 
+from app.scrape_queue import enqueue_profile_ids
+
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
-# Keep strong refs so background scrapes are not GC'd mid-flight (Python 3.12+).
+# Keep strong refs so one-off background tasks are not GC'd mid-flight (Python 3.12+).
 _background_tasks: set[asyncio.Task] = set()
 
 
@@ -275,26 +277,9 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
 
     scraping = False
     if payload.scrape_now and to_scrape:
-        scraping = True
-
-        async def _scrape_all(profiles: list) -> None:
-            import logging
-            import traceback
-
-            log = logging.getLogger("instascope.api.profiles")
-            for profile in profiles:
-                try:
-                    fresh = await Profile.get(str(profile.id))
-                    if fresh:
-                        await scrape_profile_inline(fresh)
-                except Exception:
-                    log.error(
-                        "bulk_import scrape failed username=%s\n%s",
-                        getattr(profile, "username", "?"),
-                        traceback.format_exc(),
-                    )
-
-        _spawn_background(_scrape_all(to_scrape))
+        # Sequential queue — one scrape at a time (same path as single Add).
+        queued = await enqueue_profile_ids(str(p.id) for p in to_scrape)
+        scraping = queued > 0
 
     return BulkImportResponse(
         imported=imported,
@@ -315,9 +300,10 @@ async def bulk_delete(payload: BulkIdsRequest, user: User = Depends(get_current_
 
 @router.post("/bulk/refresh", response_model=list[JobResponse])
 async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current_user)):
-    """Queue refreshes in the background — never await scrapes on the request.
+    """Queue refreshes sequentially in the API scrape queue (not on the request).
 
     Awaiting N sequential scrapes caused browser "Failed to fetch" timeouts.
+    Fire-and-forget create_task loops often never ran — use the durable queue.
     """
     from datetime import datetime
 
@@ -361,21 +347,8 @@ async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current
             )
             continue
 
-    async def _scrape_all(ids: list[str]) -> None:
-        import logging
-        import traceback
-
-        log = logging.getLogger("instascope.api.profiles")
-        for pid in ids:
-            try:
-                fresh = await Profile.get(pid)
-                if fresh:
-                    await scrape_profile_inline(fresh)
-            except Exception:
-                log.error("bulk_refresh scrape failed profile_id=%s\n%s", pid, traceback.format_exc())
-
     if to_scrape:
-        _spawn_background(_scrape_all(to_scrape))
+        await enqueue_profile_ids(to_scrape)
     return out
 
 

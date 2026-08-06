@@ -168,7 +168,9 @@ export default function AdminImportPage() {
       saveDuplicatesFromImport(r.items);
       setResult(
         `Imported ${r.imported} · updated ${r.updated || 0} · duplicates ${r.duplicates || 0} · skipped ${r.skipped} · failed ${r.failed}` +
-          (r.scraping ? ". Scraping started for new accounts." : ".")
+          (r.scraping
+            ? ". Scraping queued one-by-one in the background — refresh Scraping in a few minutes."
+            : ".")
       );
       setError("");
       setProgress(null);
