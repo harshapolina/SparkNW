@@ -678,6 +678,10 @@ export default function AdminDashboardPage() {
             <div className="text-sm font-semibold">Import duplicates</div>
             <div className="mt-1 text-xs text-zinc-500">Review accounts already tracked on re-import</div>
           </Link>
+          <Link href="/admin-unimported" className="block rounded-2xl border border-white/[0.06] bg-[#121212] px-5 py-4 hover:border-white/20">
+            <div className="text-sm font-semibold">Unimported rows</div>
+            <div className="mt-1 text-xs text-zinc-500">Missing IG, invalid handles, sheet dupes</div>
+          </Link>
         </aside>
       </div>
 
@@ -688,6 +692,7 @@ export default function AdminDashboardPage() {
         <Link href="/admin-settings" className="text-[#ff3b30] hover:underline">Settings →</Link>
         <Link href="/admin-import" className="hover:text-zinc-300">Import →</Link>
         <Link href="/admin-duplicates" className="hover:text-zinc-300">Duplicates →</Link>
+        <Link href="/admin-unimported" className="hover:text-zinc-300">Unimported →</Link>
         <Link href="/admin-leaderboard" className="hover:text-zinc-300">Leaderboard →</Link>
         <Link href="/top-10" className="hover:text-zinc-300">Top 10 →</Link>
       </div>

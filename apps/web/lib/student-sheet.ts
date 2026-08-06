@@ -176,7 +176,39 @@ export function mapSheetRow(headers: string[], values: unknown[]): { student: Sh
 }
 
 export function parseSheetMatrix(matrix: string[][]): { url: string; username: string; student: SheetStudent }[] {
-  if (!matrix.length) return [];
+  return parseSheetMatrixDetailed(matrix).rows;
+}
+
+export type RejectedSheetRow = {
+  /** 1-based Excel/CSV row number (header = 1 when present). */
+  row_number: number;
+  reason: string;
+  reason_code: "missing_instagram" | "duplicate_in_sheet" | "empty_row";
+  student: SheetStudent;
+  raw_instagram?: string;
+  username?: string;
+};
+
+function hasStudentSignal(student: SheetStudent): boolean {
+  return Boolean(
+    student.full_name ||
+      student.student_id ||
+      student.email ||
+      student.mobile ||
+      student.university ||
+      student.instagram_handle ||
+      student.instagram_url ||
+      student.instagram_username ||
+      student.program
+  );
+}
+
+/** Parse sheet and also return rows that cannot be imported (missing IG, dupes, etc.). */
+export function parseSheetMatrixDetailed(matrix: string[][]): {
+  rows: { url: string; username: string; student: SheetStudent }[];
+  rejected: RejectedSheetRow[];
+} {
+  if (!matrix.length) return { rows: [], rejected: [] };
   const headers = matrix[0].map((c) => String(c ?? "").trim());
   const looksLikeHeader = headers.some((h) => {
     const n = normHeader(h);
@@ -193,15 +225,59 @@ export function parseSheetMatrix(matrix: string[][]): { url: string; username: s
   const hdrs = looksLikeHeader ? headers : ["instagram_username"];
   const seen = new Set<string>();
   const out: { url: string; username: string; student: SheetStudent }[] = [];
+  const rejected: RejectedSheetRow[] = [];
 
-  for (const row of dataRows) {
+  dataRows.forEach((row, i) => {
+    const row_number = (looksLikeHeader ? 2 : 1) + i;
     const values = looksLikeHeader ? row : [row.find((c) => String(c || "").trim()) || ""];
     const mapped = mapSheetRow(hdrs, values);
-    if (!mapped.url) continue;
+    const rawIg =
+      mapped.student.instagram_username ||
+      mapped.student.instagram_url ||
+      mapped.student.instagram_handle ||
+      "";
+
+    if (!mapped.url) {
+      if (!hasStudentSignal(mapped.student) && !String(rawIg).trim()) {
+        return; // blank line — ignore
+      }
+      rejected.push({
+        row_number,
+        reason: rawIg.trim()
+          ? "Instagram value invalid or could not be parsed"
+          : "Missing Instagram handle / URL",
+        reason_code: "missing_instagram",
+        student: mapped.student,
+        raw_instagram: rawIg || undefined,
+      });
+      return;
+    }
+
     const username = extractUsername(mapped.url);
-    if (!username || seen.has(username)) continue;
+    if (!username) {
+      rejected.push({
+        row_number,
+        reason: "Instagram URL/handle could not be parsed",
+        reason_code: "missing_instagram",
+        student: mapped.student,
+        raw_instagram: rawIg || mapped.url,
+      });
+      return;
+    }
+    if (seen.has(username)) {
+      rejected.push({
+        row_number,
+        reason: `Duplicate Instagram @${username} already in this sheet`,
+        reason_code: "duplicate_in_sheet",
+        student: mapped.student,
+        raw_instagram: rawIg || mapped.url,
+        username,
+      });
+      return;
+    }
     seen.add(username);
     out.push({ url: mapped.url, username, student: mapped.student });
-  }
-  return out;
+  });
+
+  return { rows: out, rejected };
 }

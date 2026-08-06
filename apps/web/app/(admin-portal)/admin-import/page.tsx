@@ -8,8 +8,9 @@ import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { api } from "@/lib/api";
 import { saveDuplicatesFromImport } from "@/lib/import-duplicates";
+import { saveUnimportedFromImport, saveUnimportedFromParse } from "@/lib/import-unimported";
 import { cn } from "@/lib/utils";
-import { parseSheetMatrix, type SheetStudent } from "@/lib/student-sheet";
+import { parseSheetMatrixDetailed, type SheetStudent } from "@/lib/student-sheet";
 import { type ScrapeStatusResponse } from "@/lib/scrape-progress";
 import { ScrapeActivityBanner, ScrapeProgressBar } from "@/components/scrape-progress";
 
@@ -33,14 +34,19 @@ type BulkImportResponse = {
 
 type SourceTab = "upload" | "sheet" | "paste";
 
-function parseMatrix(matrix: string[][]): Row[] {
-  return parseSheetMatrix(matrix).map((r, i) => ({
-    id: `${r.username}-${i}`,
-    raw: r.url,
-    username: r.username,
-    student: r.student,
-    selected: true,
-  }));
+function parseMatrix(matrix: string[][], sheetLabel?: string): { rows: Row[]; rejectedCount: number } {
+  const { rows, rejected } = parseSheetMatrixDetailed(matrix);
+  if (rejected.length) saveUnimportedFromParse(rejected, sheetLabel);
+  return {
+    rows: rows.map((r, i) => ({
+      id: `${r.username}-${i}`,
+      raw: r.url,
+      username: r.username,
+      student: r.student,
+      selected: true,
+    })),
+    rejectedCount: rejected.length,
+  };
 }
 
 function googleSheetToCsvUrl(input: string): string | null {
@@ -68,6 +74,7 @@ export default function AdminImportPage() {
   const [loadingSheet, setLoadingSheet] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [watchScrapes, setWatchScrapes] = useState(false);
+  const [rejectedCount, setRejectedCount] = useState(0);
 
   const selected = useMemo(() => rows.filter((r) => r.selected), [rows]);
   const missingStudentId = useMemo(
@@ -85,11 +92,20 @@ export default function AdminImportPage() {
     },
   });
 
-  function applyRows(next: Row[], sourceLabel?: string) {
+  function applyRows(next: Row[], sourceLabel?: string, rejected = 0) {
     setRows(next);
+    setRejectedCount(rejected);
     setResult("");
-    setError(next.length ? "" : "No Instagram usernames found in that sheet.");
-    if (sourceLabel && next.length) setFileName(sourceLabel);
+    if (!next.length) {
+      setError(
+        rejected > 0
+          ? `No importable Instagram rows. ${rejected} line(s) saved under Unimported.`
+          : "No Instagram usernames found in that sheet."
+      );
+    } else {
+      setError("");
+    }
+    if (sourceLabel && (next.length || rejected)) setFileName(sourceLabel);
   }
 
   function handleFile(file: File) {
@@ -105,7 +121,8 @@ export default function AdminImportPage() {
           const wb = XLSX.read(data, { type: "array" });
           const sheet = wb.Sheets[wb.SheetNames[0]];
           const matrix = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, defval: "" }) as string[][];
-          applyRows(parseMatrix(matrix), file.name);
+          const parsed = parseMatrix(matrix, file.name);
+          applyRows(parsed.rows, file.name, parsed.rejectedCount);
         } catch {
           setError("Could not read that Excel file.");
         }
@@ -116,7 +133,8 @@ export default function AdminImportPage() {
     Papa.parse(file, {
       complete: (res) => {
         const matrix = (res.data as string[][]).filter((r) => r.some((c) => String(c || "").trim()));
-        applyRows(parseMatrix(matrix), file.name);
+        const parsed = parseMatrix(matrix, file.name);
+        applyRows(parsed.rows, file.name, parsed.rejectedCount);
       },
       error: () => setError("Could not parse that CSV file."),
     });
@@ -139,7 +157,8 @@ export default function AdminImportPage() {
       const text = await res.text();
       const parsed = Papa.parse<string[]>(text, { header: false });
       const matrix = (parsed.data as string[][]).filter((r) => r.some((c) => String(c || "").trim()));
-      applyRows(parseMatrix(matrix), "Google Sheet");
+      const result = parseMatrix(matrix, "Google Sheet");
+      applyRows(result.rows, "Google Sheet", result.rejectedCount);
     } catch {
       setError("Failed to load Google Sheet.");
     } finally {
@@ -179,8 +198,13 @@ export default function AdminImportPage() {
     },
     onSuccess: (r) => {
       saveDuplicatesFromImport(r.items);
+      saveUnimportedFromImport(r.items);
+      const rejectNote =
+        rejectedCount > 0
+          ? ` · ${rejectedCount} sheet row(s) not importable (see Unimported)`
+          : "";
       setResult(
-        `Imported ${r.imported} · updated ${r.updated || 0} · duplicates ${r.duplicates || 0} · skipped ${r.skipped} · failed ${r.failed}` +
+        `Imported ${r.imported} · updated ${r.updated || 0} · duplicates ${r.duplicates || 0} · skipped ${r.skipped} · failed ${r.failed}${rejectNote}` +
           (r.scraping
             ? ". Scraping started — watch live progress below (account, posts scraped/total, %)."
             : ".")
@@ -312,7 +336,8 @@ export default function AdminImportPage() {
                   onClick={() => {
                     const lines = paste.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
                     const matrix = lines.map((l) => l.split("\t").map((c) => c.trim()));
-                    applyRows(parseMatrix(matrix), "Pasted sheet");
+                    const result = parseMatrix(matrix, "Pasted sheet");
+                    applyRows(result.rows, "Pasted sheet", result.rejectedCount);
                   }}
                   className="w-full rounded-xl bg-[#ff3b30] px-3 py-2.5 text-sm font-semibold"
                 >
@@ -328,6 +353,14 @@ export default function AdminImportPage() {
             <div>
               <div className="text-sm font-semibold">
                 Preview · {selected.length} selected of {rows.length}
+                {rejectedCount > 0 ? (
+                  <span className="ml-2 font-normal text-amber-400">
+                    · {rejectedCount} unimported{" "}
+                    <Link href="/admin-unimported" className="underline">
+                      view
+                    </Link>
+                  </span>
+                ) : null}
               </div>
               {missingStudentId > 0 && (
                 <p className="mt-1 text-xs text-amber-400">
@@ -382,6 +415,10 @@ export default function AdminImportPage() {
               {result}{" "}
               <Link href="/admin-scraping" className="underline">
                 Open scraping table
+              </Link>
+              {" · "}
+              <Link href="/admin-unimported" className="underline">
+                Unimported rows
               </Link>
               {" · "}
               <Link href="/admin-duplicates" className="underline">

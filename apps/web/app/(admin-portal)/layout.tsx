@@ -7,6 +7,7 @@ import {
   Bell,
   Database,
   Download,
+  FileSpreadsheet,
   LayoutDashboard,
   Medal,
   RefreshCw,
@@ -26,6 +27,7 @@ const nav = [
   { href: "/admin-analytics", label: "Analytics", icon: BarChart3 },
   { href: "/admin-alerts", label: "Alerts", icon: Bell },
   { href: "/admin-import", label: "Import roster", icon: Upload },
+  { href: "/admin-unimported", label: "Unimported", icon: FileSpreadsheet },
   { href: "/admin-settings", label: "Settings", icon: Settings },
   { href: "/top-10", label: "Public Top 10", icon: Medal },
 ];

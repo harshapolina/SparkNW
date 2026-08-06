@@ -19,8 +19,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { saveDuplicatesFromImport } from "@/lib/import-duplicates";
+import { saveUnimportedFromImport, saveUnimportedFromParse } from "@/lib/import-unimported";
 import { cn } from "@/lib/utils";
-import { extractUsername, parseSheetMatrix, type SheetStudent } from "@/lib/student-sheet";
+import { extractUsername, parseSheetMatrixDetailed, type SheetStudent } from "@/lib/student-sheet";
 
 type Row = {
   id: string;
@@ -42,8 +43,10 @@ type BulkImportResponse = {
 
 type SourceTab = "upload" | "sheet" | "paste";
 
-function parseMatrix(matrix: string[][]): Row[] {
-  return parseSheetMatrix(matrix).map((r, i) => ({
+function parseMatrix(matrix: string[][], sheetLabel?: string): Row[] {
+  const { rows, rejected } = parseSheetMatrixDetailed(matrix);
+  if (rejected.length) saveUnimportedFromParse(rejected, sheetLabel);
+  return rows.map((r, i) => ({
     id: `${r.username}-${i}`,
     raw: r.url,
     username: r.username,
@@ -189,6 +192,7 @@ export default function ImportsPage() {
     },
     onSuccess: (r) => {
       saveDuplicatesFromImport(r.items);
+      saveUnimportedFromImport(r.items);
       const dupPart = r.duplicates ? ` · ${r.duplicates} duplicates` : "";
       setResult(
         `Imported ${r.imported} · updated ${r.updated || 0}${dupPart} · skipped ${r.skipped} · failed ${r.failed}` +
