@@ -66,6 +66,8 @@ export default function AdminScrapingPage() {
     onError: (e: Error) => setError(e.message),
   });
 
+  const [bulkNote, setBulkNote] = useState("");
+
   const bulk = useMutation({
     mutationFn: async (action: "refresh" | "delete" | "pause" | "resume" | "export") => {
       if (action === "export") {
@@ -86,16 +88,37 @@ export default function AdminScrapingPage() {
         a.href = URL.createObjectURL(blob);
         a.download = "spark-profiles-export.csv";
         a.click();
-        return;
+        return { action, queued: 0 };
       }
-      await api(`/profiles/bulk/${action}`, { method: "POST", body: JSON.stringify({ ids: selected }) });
+      const res = await api<unknown>(`/profiles/bulk/${action}`, {
+        method: "POST",
+        body: JSON.stringify({ ids: selected }),
+      });
+      const queued = Array.isArray(res) ? res.length : selected.length;
+      return { action, queued };
     },
-    onSuccess: () => {
+    onSuccess: (r) => {
+      const count = selected.length;
       setSelected([]);
+      setError("");
+      if (r?.action === "refresh") {
+        setBulkNote(
+          `Queued ${r.queued} profile(s) for scraping (one at a time). Refresh this list in a few minutes.`
+        );
+      } else if (r?.action === "export") {
+        setBulkNote("Export downloaded.");
+      } else if (r?.action) {
+        setBulkNote(`${r.action} applied to ${count} profile(s).`);
+      } else {
+        setBulkNote("");
+      }
       qc.invalidateQueries({ queryKey: ["profiles"] });
       qc.invalidateQueries({ queryKey: ["spark"] });
     },
-    onError: (e: Error) => setError(e.message),
+    onError: (e: Error) => {
+      setBulkNote("");
+      setError(e.message);
+    },
   });
 
   const allIds = useMemo(() => data?.items.map((p) => p.id) || [], [data]);
@@ -249,6 +272,8 @@ export default function AdminScrapingPage() {
             </button>
           </div>
         </div>
+        {bulkNote ? <p className="mt-3 text-sm text-emerald-400/90">{bulkNote}</p> : null}
+        {error && !add.isPending ? <p className="mt-2 text-sm text-rose-400">{error}</p> : null}
 
         <div className="mt-5 overflow-x-auto">
           {isLoading ? (

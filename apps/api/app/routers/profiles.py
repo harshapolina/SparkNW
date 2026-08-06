@@ -88,112 +88,10 @@ async def list_profiles(
     )
 
 
-@router.get("/{profile_id}", response_model=ProfileResponse)
-async def get_profile(profile_id: str, user: User = Depends(get_current_user)):
-    profile = await profile_service.get_profile(str(user.id), profile_id)
-    return to_profile_response(profile)
-
-
-@router.delete("/{profile_id}", response_model=MessageResponse)
-async def delete_profile(profile_id: str, user: User = Depends(get_current_user)):
-    await profile_service.delete_profiles(str(user.id), [profile_id])
-    return MessageResponse(message="Profile deleted")
-
-
-@router.post("/{profile_id}/refresh", response_model=list[JobResponse])
-async def refresh_profile(profile_id: str, user: User = Depends(get_current_user)):
-    """Refresh by scraping inline in the API process and returning when done.
-
-    Awaits the scrape so Add/Refresh feel instantaneous in the UI (results ready
-    when the request completes). Celery is not used here — volume-mounted scraper
-    code on the API must run so full timelines land after git pull.
-    """
-    from datetime import datetime
-
-    try:
-        profile = await profile_service.get_profile(str(user.id), profile_id)
-        job = await scrape_profile_inline(profile)
-        return [
-            JobResponse(
-                id=str(job.id),
-                profile_id=str(profile.id),
-                job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
-                status=job.status.value if hasattr(job.status, "value") else str(job.status),
-                attempts=job.attempts,
-                error_message=job.error_message,
-                created_at=getattr(job, "created_at", None) or datetime.utcnow(),
-                finished_at=getattr(job, "finished_at", None),
-            )
-        ]
-    except HTTPException:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        # Never surface as opaque CORS "Failed to fetch" — return a clear JSON error
-        raise HTTPException(status_code=500, detail=f"Refresh failed: {str(exc)[:240]}") from exc
-
-
-@router.post("/{profile_id}/pause", response_model=ProfileResponse)
-async def pause_profile(profile_id: str, user: User = Depends(get_current_user)):
-    await profile_service.set_profiles_status(str(user.id), [profile_id], ProfileStatus.PAUSED)
-    profile = await profile_service.get_profile(str(user.id), profile_id)
-    return to_profile_response(profile)
-
-
-@router.post("/{profile_id}/resume", response_model=ProfileResponse)
-async def resume_profile(profile_id: str, user: User = Depends(get_current_user)):
-    await profile_service.set_profiles_status(str(user.id), [profile_id], ProfileStatus.ACTIVE)
-    profile = await profile_service.get_profile(str(user.id), profile_id)
-    return to_profile_response(profile)
-
-
-@router.get("/{profile_id}/posts", response_model=list[PostResponse])
-async def list_posts(profile_id: str, user: User = Depends(get_current_user)):
-    await profile_service.get_profile(str(user.id), profile_id)
-    posts = await Post.find(Post.profile_id == profile_id).sort(-Post.posted_at).to_list()
-    return [
-        PostResponse(
-            id=str(p.id),
-            profile_id=p.profile_id,
-            ig_post_id=p.ig_post_id,
-            shortcode=p.shortcode,
-            media_type=p.media_type.value if hasattr(p.media_type, "value") else str(p.media_type),
-            caption=p.caption,
-            thumbnail_url=p.thumbnail_url,
-            permalink=p.permalink,
-            likes=p.likes,
-            comments=p.comments,
-            views=p.views,
-            posted_at=p.posted_at,
-        )
-        for p in posts
-    ]
-
-
-@router.get("/{profile_id}/history", response_model=list[SnapshotResponse])
-async def list_history(profile_id: str, user: User = Depends(get_current_user)):
-    await profile_service.get_profile(str(user.id), profile_id)
-    snaps = (
-        await ProfileSnapshot.find(ProfileSnapshot.profile_id == profile_id)
-        .sort(-ProfileSnapshot.snapshot_date)
-        .to_list()
-    )
-    return [
-        SnapshotResponse(
-            id=str(s.id),
-            profile_id=s.profile_id,
-            snapshot_date=s.snapshot_date,
-            followers=s.followers,
-            following=s.following,
-            posts_count=s.posts_count,
-            avg_likes=s.avg_likes,
-            avg_views=s.avg_views,
-            avg_comments=s.avg_comments,
-            engagement_rate=s.engagement_rate,
-            followers_growth=s.followers_growth,
-            followers_growth_pct=s.followers_growth_pct,
-        )
-        for s in snaps
-    ]
+# ---------------------------------------------------------------------------
+# Bulk routes MUST be registered before /{profile_id}/... or FastAPI treats
+# "bulk" as a profile_id (e.g. POST /profiles/bulk/refresh → refresh("bulk")).
+# ---------------------------------------------------------------------------
 
 
 @router.post("/bulk/import", response_model=BulkImportResponse)
@@ -240,7 +138,6 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
                 if exc.status_code != 409:
                     raise
                 profile = await profile_service.add_profile(str(user.id), req, upsert_student=True)
-                already_scraped = bool(getattr(profile, "last_success_at", None))
                 duplicates += 1
                 status_label = "duplicate"
                 if row.student:
@@ -248,10 +145,15 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
                     msg = "Already tracked — student fields merged"
                 else:
                     msg = "Already tracked"
-                if already_scraped:
+                # scrape_now means the operator asked to scrape — always queue,
+                # including re-imports (previously skipped when last_success_at was set).
+                if payload.scrape_now:
+                    to_scrape.append(profile)
+                    msg = f"{msg}; queued for scrape"
+                elif getattr(profile, "last_success_at", None):
                     msg = f"{msg}; scrape skipped (already scraped)"
                 else:
-                    to_scrape.append(profile)
+                    msg = f"{msg}; not scraped yet (scrape_now=false)"
 
             items.append(
                 BulkImportItemResult(
@@ -407,3 +309,116 @@ async def bulk_export(payload: BulkIdsRequest, user: User = Depends(get_current_
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=instascope-profiles.csv"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Single-profile routes (parameterized — must come after /bulk/*)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/{profile_id}", response_model=ProfileResponse)
+async def get_profile(profile_id: str, user: User = Depends(get_current_user)):
+    profile = await profile_service.get_profile(str(user.id), profile_id)
+    return to_profile_response(profile)
+
+
+@router.delete("/{profile_id}", response_model=MessageResponse)
+async def delete_profile(profile_id: str, user: User = Depends(get_current_user)):
+    await profile_service.delete_profiles(str(user.id), [profile_id])
+    return MessageResponse(message="Profile deleted")
+
+
+@router.post("/{profile_id}/refresh", response_model=list[JobResponse])
+async def refresh_profile(profile_id: str, user: User = Depends(get_current_user)):
+    """Refresh by scraping inline in the API process and returning when done.
+
+    Awaits the scrape so Add/Refresh feel instantaneous in the UI (results ready
+    when the request completes). Celery is not used here — volume-mounted scraper
+    code on the API must run so full timelines land after git pull.
+    """
+    from datetime import datetime
+
+    try:
+        profile = await profile_service.get_profile(str(user.id), profile_id)
+        job = await scrape_profile_inline(profile)
+        return [
+            JobResponse(
+                id=str(job.id),
+                profile_id=str(profile.id),
+                job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
+                status=job.status.value if hasattr(job.status, "value") else str(job.status),
+                attempts=job.attempts,
+                error_message=job.error_message,
+                created_at=getattr(job, "created_at", None) or datetime.utcnow(),
+                finished_at=getattr(job, "finished_at", None),
+            )
+        ]
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Never surface as opaque CORS "Failed to fetch" — return a clear JSON error
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {str(exc)[:240]}") from exc
+
+
+@router.post("/{profile_id}/pause", response_model=ProfileResponse)
+async def pause_profile(profile_id: str, user: User = Depends(get_current_user)):
+    await profile_service.set_profiles_status(str(user.id), [profile_id], ProfileStatus.PAUSED)
+    profile = await profile_service.get_profile(str(user.id), profile_id)
+    return to_profile_response(profile)
+
+
+@router.post("/{profile_id}/resume", response_model=ProfileResponse)
+async def resume_profile(profile_id: str, user: User = Depends(get_current_user)):
+    await profile_service.set_profiles_status(str(user.id), [profile_id], ProfileStatus.ACTIVE)
+    profile = await profile_service.get_profile(str(user.id), profile_id)
+    return to_profile_response(profile)
+
+
+@router.get("/{profile_id}/posts", response_model=list[PostResponse])
+async def list_posts(profile_id: str, user: User = Depends(get_current_user)):
+    await profile_service.get_profile(str(user.id), profile_id)
+    posts = await Post.find(Post.profile_id == profile_id).sort(-Post.posted_at).to_list()
+    return [
+        PostResponse(
+            id=str(p.id),
+            profile_id=p.profile_id,
+            ig_post_id=p.ig_post_id,
+            shortcode=p.shortcode,
+            media_type=p.media_type.value if hasattr(p.media_type, "value") else str(p.media_type),
+            caption=p.caption,
+            thumbnail_url=p.thumbnail_url,
+            permalink=p.permalink,
+            likes=p.likes,
+            comments=p.comments,
+            views=p.views,
+            posted_at=p.posted_at,
+        )
+        for p in posts
+    ]
+
+
+@router.get("/{profile_id}/history", response_model=list[SnapshotResponse])
+async def list_history(profile_id: str, user: User = Depends(get_current_user)):
+    await profile_service.get_profile(str(user.id), profile_id)
+    snaps = (
+        await ProfileSnapshot.find(ProfileSnapshot.profile_id == profile_id)
+        .sort(-ProfileSnapshot.snapshot_date)
+        .to_list()
+    )
+    return [
+        SnapshotResponse(
+            id=str(s.id),
+            profile_id=s.profile_id,
+            snapshot_date=s.snapshot_date,
+            followers=s.followers,
+            following=s.following,
+            posts_count=s.posts_count,
+            avg_likes=s.avg_likes,
+            avg_views=s.avg_views,
+            avg_comments=s.avg_comments,
+            engagement_rate=s.engagement_rate,
+            followers_growth=s.followers_growth,
+            followers_growth_pct=s.followers_growth_pct,
+        )
+        for s in snaps
+    ]

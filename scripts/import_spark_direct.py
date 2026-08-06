@@ -201,7 +201,8 @@ def main() -> int:
         return 0
 
     token = login(args.api)
-    # Prefer unscraped first; prod bulk/refresh returns 500, so use single refresh.
+    # Prefer unscraped first. Use single /refresh for reliability on long runs
+    # (bulk/refresh queues in-process; route order was fixed so /bulk/* is reachable).
     cursor = db.profiles.find(
         {"user_id": user_id, "student.full_name": {"$exists": True}},
         {"_id": 1, "username": 1, "last_success_at": 1},
