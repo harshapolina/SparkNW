@@ -25,8 +25,13 @@ from instascope_shared.services import profiles as profile_service
 from instascope_shared.services.profiles import to_profile_response
 from fastapi import HTTPException
 
-from app.scrape_bulk import enqueue_bulk_profile_ids, mark_profiles_queued
-from app.scrape_single import schedule_single_scrape
+from app.scrape_bulk import (
+    enqueue_bulk_profile_ids,
+    mark_profiles_queued,
+    pending_count as bulk_pending_count,
+    running_profile_id as bulk_running_id,
+)
+from app.scrape_single import schedule_single_scrape, single_scrape_running
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
@@ -85,6 +90,75 @@ async def list_profiles(
 # Bulk routes MUST be registered before /{profile_id}/... or FastAPI treats
 # "bulk" as a profile_id (e.g. POST /profiles/bulk/refresh → refresh("bulk")).
 # ---------------------------------------------------------------------------
+
+
+@router.get("/scrape-status")
+async def scrape_status(user: User = Depends(get_current_user)):
+    """Live scrape activity for progress UI (who is scraping, posts scraped/total)."""
+    active = await Profile.find({"scrape_progress.active": True}).to_list()
+    # Prefer this user's profiles when multi-tenant; still show org-wide if shared admin.
+    mine = [p for p in active if str(p.user_id) == str(user.id)]
+    rows = mine if mine else active
+
+    def _item(p: Profile) -> dict:
+        prog = dict(getattr(p, "scrape_progress", None) or {})
+        scraped = int(prog.get("scraped_posts") or 0)
+        total = int(prog.get("total_posts") or p.posts_count or 0)
+        if total > 0:
+            percent = min(100, int(round(100 * scraped / total)))
+        else:
+            percent = int(prog.get("percent") or 0)
+        left = max(0, total - scraped) if total > 0 else int(prog.get("posts_left") or 0)
+        return {
+            "profile_id": str(p.id),
+            "username": p.username,
+            "full_name": p.full_name or (getattr(p, "student", None) or {}).get("full_name"),
+            "source": prog.get("source"),
+            "phase": prog.get("phase") or "queued",
+            "scraped_posts": scraped,
+            "total_posts": total,
+            "posts_left": left,
+            "percent": percent,
+            "active": bool(prog.get("active")),
+        }
+
+    queue = [_item(p) for p in rows]
+    # Sort: currently scraping (non-queued phases) first, then by updated progress.
+    def _rank(it: dict) -> tuple:
+        phase = str(it.get("phase") or "")
+        runningish = 0 if phase not in {"queued", ""} else 1
+        return (runningish, -int(it.get("percent") or 0))
+
+    queue.sort(key=_rank)
+
+    running = None
+    bulk_run = bulk_running_id()
+    if bulk_run:
+        for it in queue:
+            if it["profile_id"] == bulk_run:
+                running = it
+                break
+    if running is None:
+        for it in queue:
+            if it["phase"] not in {"queued", ""} and it["active"]:
+                running = it
+                break
+    if running is None and queue:
+        # Fall back to first active / single-running
+        for it in queue:
+            if single_scrape_running(it["profile_id"]):
+                running = it
+                break
+        if running is None:
+            running = queue[0]
+
+    return {
+        "running": running,
+        "queue": queue,
+        "active_count": len(queue),
+        "pending_bulk": bulk_pending_count(),
+        "single_running": sum(1 for it in queue if single_scrape_running(it["profile_id"])),
+    }
 
 
 @router.post("/bulk/import", response_model=BulkImportResponse)

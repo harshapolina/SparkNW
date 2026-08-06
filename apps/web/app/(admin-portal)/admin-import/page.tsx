@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FileSpreadsheet, Loader2, Sheet, Upload } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
@@ -10,6 +10,8 @@ import { api } from "@/lib/api";
 import { saveDuplicatesFromImport } from "@/lib/import-duplicates";
 import { cn } from "@/lib/utils";
 import { parseSheetMatrix, type SheetStudent } from "@/lib/student-sheet";
+import { type ScrapeStatusResponse } from "@/lib/scrape-progress";
+import { ScrapeActivityBanner, ScrapeProgressBar } from "@/components/scrape-progress";
 
 type Row = {
   id: string;
@@ -65,12 +67,23 @@ export default function AdminImportPage() {
   const [result, setResult] = useState("");
   const [loadingSheet, setLoadingSheet] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [watchScrapes, setWatchScrapes] = useState(false);
 
   const selected = useMemo(() => rows.filter((r) => r.selected), [rows]);
   const missingStudentId = useMemo(
     () => selected.filter((r) => !String(r.student.student_id || "").trim()).length,
     [selected]
   );
+
+  const scrapeStatusQ = useQuery({
+    queryKey: ["scrape-status"],
+    queryFn: () => api<ScrapeStatusResponse>("/profiles/scrape-status"),
+    enabled: watchScrapes,
+    refetchInterval: (query) => {
+      const n = query.state.data?.active_count || 0;
+      return n > 0 ? 2500 : 8000;
+    },
+  });
 
   function applyRows(next: Row[], sourceLabel?: string) {
     setRows(next);
@@ -169,13 +182,15 @@ export default function AdminImportPage() {
       setResult(
         `Imported ${r.imported} · updated ${r.updated || 0} · duplicates ${r.duplicates || 0} · skipped ${r.skipped} · failed ${r.failed}` +
           (r.scraping
-            ? ". Scraping queued one-by-one in the background — refresh Scraping in a few minutes."
+            ? ". Scraping started — watch live progress below (account, posts scraped/total, %)."
             : ".")
       );
       setError("");
       setProgress(null);
+      if (r.scraping) setWatchScrapes(true);
       qc.invalidateQueries({ queryKey: ["profiles"] });
       qc.invalidateQueries({ queryKey: ["spark"] });
+      qc.invalidateQueries({ queryKey: ["scrape-status"] });
     },
     onError: (e: Error) => {
       setError(e.message);
@@ -189,6 +204,9 @@ export default function AdminImportPage() {
     { id: "paste", label: "Paste", icon: FileSpreadsheet },
   ];
 
+  const importPct =
+    progress && progress.total > 0 ? Math.round((100 * progress.done) / progress.total) : 0;
+
   return (
     <div className="space-y-6">
       <div>
@@ -198,6 +216,18 @@ export default function AdminImportPage() {
           <span className="text-zinc-300">Student ID</span> so students can log in after scrape.
         </p>
       </div>
+
+      {watchScrapes ? (
+        scrapeStatusQ.data && (scrapeStatusQ.data.active_count || 0) > 0 ? (
+          <ScrapeActivityBanner status={scrapeStatusQ.data} />
+        ) : (
+          <div className="rounded-2xl border border-[#ff3b30]/35 bg-[#ff3b30]/10 px-4 py-4 text-sm text-zinc-200">
+            {scrapeStatusQ.isLoading
+              ? "Loading live scrape progress…"
+              : "Scrapes queued — waiting for the first account to start. Progress (account, posts scraped/total, %) will appear here."}
+          </div>
+        )
+      ) : null}
 
       <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
         <aside className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4">
@@ -296,7 +326,9 @@ export default function AdminImportPage() {
         <section className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-semibold">Preview · {selected.length} selected of {rows.length}</div>
+              <div className="text-sm font-semibold">
+                Preview · {selected.length} selected of {rows.length}
+              </div>
               {missingStudentId > 0 && (
                 <p className="mt-1 text-xs text-amber-400">
                   {missingStudentId} selected row(s) missing Student ID — they can be scraped but students won’t be able
@@ -331,6 +363,18 @@ export default function AdminImportPage() {
               </button>
             </div>
           </div>
+
+          {progress ? (
+            <div className="mt-4 space-y-2 rounded-xl border border-white/10 bg-black/40 px-3 py-3">
+              <div className="flex items-center justify-between text-xs text-zinc-300">
+                <span>
+                  Importing rows {progress.done} / {progress.total}
+                </span>
+                <span className="tabular">{importPct}%</span>
+              </div>
+              <ScrapeProgressBar percent={importPct} />
+            </div>
+          ) : null}
 
           {error && <p className="mt-3 text-sm text-rose-400">{error}</p>}
           {result && (

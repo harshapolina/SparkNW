@@ -72,6 +72,8 @@ export type Profile = {
     total_posts?: number;
     posts_left?: number;
     percent?: number;
+    source?: string;
+    updated_at?: string;
   } | null;
   status: string;
   last_scraped_at?: string | null;

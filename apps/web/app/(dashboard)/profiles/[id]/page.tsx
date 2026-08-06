@@ -19,7 +19,9 @@ import { Avatar } from "@/components/ui/avatar";
 import { api, type Profile } from "@/lib/api";
 import { studentDetailFields } from "@/lib/student-fields";
 import { formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
-import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
+import { ScrapeProgressCard } from "@/components/scrape-progress";
+import { progressPercent, type ScrapeProgress } from "@/lib/scrape-progress";
+import { waitForProfileScrape } from "@/lib/wait-for-scrape";
 
 type Post = {
   id: string;
@@ -135,6 +137,7 @@ export default function ProfileDetailPage() {
     queryFn: () => api<Profile>(`/profiles/${profileId}`),
     enabled: Boolean(profileId),
     placeholderData: (prev) => prev,
+    refetchInterval: (q) => (q.state.data?.scrape_progress?.active ? 2500 : false),
   });
   const postsQ = useQuery({
     queryKey: ["posts", profileId],
@@ -156,32 +159,41 @@ export default function ProfileDetailPage() {
   });
 
   const [refreshError, setRefreshError] = useState("");
-  const [progress, setProgress] = useState<{ percent: number; label: string } | null>(null);
+  const [liveProgress, setLiveProgress] = useState<ScrapeProgress | null>(null);
 
   const refresh = useMutation({
     mutationFn: async () => {
       const before = profileQ.data;
-      setProgress({ percent: 0, label: "Queued…" });
+      setLiveProgress({
+        active: true,
+        phase: "queued",
+        scraped_posts: 0,
+        total_posts: before?.posts_count || 0,
+        percent: 0,
+        source: "single",
+      });
       await api(`/profiles/${profileId}/refresh`, { method: "POST" });
       return waitForProfileScrape(profileId, {
         since: before?.last_scraped_at,
         prevFollowers: before?.followers,
         prevPosts: before?.posts_count,
-        onProgress: (prog) => {
-          setProgress({
-            percent: prog?.percent ?? 0,
-            label: formatScrapeProgress(prog),
-          });
-        },
+        onProgress: (prog) => setLiveProgress(prog),
       });
     },
     onSuccess: (done) => {
       if (done.status === "failed") {
-        setProgress(null);
+        setLiveProgress(null);
         setRefreshError(humanizeScrapeError(done.last_error) || "Scrape failed");
       } else {
         setRefreshError("");
-        setProgress({ percent: 100, label: "Done" });
+        setLiveProgress({
+          active: false,
+          phase: "done",
+          scraped_posts: done.scrape_progress?.scraped_posts ?? done.posts_count,
+          total_posts: done.scrape_progress?.total_posts ?? done.posts_count,
+          percent: 100,
+          source: done.scrape_progress?.source,
+        });
       }
       void qc.invalidateQueries({ queryKey: ["profile", profileId] });
       void qc.invalidateQueries({ queryKey: ["posts", profileId] });
@@ -189,9 +201,10 @@ export default function ProfileDetailPage() {
       void qc.invalidateQueries({ queryKey: ["analytics", profileId] });
       void qc.invalidateQueries({ queryKey: ["overview"] });
       void qc.invalidateQueries({ queryKey: ["profiles"] });
+      void qc.invalidateQueries({ queryKey: ["scrape-status"] });
     },
     onError: (e: Error) => {
-      setProgress(null);
+      setLiveProgress(null);
       setRefreshError(humanizeScrapeError(e.message) || e.message);
     },
   });
@@ -286,21 +299,12 @@ export default function ProfileDetailPage() {
             {refreshError && (
               <p className="max-w-xs text-right text-xs text-danger">{refreshError}</p>
             )}
-            {progress && !refreshError && (
-              <div className="w-full max-w-xs space-y-1.5 text-left">
-                <div className="flex items-center justify-between gap-2 text-xs text-muted">
-                  <span className="line-clamp-2">{progress.label}</span>
-                  <span className="tabular shrink-0">{progress.percent}%</span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-black/10">
-                  <div
-                    className="h-full rounded-full bg-accent transition-all duration-500"
-                    style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
-                  />
-                </div>
-              </div>
-            )}
-            {refresh.isSuccess && !refresh.isError && !refresh.isPending && !refreshError && progress?.percent === 100 && (
+            {refresh.isSuccess &&
+              !refresh.isError &&
+              !refresh.isPending &&
+              !refreshError &&
+              progressPercent(liveProgress) === 100 &&
+              !liveProgress?.active && (
               <p className="max-w-xs text-right text-xs text-muted">
                 Scrape finished — Insights and posts are updated.
               </p>
@@ -308,6 +312,19 @@ export default function ProfileDetailPage() {
           </div>
         </div>
       </Card>
+
+      {(liveProgress?.active || p.scrape_progress?.active || (liveProgress && !refreshError)) && (
+        <ScrapeProgressCard
+          username={p.username}
+          progress={
+            liveProgress?.active
+              ? liveProgress
+              : p.scrape_progress?.active
+                ? p.scrape_progress
+                : liveProgress
+          }
+        />
+      )}
 
       <div className="flex gap-1 overflow-x-auto rounded-xl border border-border bg-white p-1 shadow-soft">
         {tabs.map((t) => (

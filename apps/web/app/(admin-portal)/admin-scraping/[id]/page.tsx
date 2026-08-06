@@ -17,6 +17,8 @@ import {
 import { api, type Profile } from "@/lib/api";
 import { studentDetailFieldsExtra } from "@/lib/student-fields";
 import { cn, formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
+import { ScrapeProgressCard } from "@/components/scrape-progress";
+import { type ScrapeProgress } from "@/lib/scrape-progress";
 import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
 
 type Post = {
@@ -121,6 +123,7 @@ export default function AdminCreatorDetailPage() {
     queryKey: ["profile", profileId],
     queryFn: () => api<Profile>(`/profiles/${profileId}`),
     enabled: Boolean(profileId),
+    refetchInterval: (q) => (q.state.data?.scrape_progress?.active ? 2500 : false),
   });
   const postsQ = useQuery({
     queryKey: ["posts", profileId],
@@ -140,10 +143,7 @@ export default function AdminCreatorDetailPage() {
 
   const [refreshError, setRefreshError] = useState("");
   const [scrapingNote, setScrapingNote] = useState("");
-  const [progress, setProgress] = useState<{
-    percent: number;
-    label: string;
-  } | null>(null);
+  const [liveProgress, setLiveProgress] = useState<ScrapeProgress | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -158,7 +158,14 @@ export default function AdminCreatorDetailPage() {
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
-      setProgress({ percent: 0, label: "Queued…" });
+      setLiveProgress({
+        active: true,
+        phase: "queued",
+        scraped_posts: 0,
+        total_posts: before?.posts_count || 0,
+        percent: 0,
+        source: "single",
+      });
       setScrapingNote("Queued — scraping in background…");
       await api(`/profiles/${profileId}/refresh`, { method: "POST" });
       setScrapingNote("Scraping Instagram…");
@@ -167,10 +174,9 @@ export default function AdminCreatorDetailPage() {
         prevFollowers: before?.followers,
         prevPosts: before?.posts_count,
         signal: ac.signal,
-        onProgress: (prog) => {
-          const percent = prog?.percent ?? 0;
-          setProgress({ percent, label: formatScrapeProgress(prog) });
-          setScrapingNote(formatScrapeProgress(prog));
+        onProgress: (prog, profile) => {
+          setLiveProgress(prog);
+          setScrapingNote(formatScrapeProgress(prog, profile.username));
         },
       });
       return done;
@@ -179,10 +185,17 @@ export default function AdminCreatorDetailPage() {
       setRefreshError("");
       if (done.status === "failed") {
         setScrapingNote("");
-        setProgress(null);
+        setLiveProgress(null);
         setRefreshError(humanizeScrapeError(done.last_error) || "Scrape failed");
       } else if (done.followers > 0 || done.posts_count > 0) {
-        setProgress({ percent: 100, label: "Done" });
+        setLiveProgress({
+          active: false,
+          phase: "done",
+          scraped_posts: done.scrape_progress?.scraped_posts ?? done.posts_count,
+          total_posts: done.scrape_progress?.total_posts ?? done.posts_count,
+          percent: 100,
+          source: done.scrape_progress?.source,
+        });
         const privateNote = done.is_private
           ? " (private account — Instagram hides most posts without login)"
           : "";
@@ -190,7 +203,7 @@ export default function AdminCreatorDetailPage() {
           `Done — ${formatNumber(done.followers)} followers · ${formatNumber(done.posts_count)} posts${privateNote}`
         );
       } else {
-        setProgress(null);
+        setLiveProgress(null);
         setRefreshError(
           humanizeScrapeError(done.last_error) ||
             "Scrape finished with no Instagram data. Wait a minute and Refresh again."
@@ -203,10 +216,11 @@ export default function AdminCreatorDetailPage() {
       void qc.invalidateQueries({ queryKey: ["analytics", profileId] });
       void qc.invalidateQueries({ queryKey: ["spark"] });
       void qc.invalidateQueries({ queryKey: ["profiles"] });
+      void qc.invalidateQueries({ queryKey: ["scrape-status"] });
     },
     onError: (e: Error) => {
       setScrapingNote("");
-      setProgress(null);
+      setLiveProgress(null);
       setRefreshError(humanizeScrapeError(e.message) || e.message);
     },
   });
@@ -249,21 +263,28 @@ export default function AdminCreatorDetailPage() {
           {refreshError}
         </div>
       )}
-      {scrapingNote && !refreshError && (
-        <div className="space-y-2 rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-200">
-          <div className="flex items-center justify-between gap-3">
-            <span>{scrapingNote}</span>
-            {progress ? <span className="tabular text-xs text-sky-300">{progress.percent}%</span> : null}
-          </div>
-          {progress ? (
-            <div className="h-2 overflow-hidden rounded-full bg-black/40">
-              <div
-                className="h-full rounded-full bg-[#ff3b30] transition-all duration-500"
-                style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
-              />
-            </div>
-          ) : null}
-        </div>
+      {(liveProgress?.active || p.scrape_progress?.active || (scrapingNote && !refreshError)) && (
+        <ScrapeProgressCard
+          username={p.username}
+          progress={
+            liveProgress?.active
+              ? liveProgress
+              : p.scrape_progress?.active
+                ? p.scrape_progress
+                : liveProgress || {
+                    active: false,
+                    phase: "done",
+                    percent: 100,
+                    scraped_posts: p.posts_count,
+                    total_posts: p.posts_count,
+                  }
+          }
+          title={
+            liveProgress?.active || p.scrape_progress?.active
+              ? `Scraping @${p.username}`
+              : scrapingNote || `Scraped @${p.username}`
+          }
+        />
       )}
 
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">

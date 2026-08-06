@@ -8,6 +8,12 @@ import { api, type Profile } from "@/lib/api";
 import { cn, formatNumber, formatPct } from "@/lib/utils";
 import { SparkAvatar } from "@/components/spark/ui";
 import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
+import { progressPercent, type ScrapeStatusResponse } from "@/lib/scrape-progress";
+import {
+  ScrapeActivityBanner,
+  ScrapeProgressCard,
+  ScrapeRowProgress,
+} from "@/components/scrape-progress";
 
 type ListResponse = { items: Profile[]; total: number; page: number; page_size: number };
 
@@ -36,17 +42,36 @@ export default function AdminScrapingPage() {
     return params.toString();
   }, [q, page, statusFilter]);
 
+  const scrapeStatusQ = useQuery({
+    queryKey: ["scrape-status"],
+    queryFn: () => api<ScrapeStatusResponse>("/profiles/scrape-status"),
+    refetchInterval: (query) => {
+      const n = query.state.data?.active_count || 0;
+      return n > 0 ? 2500 : 8000;
+    },
+  });
+
   const { data, isLoading } = useQuery({
     queryKey: ["profiles", q, page, statusFilter],
     queryFn: () => api<ListResponse>(`/profiles?${queryString}`),
+    refetchInterval: () => ((scrapeStatusQ.data?.active_count || 0) > 0 ? 3000 : false),
   });
 
   const [bulkNote, setBulkNote] = useState("");
-  const [addProgress, setAddProgress] = useState<{ percent: number; label: string } | null>(null);
+  const [addProgress, setAddProgress] = useState<{
+    percent: number;
+    label: string;
+    username?: string;
+    progress?: Profile["scrape_progress"];
+  } | null>(null);
 
   const add = useMutation({
     mutationFn: async () => {
-      setAddProgress({ percent: 0, label: "Creating profile…" });
+      setAddProgress({
+        percent: 0,
+        label: "Creating profile…",
+        username: ig.trim().replace(/^@/, ""),
+      });
       const created = await api<Profile>("/profiles", {
         method: "POST",
         body: JSON.stringify({
@@ -59,15 +84,22 @@ export default function AdminScrapingPage() {
           },
         }),
       });
-      setAddProgress({ percent: 5, label: "Queued — scraping…" });
+      setAddProgress({
+        percent: 5,
+        label: `Queued — scraping @${created.username}…`,
+        username: created.username,
+        progress: created.scrape_progress,
+      });
       return waitForProfileScrape(created.id, {
         since: created.last_scraped_at,
         prevFollowers: created.followers,
         prevPosts: created.posts_count,
-        onProgress: (prog) => {
+        onProgress: (prog, profile) => {
           setAddProgress({
-            percent: prog?.percent ?? 0,
-            label: formatScrapeProgress(prog),
+            percent: progressPercent(prog),
+            label: formatScrapeProgress(prog, profile.username),
+            username: profile.username,
+            progress: prog || undefined,
           });
         },
       });
@@ -85,6 +117,7 @@ export default function AdminScrapingPage() {
           : `Added @${p.username} — scrape still running or no public posts yet`
       );
       qc.invalidateQueries({ queryKey: ["profiles"] });
+      qc.invalidateQueries({ queryKey: ["scrape-status"] });
       qc.invalidateQueries({ queryKey: ["spark"] });
     },
     onError: (e: Error) => {
@@ -128,7 +161,7 @@ export default function AdminScrapingPage() {
       setError("");
       if (r?.action === "refresh") {
         setBulkNote(
-          `Queued ${r.queued} profile(s) for scraping (one at a time). Refresh this list in a few minutes.`
+          `Queued ${r.queued} profile(s). Watch the live progress bar below — one account at a time.`
         );
       } else if (r?.action === "export") {
         setBulkNote("Export downloaded.");
@@ -138,6 +171,7 @@ export default function AdminScrapingPage() {
         setBulkNote("");
       }
       qc.invalidateQueries({ queryKey: ["profiles"] });
+      qc.invalidateQueries({ queryKey: ["scrape-status"] });
       qc.invalidateQueries({ queryKey: ["spark"] });
     },
     onError: (e: Error) => {
@@ -178,6 +212,8 @@ export default function AdminScrapingPage() {
           Bulk roster import →
         </Link>
       </div>
+
+      <ScrapeActivityBanner status={scrapeStatusQ.data} />
 
       <form onSubmit={onAdd} className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
         <div className="text-sm font-semibold">Add & scrape one creator</div>
@@ -232,17 +268,16 @@ export default function AdminScrapingPage() {
           {error && <p className="text-sm text-rose-400">{error}</p>}
         </div>
         {addProgress ? (
-          <div className="mt-4 space-y-2 rounded-xl border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-200">
-            <div className="flex items-center justify-between gap-3">
-              <span>{addProgress.label}</span>
-              <span className="tabular text-xs text-sky-300">{addProgress.percent}%</span>
-            </div>
-            <div className="h-2 overflow-hidden rounded-full bg-black/40">
-              <div
-                className="h-full rounded-full bg-[#ff3b30] transition-all duration-500"
-                style={{ width: `${Math.min(100, Math.max(0, addProgress.percent))}%` }}
-              />
-            </div>
+          <div className="mt-4">
+            <ScrapeProgressCard
+              username={addProgress.username}
+              progress={addProgress.progress}
+              title={
+                addProgress.username
+                  ? `Scraping @${addProgress.username}`
+                  : "Scraping in progress"
+              }
+            />
           </div>
         ) : null}
       </form>
@@ -341,6 +376,7 @@ export default function AdminScrapingPage() {
                   <th className="px-2 py-3">Campus</th>
                   <th className="px-2 py-3">Followers</th>
                   <th className="px-2 py-3">Posts</th>
+                  <th className="px-2 py-3">Scrape progress</th>
                   <th className="px-2 py-3">Growth</th>
                   <th className="px-2 py-3">Status</th>
                   <th className="px-2 py-3">Scraped</th>
@@ -363,11 +399,15 @@ export default function AdminScrapingPage() {
                     <td className="px-2 py-3">
                       <Link href={`/admin-scraping/${p.id}`} className="flex items-center gap-3 hover:opacity-90">
                         <SparkAvatar
-                          initials={(p.student?.full_name || p.full_name || p.username || "?").slice(0, 2).toUpperCase()}
+                          initials={(p.student?.full_name || p.full_name || p.username || "?")
+                            .slice(0, 2)
+                            .toUpperCase()}
                           size="sm"
                         />
                         <div>
-                          <div className="font-medium">{p.student?.full_name || p.full_name || p.username}</div>
+                          <div className="font-medium">
+                            {p.student?.full_name || p.full_name || p.username}
+                          </div>
                           <div className="text-[11px] text-zinc-500">@{p.username}</div>
                           {p.status === "failed" && (
                             <div className="mt-0.5 flex items-center gap-1 text-[11px] text-rose-400">
@@ -381,6 +421,13 @@ export default function AdminScrapingPage() {
                     <td className="px-2 py-3 text-zinc-400">{p.student?.university || "—"}</td>
                     <td className="px-2 py-3 tabular">{formatNumber(p.followers)}</td>
                     <td className="px-2 py-3 tabular text-zinc-400">{formatNumber(p.posts_count)}</td>
+                    <td className="px-2 py-3">
+                      {p.scrape_progress?.active ? (
+                        <ScrapeRowProgress username={p.username} progress={p.scrape_progress} />
+                      ) : (
+                        <span className="text-[11px] text-zinc-600">—</span>
+                      )}
+                    </td>
                     <td
                       className={cn(
                         "px-2 py-3 tabular",
@@ -395,10 +442,11 @@ export default function AdminScrapingPage() {
                           "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
                           p.status === "active" && "bg-lime-500/15 text-lime-400",
                           p.status === "failed" && "bg-rose-500/15 text-rose-400",
-                          p.status === "paused" && "bg-amber-500/15 text-amber-400"
+                          p.status === "paused" && "bg-amber-500/15 text-amber-400",
+                          p.scrape_progress?.active && "bg-sky-500/15 text-sky-300"
                         )}
                       >
-                        {p.status}
+                        {p.scrape_progress?.active ? "scraping" : p.status}
                       </span>
                     </td>
                     <td className="px-2 py-3 text-[11px] text-zinc-500 whitespace-nowrap">
@@ -412,7 +460,9 @@ export default function AdminScrapingPage() {
         </div>
 
         <div className="mt-4 flex items-center justify-between text-xs text-zinc-500">
-          <span>{data?.total || 0} creators · {selected.length} selected</span>
+          <span>
+            {data?.total || 0} creators · {selected.length} selected
+          </span>
           <div className="flex gap-2">
             <button
               type="button"
