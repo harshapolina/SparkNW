@@ -39,7 +39,7 @@ const LIST_STUDENT_COLS = STUDENT_SHEET_COLUMNS.filter((c) =>
 );
 
 function statusBadgeClass(status: string) {
-  if (status === "failed") return "badge-danger";
+  if (status === "failed" || status === "unavailable") return "badge-danger";
   if (status === "active") return "badge-success";
   if (status === "paused") return "badge-warning";
   return "badge-neutral";
@@ -261,6 +261,11 @@ export default function ProfilesPage() {
                           {p.status === "failed" && (
                             <div className="mt-0.5 flex items-center gap-1 text-xs text-danger">
                               <AlertCircle size={11} /> Needs refresh
+                            </div>
+                          )}
+                          {p.status === "unavailable" && (
+                            <div className="mt-0.5 flex items-center gap-1 text-xs text-amber-700">
+                              <AlertCircle size={11} /> Doesn&apos;t exist
                             </div>
                           )}
                         </div>

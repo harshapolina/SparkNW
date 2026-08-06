@@ -50,6 +50,10 @@ def _configured_max_posts() -> int:
 
 def _is_complete_enough(posts_count: int, scraped: int, followers: int) -> bool:
     """Accept capped scrapes and first-pass samples so timeouts don't leave zeros."""
+    # Instagram-reported empty timeline — card alone is enough.
+    if posts_count == 0 and scraped == 0:
+        return True
+
     if scraped <= 0 and followers <= 0:
         return False
     cap = _configured_max_posts()
@@ -115,8 +119,10 @@ def humanize_scrape_error(err: BaseException | str) -> str:
         return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
     if "refusing to save" in low:
         return "Scrape was incomplete and was not saved over existing data. Please Refresh again."
-    if "not found" in low:
-        return raw
+    if "does not exist" in low or "doesn't exist" in low or "not found" in low:
+        if "does not exist" in low or "doesn't exist" in low:
+            return raw if len(raw) <= 220 else raw[:217] + "..."
+        return "This Instagram profile does not exist."
     if len(raw) > 220:
         return raw[:217] + "..."
     return raw
@@ -416,6 +422,17 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
         profile.last_scraped_at = datetime.utcnow()
     profile.last_error = friendly
     profile.status = ProfileStatus.UNAVAILABLE if unavailable else ProfileStatus.FAILED
+    # Always clear active scrape UI so bulk queue is not stuck "running".
+    profile.scrape_progress = {
+        "active": False,
+        "phase": "unavailable" if unavailable else "failed",
+        "scraped_posts": 0,
+        "total_posts": int(profile.posts_count or 0),
+        "posts_left": 0,
+        "percent": 100,
+        "source": (getattr(profile, "scrape_progress", None) or {}).get("source"),
+        "updated_at": datetime.utcnow().isoformat() + "Z",
+    }
     profile.updated_at = datetime.utcnow()
     student = getattr(profile, "student", None)
     if isinstance(student, dict) and student:
@@ -428,14 +445,21 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
         user_id=profile.user_id,
         level="error",
         message=friendly,
-        details={"raw": str(error)[:500]} if str(error) != friendly else {},
+        details={"raw": str(error)[:500], "unavailable": unavailable}
+        if str(error) != friendly or unavailable
+        else {},
     ).insert()
 
     ntype = NotificationType.PROFILE_UNAVAILABLE if unavailable else NotificationType.SCRAPE_FAILED
+    title = (
+        f"@{profile.username} does not exist on Instagram"
+        if unavailable
+        else f"Scrape failed for @{profile.username}"
+    )
     await Notification(
         user_id=profile.user_id,
         profile_id=str(profile.id),
         type=ntype,
-        title=f"Scrape failed for @{profile.username}",
+        title=title,
         body=friendly[:280],
     ).insert()

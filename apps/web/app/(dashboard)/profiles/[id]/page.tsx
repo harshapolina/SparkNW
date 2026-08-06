@@ -104,7 +104,7 @@ type Insights = {
 const tabs = ["overview", "student", "insights", "posts", "growth", "analytics", "history"] as const;
 
 function statusBadgeClass(status: string) {
-  if (status === "failed") return "badge-danger";
+  if (status === "failed" || status === "unavailable") return "badge-danger";
   if (status === "active") return "badge-success";
   if (status === "paused") return "badge-warning";
   return "badge-neutral";
@@ -181,9 +181,14 @@ export default function ProfileDetailPage() {
       });
     },
     onSuccess: (done) => {
-      if (done.status === "failed") {
+      if (done.status === "failed" || done.status === "unavailable") {
         setLiveProgress(null);
-        setRefreshError(humanizeScrapeError(done.last_error) || "Scrape failed");
+        setRefreshError(
+          humanizeScrapeError(done.last_error) ||
+            (done.status === "unavailable"
+              ? "This Instagram profile does not exist."
+              : "Scrape failed")
+        );
       } else {
         setRefreshError("");
         setLiveProgress({
@@ -230,6 +235,18 @@ export default function ProfileDetailPage() {
 
   return (
     <div className="space-y-7">
+      {p.status === "unavailable" && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertCircle size={18} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-semibold">Profile doesn&apos;t exist on Instagram</div>
+            <p className="mt-1 text-amber-900/90">
+              {humanizeScrapeError(p.last_error) ||
+                `No Instagram account found for @${p.username}.`}
+            </p>
+          </div>
+        </div>
+      )}
       {p.status === "failed" && (
         <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-danger">
           <AlertCircle size={18} className="mt-0.5 shrink-0" />

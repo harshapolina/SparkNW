@@ -278,12 +278,32 @@ def _expected_posts_count(user: dict[str, Any]) -> int:
     )
 
 
+def _posts_count_known(user: dict[str, Any] | None) -> bool:
+    """True when Instagram included an explicit media/posts count (including 0)."""
+    if not isinstance(user, dict):
+        return False
+    for key in ("media_count", "posts_count", "total_clips_count"):
+        if user.get(key) is not None:
+            return True
+    edge = user.get("edge_owner_to_timeline_media")
+    if isinstance(edge, dict) and edge.get("count") is not None:
+        return True
+    return False
+
+
 def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
     """True when we've collected enough posts for the active scrape caps.
 
     Respects SCRAPE_MAX_POSTS / ScrapeCaps.max_posts so a capped bulk pass
     (e.g. 48 of 3000) is treated as complete.
+
+    posts_count == 0 with no posts means a confirmed-empty timeline (callers
+    must only set posts_count=0 when Instagram explicitly reported it).
     """
+    # Confirmed empty account: nothing to fetch.
+    if posts_count == 0:
+        return len(posts) == 0
+
     if not posts:
         return False
     got = len(posts)
@@ -292,14 +312,11 @@ def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
     except ValueError:
         cap = 0
     if cap > 0:
-        target = min(posts_count, cap) if posts_count > 0 else cap
+        target = min(posts_count, cap)
         if target <= 12:
             return got >= target
         return got >= max(target - 2, 1)
 
-    if posts_count <= 0:
-        # Unknown total — never treat the first profile-card page (~12) as complete.
-        return got > 12
     # Small accounts: every post must be present (6→2 / 1→0 must NOT pass).
     if posts_count <= 12:
         return got >= posts_count
@@ -310,6 +327,9 @@ def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
 def _useful_partial(result: ScrapeResult) -> bool:
     """Card + a real sample — save instead of failing large accounts mid-pagination."""
     if result.is_private:
+        return True
+    # Confirmed empty public profile with a card is a finished scrape.
+    if int(result.posts_count or 0) == 0 and len(result.posts) == 0 and int(result.followers or 0) > 0:
         return True
     got = len(result.posts)
     if int(result.followers or 0) > 0 and got >= 12:
@@ -414,6 +434,17 @@ async def _expand_all_posts(
         (cursor or "")[:48],
         bool(proxy_url),
     )
+
+    # Instagram says 0 posts — do not paginate / rotate proxies for an empty grid.
+    # Only when the count field is present (missing count ≠ empty account).
+    if expected == 0 and _posts_count_known(user):
+        logger.info("expand @%s expected=0 — empty timeline, skipping pagination", username)
+        return posts
+    if expected == 0 and not _posts_count_known(user):
+        logger.warning(
+            "expand @%s posts_count unknown — will paginate until feed ends/stagnant",
+            username,
+        )
 
     def _seed_nodes_from_posts(items: list[ScrapedPost]) -> list[dict[str, Any]]:
         """Re-seed pagination from posts we already have (continue past page 1)."""
@@ -907,8 +938,13 @@ async def _scroll_collect_all_posts(page, *, posts_count: int, existing: list[Sc
       - no new GraphQL/feed network requests
       - no new DOM nodes
     Never stop merely because 12 posts exist.
+    Empty accounts (posts_count == 0) return immediately.
     """
     from instascope_scraper.http_profile import _max_posts
+
+    if posts_count == 0:
+        logger.info("scroll @%s posts_count=0 — skipping grid scroll", username or "?")
+        return list(existing)
 
     hard_cap = _max_posts()
     target = min(posts_count if posts_count > 0 else hard_cap, hard_cap)
@@ -1107,6 +1143,14 @@ async def _collect_full_timeline_in_browser(
     until we reach posts_count (or exhaust progress).
     """
     posts = _merge_media_nodes_into_posts(existing, media_nodes)
+    if expected_count == 0:
+        logger.info(
+            "browser_timeline @%s expected=0 — empty timeline, skipping collect existing=%s",
+            username,
+            len(posts),
+        )
+        return posts
+
     rounds = 0
     max_rounds = max(25, (expected_count // 6) + 15 if expected_count else 30)
     scroll_delay = float(os.getenv("SCRAPE_SCROLL_DELAY_SECONDS") or "1.0")
@@ -1555,7 +1599,7 @@ async def _fill_card_via_html_meta(
     if _has_card_metrics(http_result):
         return http_result
     try:
-        from instascope_scraper.http_profile import fetch_profile_meta_card
+        from instascope_scraper.http_profile import InstagramUserNotFound, fetch_profile_meta_card
 
         meta = await fetch_profile_meta_card(username, proxy=proxy_url)
         if not meta:
@@ -1574,6 +1618,11 @@ async def _fill_card_via_html_meta(
                 card.following,
             )
             return _merge_card_metrics(http_result, card)
+    except InstagramUserNotFound as exc:
+        raise ScrapeError(
+            f"Profile @{username} does not exist on Instagram",
+            unavailable=True,
+        ) from exc
     except Exception:
         logger.exception("meta_card fill @%s failed", username)
     return http_result
@@ -1602,6 +1651,7 @@ async def _scrape_live(
     await _emit_progress(on_progress, phase="starting", scraped_posts=0, total_posts=0)
     try:
         from instascope_scraper.http_profile import (
+            InstagramUserNotFound,
             fetch_timeline_via_username_feed,
             fetch_web_profile_http,
         )
@@ -1624,16 +1674,46 @@ async def _scrape_live(
             candidate_proxies = [None]
 
         http_json = None
-        for cand in candidate_proxies:
-            http_json = await fetch_web_profile_http(username, proxy=cand)
-            if http_json:
-                proxy_url = cand
-                break
-            if cand:
-                mark_proxy_bad(cand, seconds=60)
+        try:
+            for cand in candidate_proxies:
+                http_json = await fetch_web_profile_http(username, proxy=cand)
+                if http_json:
+                    proxy_url = cand
+                    break
+                if cand:
+                    mark_proxy_bad(cand, seconds=60)
+        except InstagramUserNotFound as exc:
+            raise ScrapeError(
+                f"Profile @{username} does not exist on Instagram",
+                unavailable=True,
+            ) from exc
 
         user = _user_from_web_profile(http_json) if http_json else None
         if user:
+            expected = _expected_posts_count(user)
+            # Zero-post public accounts: save the card and move on (no expand/browser).
+            # Require an explicit media count — a missing count must NOT look like empty,
+            # or we'd finalize 0 posts before pagination finds the real timeline.
+            if (
+                expected == 0
+                and _posts_count_known(user)
+                and not bool(user.get("is_private"))
+            ):
+                http_result = _result_from_user(username, user)
+                logger.info(
+                    "http_empty @%s followers=%s following=%s — 0 posts, done",
+                    username,
+                    http_result.followers,
+                    http_result.following,
+                )
+                await _emit_progress(
+                    on_progress,
+                    phase="done",
+                    scraped_posts=0,
+                    total_posts=0,
+                )
+                return _finalize_result(http_result, path="http_empty")
+
             if not bool(user.get("is_private")):
                 try:
                     all_posts = await _expand_all_posts(
@@ -1691,6 +1771,38 @@ async def _scrape_live(
                     proxy=proxy_url,
                     on_progress=on_progress,
                 )
+                from instascope_scraper.http_profile import (
+                    _media_count_known,
+                    _parse_media_count,
+                )
+
+                # Empty account confirmed via feed user object — finish without browser.
+                if (
+                    feed_user
+                    and _media_count_known(feed_user)
+                    and _parse_media_count(feed_user) == 0
+                    and not feed_nodes
+                ):
+                    if "edge_owner_to_timeline_media" not in feed_user:
+                        feed_user = {
+                            **feed_user,
+                            "edge_owner_to_timeline_media": {
+                                "count": 0,
+                                "edges": [],
+                                "page_info": {"has_next_page": False},
+                            },
+                        }
+                    http_result = _result_from_user(username, feed_user, posts_override=[])
+                    logger.info(
+                        "username_feed_empty @%s followers=%s — 0 posts, done",
+                        username,
+                        http_result.followers,
+                    )
+                    await _emit_progress(
+                        on_progress, phase="done", scraped_posts=0, total_posts=0
+                    )
+                    return _finalize_result(http_result, path="username_feed_empty")
+
                 if feed_nodes:
                     posts = _posts_from_nodes(feed_nodes)
                     if feed_user:
@@ -1724,10 +1836,16 @@ async def _scrape_live(
                         )
                     if http_result and (
                         _posts_complete(http_result.posts, http_result.posts_count)
-                        or (http_result.posts_count <= 0 and len(http_result.posts) > 12)
+                        or (http_result.posts_count < 0 and len(http_result.posts) > 12)
                     ):
-                        # If posts_count unknown, trust feed exhaustion when we got >12
-                        if http_result.posts_count <= 0:
+                        # If posts_count unknown (<0 sentinel unused), trust feed exhaustion.
+                        # Never rewrite a real 0-post count up from empty len(posts).
+                        if http_result.posts_count < 0:
+                            http_result.posts_count = len(http_result.posts)
+                        if (
+                            http_result.posts_count <= 0
+                            and len(http_result.posts) > 12
+                        ):
                             http_result.posts_count = len(http_result.posts)
                         if _posts_complete(http_result.posts, http_result.posts_count):
                             # Feed user payload is thin (often no follower_count) — only
@@ -1782,8 +1900,16 @@ async def _scrape_live(
                         len(http_result.posts) if http_result else 0,
                         http_result.posts_count if http_result else 0,
                     )
+            except InstagramUserNotFound as exc:
+                raise ScrapeError(
+                    f"Profile @{username} does not exist on Instagram",
+                    unavailable=True,
+                ) from exc
             except Exception:
                 logger.exception("username_feed @%s failed", username)
+    except ScrapeError:
+        # Not-found / definitive failures must not fall through to browser.
+        raise
     except Exception:
         logger.exception("http fast-path @%s crashed", username)
         http_result = None
@@ -2107,7 +2233,25 @@ async def _scrape_live_browser(
 
         if response and response.status == 404:
             await context.close()
-            raise ScrapeError(f"Profile @{username} not found", unavailable=True)
+            raise ScrapeError(
+                f"Profile @{username} does not exist on Instagram",
+                unavailable=True,
+            )
+
+        try:
+            body_text = (await page.locator("body").inner_text(timeout=5_000))[:2000].lower()
+        except Exception:
+            body_text = ""
+        if (
+            "sorry, this page isn't available" in body_text
+            or "the link you followed may be broken" in body_text
+            or "page isn't available" in body_text
+        ):
+            await context.close()
+            raise ScrapeError(
+                f"Profile @{username} does not exist on Instagram",
+                unavailable=True,
+            )
 
         for label in ("Allow all cookies", "Allow essential and optional cookies", "Accept"):
             try:

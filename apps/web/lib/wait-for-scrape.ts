@@ -23,6 +23,7 @@ export type WaitForScrapeOptions = {
 const TERMINAL_PHASES = new Set([
   "done",
   "failed",
+  "unavailable",
   "interrupted",
   "http_posts_only",
 ]);
@@ -40,7 +41,10 @@ function scrapeTerminal(profile: Profile, since?: string | null): boolean {
   const prog = profile.scrape_progress;
   const phase = (prog?.phase || "").toLowerCase();
 
-  if (profile.status === "failed" && profile.last_error) {
+  if (
+    (profile.status === "failed" || profile.status === "unavailable") &&
+    profile.last_error
+  ) {
     return true;
   }
 
@@ -83,7 +87,10 @@ export async function waitForProfileScrape(
       sawActive &&
       p.scrape_progress &&
       p.scrape_progress.active === false &&
-      (p.last_scraped_at || p.last_error || p.status === "failed")
+      (p.last_scraped_at ||
+        p.last_error ||
+        p.status === "failed" ||
+        p.status === "unavailable")
     ) {
       return p;
     }

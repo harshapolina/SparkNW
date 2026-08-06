@@ -165,11 +165,11 @@ def _needs_deep_followup(profile: Profile) -> bool:
     cap = _bulk_max_posts()
     if cap <= 0:
         return False
-    if profile.status == ProfileStatus.FAILED:
+    if profile.status in {ProfileStatus.FAILED, ProfileStatus.UNAVAILABLE}:
         return False
     prog = dict(getattr(profile, "scrape_progress", None) or {})
     phase = str(prog.get("phase") or "").lower()
-    if phase in {"failed", "interrupted"}:
+    if phase in {"failed", "unavailable", "interrupted"}:
         return False
     scraped = int(prog.get("scraped_posts") or 0)
     total = int(profile.posts_count or prog.get("total_posts") or 0)
@@ -256,7 +256,12 @@ async def resume_incomplete_bulk_scrapes() -> int:
     sample_ids: list[str] = []
     deep_ids: list[str] = []
     for profile in profiles:
+        if profile.status in {ProfileStatus.FAILED, ProfileStatus.UNAVAILABLE}:
+            continue
         prog = dict(getattr(profile, "scrape_progress", None) or {})
+        phase = str(prog.get("phase") or "").lower()
+        if phase in {"failed", "unavailable", "done", "interrupted"}:
+            continue
         updated_raw = prog.get("updated_at") or ""
         age_ok = True
         if isinstance(updated_raw, str) and updated_raw:
@@ -269,7 +274,6 @@ async def resume_incomplete_bulk_scrapes() -> int:
         if not age_ok:
             continue
         source = str(prog.get("source") or "bulk")
-        phase = str(prog.get("phase") or "")
         pid = str(profile.id)
         if source == "deep" or phase == "queued_full":
             if not prog.get("active"):
@@ -490,6 +494,25 @@ async def _worker_loop() -> None:
             profile = await Profile.get(profile_id)
             if not profile:
                 log.warning("%s scrape skipped missing profile_id=%s", mode, profile_id)
+            elif profile.status == ProfileStatus.UNAVAILABLE:
+                log.info(
+                    "%s scrape skipped @%s — Instagram profile does not exist",
+                    mode,
+                    profile.username,
+                )
+                prog = dict(getattr(profile, "scrape_progress", None) or {})
+                if prog.get("active") or str(prog.get("phase") or "") not in {
+                    "unavailable",
+                    "failed",
+                }:
+                    profile.scrape_progress = {
+                        **prog,
+                        "active": False,
+                        "phase": "unavailable",
+                        "updated_at": datetime.utcnow().isoformat() + "Z",
+                    }
+                    profile.updated_at = datetime.utcnow()
+                    await profile.save()
             else:
                 from app.scrape_single import single_scrape_running
 

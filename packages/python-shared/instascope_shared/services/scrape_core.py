@@ -311,10 +311,12 @@ async def run_profile_scrape(
             await mark_scrape_failed(job, profile, str(exc), unavailable=exc.unavailable)
             if not _current():
                 return job
+            # mark_scrape_failed already cleared progress; keep phase explicit for UI.
+            phase = "unavailable" if exc.unavailable else "failed"
             profile.scrape_progress = progress_payload(
-                scraped=int(last_progress.get("scraped_posts") or 0),
-                total=int(last_progress.get("total_posts") or profile.posts_count or 0),
-                phase="failed",
+                scraped=0,
+                total=int(profile.posts_count or 0),
+                phase=phase,
                 active=False,
                 source=source,
             )

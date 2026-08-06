@@ -23,6 +23,39 @@ from instascope_scraper.caps import caps_env
 
 logger = logging.getLogger("instascope.scraper.http_profile")
 
+
+class InstagramUserNotFound(Exception):
+    """Instagram confirmed this username does not exist (HTTP 404 / user-not-found)."""
+
+    def __init__(self, username: str, detail: str = ""):
+        self.username = (username or "").lstrip("@")
+        self.detail = detail or f"Profile @{self.username} does not exist on Instagram"
+        super().__init__(self.detail)
+
+
+def _looks_like_user_not_found(status: int, payload: Any, snip: str = "") -> bool:
+    if status == 404:
+        return True
+    blob = " ".join(
+        [
+            snip or "",
+            str((payload or {}).get("message") if isinstance(payload, dict) else ""),
+            str((payload or {}).get("error_title") if isinstance(payload, dict) else ""),
+            str((payload or {}).get("error_type") if isinstance(payload, dict) else ""),
+        ]
+    ).lower()
+    needles = (
+        "user not found",
+        "no users found",
+        "page not found",
+        "doesn't exist",
+        "does not exist",
+        "isn't available",
+        "isnt available",
+        "not available right now",
+    )
+    return any(n in blob for n in needles)
+
 IG_APP_ID = "936619743392459"
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -209,6 +242,8 @@ async def fetch_web_profile_http(username: str, *, proxy: str | None = None) -> 
             # Fail fast on sustained 401 Please wait — username feed is the recovery path
             max_retries=max(1, int(os.getenv("SCRAPE_WEB_PROFILE_RETRIES") or "2")),
         )
+        if _looks_like_user_not_found(status, payload, snip):
+            raise InstagramUserNotFound(username, detail=f"Profile @{username} does not exist on Instagram")
         if status != 200 or not payload:
             logger.warning("web_profile_info @%s → HTTP %s body=%r", username, status, snip[:180])
             return None
@@ -239,10 +274,17 @@ async def fetch_profile_meta_card(
             headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout
         ) as client:
             res = await client.get(url)
+            if res.status_code == 404:
+                raise InstagramUserNotFound(username)
             if res.status_code != 200:
                 logger.warning("meta_card @%s → HTTP %s", username, res.status_code)
                 return None
             html = res.text or ""
+            low = html.lower()
+            if "sorry, this page isn't available" in low or "the link you followed may be broken" in low:
+                raise InstagramUserNotFound(username)
+    except InstagramUserNotFound:
+        raise
     except Exception:
         logger.exception("meta_card @%s failed", username)
         return None
@@ -522,8 +564,23 @@ def _still_short(collected: int, *, limit: int, expected_count: int) -> bool:
         if expected_count <= 12:
             return collected < expected_count
         return collected < max(expected_count - 2, 1)
-    # Unknown total: keep going past the first card — caller stops on more_available=false
+    # expected_count == 0: either unknown total or confirmed empty.
+    # Callers must break out once Instagram reports media_count=0; until then
+    # keep paging until more_available=false / stagnant.
     return True
+
+
+def _media_count_known(user: dict[str, Any] | None) -> bool:
+    """True when the payload includes an explicit media/posts count (including 0)."""
+    if not isinstance(user, dict):
+        return False
+    for key in ("media_count", "posts_count", "total_clips_count"):
+        if user.get(key) is not None:
+            return True
+    edge = user.get("edge_owner_to_timeline_media")
+    if isinstance(edge, dict) and edge.get("count") is not None:
+        return True
+    return False
 
 
 async def fetch_all_media_nodes(
@@ -537,6 +594,10 @@ async def fetch_all_media_nodes(
     proxy: str | None = None,
 ) -> list[dict[str, Any]]:
     """Paginate until all (or SCRAPE_MAX_POSTS) timeline media nodes are collected."""
+    if expected_count == 0:
+        logger.info("fetch_all_media @%s expected=0 — empty timeline, skipping pagination", username)
+        return list(initial_nodes or [])
+
     limit = _max_posts()
     if expected_count > 0:
         limit = min(limit, expected_count)
@@ -932,6 +993,17 @@ async def fetch_timeline_via_username_feed(
                             limit = min(_max_posts(), expected_count)
 
             page_nodes, next_cursor, more = _nodes_from_feed(feed)
+            # Confirmed empty account — stop immediately (do not burn stagnant retries).
+            if (
+                user_obj is not None
+                and _media_count_known(user_obj)
+                and _parse_media_count(user_obj) == 0
+                and not page_nodes
+                and not nodes
+            ):
+                logger.info("username_feed @%s media_count=0 — empty timeline, done", username)
+                await _emit("username_feed")
+                break
             added = 0
             for node in page_nodes:
                 key = _node_key(node)
@@ -1030,10 +1102,15 @@ async def _feed_user_page_username(
     _apply_csrf(client, headers)
     label = f"feed/username @{username}"
     status, payload, snip = await _get_json_with_retry(client, url, headers=headers, label=label)
+    if _looks_like_user_not_found(status, payload, snip):
+        raise InstagramUserNotFound(username, detail=f"Profile @{username} does not exist on Instagram")
     if status != 200 or not payload:
         logger.info("%s max_id=%s → HTTP %s body=%r", label, max_id, status, snip[:160])
         return None
     if payload.get("status") == "fail":
+        msg = str(payload.get("message") or "")
+        if _looks_like_user_not_found(status, payload, msg):
+            raise InstagramUserNotFound(username, detail=f"Profile @{username} does not exist on Instagram")
         logger.warning("%s status=fail message=%r", label, payload.get("message"))
         return None
     return payload

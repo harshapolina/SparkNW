@@ -40,6 +40,13 @@ export function humanizeScrapeError(raw?: string | null): string {
   if (low.includes("login wall") || (low.includes("login") && low.includes("blocked"))) {
     return "Instagram login wall blocked scraping. Verify residential proxy session.";
   }
+  if (
+    low.includes("does not exist") ||
+    low.includes("doesn't exist") ||
+    (low.includes("not found") && low.includes("profile"))
+  ) {
+    return raw.trim();
+  }
   if (raw.length > 180) return `${raw.slice(0, 177)}…`;
   return raw;
 }

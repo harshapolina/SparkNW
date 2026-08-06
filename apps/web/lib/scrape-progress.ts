@@ -48,6 +48,7 @@ export function progressPercent(p?: ScrapeProgress | null): number {
 export function formatPhase(phase?: string | null): string {
   const raw = (phase || "scraping").replace(/_/g, " ");
   if (raw === "queued full") return "Queued for full scrape";
+  if (raw === "unavailable") return "Profile doesn't exist";
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 

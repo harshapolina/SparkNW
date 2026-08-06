@@ -183,10 +183,15 @@ export default function AdminCreatorDetailPage() {
     },
     onSuccess: (done) => {
       setRefreshError("");
-      if (done.status === "failed") {
+      if (done.status === "failed" || done.status === "unavailable") {
         setScrapingNote("");
         setLiveProgress(null);
-        setRefreshError(humanizeScrapeError(done.last_error) || "Scrape failed");
+        setRefreshError(
+          humanizeScrapeError(done.last_error) ||
+            (done.status === "unavailable"
+              ? "This Instagram profile does not exist."
+              : "Scrape failed")
+        );
       } else if (done.followers > 0 || done.posts_count > 0) {
         setLiveProgress({
           active: false,
@@ -249,6 +254,18 @@ export default function AdminCreatorDetailPage() {
 
   return (
     <div className="space-y-6">
+      {p.status === "unavailable" && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          <AlertCircle size={18} className="mt-0.5 shrink-0" />
+          <div>
+            <div className="font-semibold">Profile doesn&apos;t exist on Instagram</div>
+            <p className="mt-1 opacity-90">
+              {humanizeScrapeError(p.last_error) ||
+                `No Instagram account found for @${p.username}. Bulk scrape skipped this handle and continued.`}
+            </p>
+          </div>
+        </div>
+      )}
       {p.status === "failed" && (
         <div className="flex items-start gap-3 rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
           <AlertCircle size={18} className="mt-0.5 shrink-0" />
@@ -301,10 +318,14 @@ export default function AdminCreatorDetailPage() {
               <span
                 className={cn(
                   "rounded-full px-2 py-0.5 text-[10px] capitalize",
-                  p.status === "failed" ? "bg-rose-500/15 text-rose-400" : "bg-emerald-500/15 text-emerald-400"
+                  p.status === "failed" && "bg-rose-500/15 text-rose-400",
+                  p.status === "unavailable" && "bg-amber-500/15 text-amber-300",
+                  p.status !== "failed" &&
+                    p.status !== "unavailable" &&
+                    "bg-emerald-500/15 text-emerald-400"
                 )}
               >
-                {p.status}
+                {p.status === "unavailable" ? "missing" : p.status}
               </span>
             </div>
             {p.bio && <p className="mt-2 max-w-2xl text-sm text-zinc-400 line-clamp-3">{p.bio}</p>}

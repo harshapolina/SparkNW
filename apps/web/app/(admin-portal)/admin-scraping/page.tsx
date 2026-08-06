@@ -414,6 +414,11 @@ export default function AdminScrapingPage() {
                               <AlertCircle size={11} /> Scrape failed
                             </div>
                           )}
+                          {p.status === "unavailable" && (
+                            <div className="mt-0.5 flex items-center gap-1 text-[11px] text-amber-400">
+                              <AlertCircle size={11} /> Profile doesn&apos;t exist
+                            </div>
+                          )}
                         </div>
                       </Link>
                     </td>
@@ -442,11 +447,16 @@ export default function AdminScrapingPage() {
                           "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
                           p.status === "active" && "bg-lime-500/15 text-lime-400",
                           p.status === "failed" && "bg-rose-500/15 text-rose-400",
+                          p.status === "unavailable" && "bg-amber-500/15 text-amber-400",
                           p.status === "paused" && "bg-amber-500/15 text-amber-400",
                           p.scrape_progress?.active && "bg-sky-500/15 text-sky-300"
                         )}
                       >
-                        {p.scrape_progress?.active ? "scraping" : p.status}
+                        {p.scrape_progress?.active
+                          ? "scraping"
+                          : p.status === "unavailable"
+                            ? "missing"
+                            : p.status}
                       </span>
                     </td>
                     <td className="px-2 py-3 text-[11px] text-zinc-500 whitespace-nowrap">
