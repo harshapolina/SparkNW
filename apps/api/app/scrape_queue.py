@@ -35,10 +35,12 @@ def _delay_seconds() -> float:
             return max(0.0, float(raw))
         except ValueError:
             pass
+    # Space bulk jobs so Instagram/proxy rate-limits don't kill profile #2+.
+    # Single Add/Refresh still uses the same queue but usually only one id.
     try:
-        return max(2.0, float(os.getenv("SCRAPE_DELAY_SECONDS") or "2"))
+        return max(15.0, float(os.getenv("SCRAPE_DELAY_SECONDS") or "15"))
     except ValueError:
-        return 3.0
+        return 15.0
 
 
 def _stale_seconds() -> float:
@@ -115,6 +117,104 @@ async def clear_stale_scrape_progress() -> int:
     if cleared:
         log.warning("cleared %s stale scrape_progress marker(s)", cleared)
     return cleared
+
+
+async def resume_incomplete_scrapes() -> int:
+    """Re-enqueue profiles that were queued/running when the API process restarted.
+
+    The scrape queue is in-memory — bulk import of 2+ profiles loses remaining jobs
+    if the API restarts mid-run. Persist intent via scrape_progress, then recover here.
+    """
+    try:
+        profiles = await Profile.find(
+            {
+                "$or": [
+                    {"scrape_progress.active": True},
+                    {
+                        "scrape_progress.phase": {
+                            "$in": [
+                                "queued",
+                                "starting",
+                                "scraping",
+                                "http_profile",
+                                "username_feed",
+                                "browser",
+                                "saving",
+                                "http_rescue",
+                            ]
+                        }
+                    },
+                ]
+            }
+        ).to_list()
+    except Exception:
+        log.exception("resume_incomplete_scrapes query failed")
+        return 0
+
+    now = time.time()
+    to_resume: list[str] = []
+    for profile in profiles:
+        prog = dict(getattr(profile, "scrape_progress", None) or {})
+        updated_raw = prog.get("updated_at") or ""
+        age_ok = True
+        if isinstance(updated_raw, str) and updated_raw:
+            try:
+                ts = updated_raw.replace("Z", "+00:00")
+                age = now - datetime.fromisoformat(ts).timestamp()
+                # Skip truly dead markers — clear_stale handles those.
+                age_ok = age < _stale_seconds()
+            except Exception:
+                age_ok = True
+        if not age_ok:
+            continue
+        # Still looks like a live/queued scrape — put it back on the queue.
+        if not prog.get("active"):
+            profile.scrape_progress = {
+                **prog,
+                "active": True,
+                "phase": "queued",
+                "updated_at": datetime.utcnow().isoformat() + "Z",
+            }
+            profile.updated_at = datetime.utcnow()
+            await profile.save()
+        to_resume.append(str(profile.id))
+
+    if not to_resume:
+        return 0
+    queued = await enqueue_profile_ids(to_resume, force=True)
+    if queued:
+        log.warning("resumed %s incomplete scrape(s) after API restart", queued)
+    return queued
+
+
+async def mark_profiles_queued(profile_ids: Iterable[str]) -> int:
+    """Set scrape_progress so the UI shows queued before the worker picks them up."""
+    marked = 0
+    for raw in profile_ids:
+        pid = str(raw or "").strip()
+        if not pid:
+            continue
+        try:
+            profile = await Profile.get(pid)
+            if not profile:
+                continue
+            total = int(profile.posts_count or 0)
+            profile.scrape_progress = {
+                "active": True,
+                "phase": "queued",
+                "scraped_posts": 0,
+                "total_posts": total,
+                "posts_left": total,
+                "percent": 0,
+                "updated_at": datetime.utcnow().isoformat() + "Z",
+            }
+            profile.last_error = None
+            profile.updated_at = datetime.utcnow()
+            await profile.save()
+            marked += 1
+        except Exception:
+            log.exception("mark_profiles_queued failed profile_id=%s", pid)
+    return marked
 
 
 async def _worker_loop() -> None:

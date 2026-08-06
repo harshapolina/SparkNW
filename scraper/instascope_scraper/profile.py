@@ -1441,6 +1441,72 @@ def _result_is_usable(result: ScrapeResult | None) -> bool:
     return False
 
 
+def _has_card_metrics(result: ScrapeResult | None) -> bool:
+    """True when follower/following card fields are present (not posts-only feed)."""
+    return bool(result and int(result.followers or 0) > 0)
+
+
+def _merge_card_metrics(base: ScrapeResult, card: ScrapeResult) -> ScrapeResult:
+    """Copy identity/card fields from card onto base while keeping base.posts."""
+    if card.followers > 0:
+        base.followers = card.followers
+    if card.following > 0:
+        base.following = card.following
+    if card.posts_count > 0 and (base.posts_count or 0) <= 0:
+        base.posts_count = card.posts_count
+    if card.full_name and not base.full_name:
+        base.full_name = card.full_name
+    if card.bio and (not base.bio or base.bio == (base.raw or {}).get("source")):
+        # Prefer real bio; meta_desc is a noisy fallback
+        if "Followers" not in (card.bio or "") or not base.bio:
+            base.bio = card.bio if "Followers" not in (card.bio or "") else base.bio
+    if card.avatar_url and not base.avatar_url:
+        base.avatar_url = card.avatar_url
+    if card.ig_user_id and not base.ig_user_id:
+        base.ig_user_id = card.ig_user_id
+    if int(getattr(card, "highlight_reel_count", 0) or 0) > 0:
+        base.highlight_reel_count = int(card.highlight_reel_count)
+    if card.is_verified:
+        base.is_verified = True
+    if card.is_private:
+        base.is_private = True
+    return base
+
+
+async def _fill_card_via_html_meta(
+    username: str,
+    http_result: ScrapeResult,
+    *,
+    proxy_url: str | None,
+) -> ScrapeResult:
+    """Fill followers/following from HTML meta without Playwright."""
+    if _has_card_metrics(http_result):
+        return http_result
+    try:
+        from instascope_scraper.http_profile import fetch_profile_meta_card
+
+        meta = await fetch_profile_meta_card(username, proxy=proxy_url)
+        if not meta:
+            return http_result
+        card = _result_from_meta(
+            username,
+            meta_desc=meta.get("meta_desc"),
+            og_image=meta.get("og_image"),
+            og_title=meta.get("og_title"),
+        )
+        if card and _has_card_metrics(card):
+            logger.info(
+                "meta_card @%s followers=%s following=%s",
+                username,
+                card.followers,
+                card.following,
+            )
+            return _merge_card_metrics(http_result, card)
+    except Exception:
+        logger.exception("meta_card fill @%s failed", username)
+    return http_result
+
+
 def _finalize_result(result: ScrapeResult, *, path: str) -> ScrapeResult:
     result.raw = {
         **(result.raw or {}),
@@ -1607,8 +1673,9 @@ async def _scrape_live(
                             http_result.posts_count = len(http_result.posts)
                         if _posts_complete(http_result.posts, http_result.posts_count):
                             # Feed user payload is thin (often no follower_count) — only
-                            # short-circuit when card metrics exist; else browser fills card.
-                            if http_result.followers > 0:
+                            # short-circuit when card metrics exist; else fill card via
+                            # HTML meta (no Playwright) so bulk/single keep posts + counts.
+                            if _has_card_metrics(http_result):
                                 logger.info(
                                     "username_feed_full @%s posts=%s/%s followers=%s",
                                     username,
@@ -1617,16 +1684,25 @@ async def _scrape_live(
                                     http_result.followers,
                                 )
                                 return _finalize_result(http_result, path="username_feed_full")
-                            # Keep posts even without followers — browser login-wall
-                            # used to wipe this and show "Could not extract".
+                            http_result = await _fill_card_via_html_meta(
+                                username, http_result, proxy_url=proxy_url
+                            )
+                            if _has_card_metrics(http_result):
+                                return _finalize_result(
+                                    http_result, path="username_feed_meta"
+                                )
+                            # Keep posts; fall through to browser only if enabled.
+                            # Do NOT finalize with followers=0 — that drops card fields.
                             logger.info(
-                                "username_feed_posts @%s posts=%s/%s followers=0 — keeping HTTP posts",
+                                "username_feed_posts @%s posts=%s/%s followers=0 — "
+                                "need card fill (browser if enabled)",
                                 username,
                                 len(http_result.posts),
                                 http_result.posts_count,
                             )
-                            return _finalize_result(http_result, path="username_feed_posts")
-                    if http_result and _result_is_usable(http_result):
+                    if http_result and _result_is_usable(http_result) and _has_card_metrics(
+                        http_result
+                    ):
                         logger.warning(
                             "username_feed_partial @%s posts=%s/%s — keeping usable HTTP",
                             username,
@@ -1634,6 +1710,14 @@ async def _scrape_live(
                             http_result.posts_count,
                         )
                         return _finalize_result(http_result, path="username_feed_partial")
+                    if http_result and _result_is_usable(http_result):
+                        http_result = await _fill_card_via_html_meta(
+                            username, http_result, proxy_url=proxy_url
+                        )
+                        if _has_card_metrics(http_result):
+                            return _finalize_result(
+                                http_result, path="username_feed_partial_meta"
+                            )
                     logger.warning(
                         "username_feed_partial @%s posts=%s/%s — escalating to browser",
                         username,
@@ -1646,9 +1730,14 @@ async def _scrape_live(
         logger.exception("http fast-path @%s crashed", username)
         http_result = None
 
-    # Prefer any usable HTTP result over Playwright. Browser on datacenter IPs
-    # is the #1 source of "Could not extract real profile data" after rate-limits.
-    if http_result and _result_is_usable(http_result):
+    # Prefer HTTP with card metrics over Playwright. Posts-only (followers=0) is
+    # not "done" — try HTML meta first, then browser if enabled.
+    if http_result and _result_is_usable(http_result) and not _has_card_metrics(http_result):
+        proxy_url = proxy_to_httpx_url(proxy) if proxy is not None else None
+        http_result = await _fill_card_via_html_meta(
+            username, http_result, proxy_url=proxy_url
+        )
+    if http_result and _result_is_usable(http_result) and _has_card_metrics(http_result):
         if not _posts_complete(http_result.posts, http_result.posts_count):
             logger.warning(
                 "http_usable @%s posts=%s/%s followers=%s — returning without browser",
@@ -1662,6 +1751,14 @@ async def _scrape_live(
 
     use_browser = os.getenv("SCRAPE_USE_BROWSER", "1").strip() not in {"0", "false", "no"}
     if not use_browser:
+        # Keep posts-only HTTP rather than failing the whole queue job.
+        if http_result and _result_is_usable(http_result):
+            logger.warning(
+                "http_posts_only @%s posts=%s followers=0 — browser disabled",
+                username,
+                len(http_result.posts),
+            )
+            return _finalize_result(http_result, path="http_posts_only")
         raise ScrapeError(
             "Instagram rate-limited this server IP (no profile card/posts via HTTP). "
             "Wait a few minutes and Refresh, or set SCRAPE_PROXY_URL to a residential proxy. "

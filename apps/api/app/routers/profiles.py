@@ -25,7 +25,7 @@ from instascope_shared.services import profiles as profile_service
 from instascope_shared.services.profiles import to_profile_response
 from fastapi import HTTPException
 
-from app.scrape_queue import enqueue_profile_ids
+from app.scrape_queue import enqueue_profile_ids, mark_profiles_queued
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
@@ -196,7 +196,9 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
     scraping = False
     if payload.scrape_now and to_scrape:
         # Sequential queue — one scrape at a time (same path as single Add).
-        queued = await enqueue_profile_ids(str(p.id) for p in to_scrape)
+        ids = [str(p.id) for p in to_scrape]
+        await mark_profiles_queued(ids)
+        queued = await enqueue_profile_ids(ids)
         scraping = queued > 0
 
     return BulkImportResponse(
@@ -266,6 +268,7 @@ async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current
             continue
 
     if to_scrape:
+        await mark_profiles_queued(to_scrape)
         await enqueue_profile_ids(to_scrape)
     return out
 

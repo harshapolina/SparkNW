@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -210,6 +211,59 @@ async def fetch_web_profile_http(username: str, *, proxy: str | None = None) -> 
             logger.warning("web_profile_info @%s → HTTP %s body=%r", username, status, snip[:180])
             return None
         return payload
+
+
+async def fetch_profile_meta_card(
+    username: str, *, proxy: str | None = None
+) -> dict[str, str | None] | None:
+    """Fetch public profile HTML and return meta tags for follower/following counts.
+
+    Used when web_profile_info is rate-limited but username-feed still returns posts.
+    Avoids Playwright so the API scrape queue stays responsive during bulk runs.
+    """
+    url = f"https://www.instagram.com/{quote(username.strip().lstrip('@'))}/"
+    timeout = httpx.Timeout(connect=15.0, read=25.0, write=25.0, pool=15.0)
+    headers = {
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    try:
+        async with httpx.AsyncClient(
+            headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout
+        ) as client:
+            res = await client.get(url)
+            if res.status_code != 200:
+                logger.warning("meta_card @%s → HTTP %s", username, res.status_code)
+                return None
+            html = res.text or ""
+    except Exception:
+        logger.exception("meta_card @%s failed", username)
+        return None
+
+    def _meta(name: str) -> str | None:
+        patterns = (
+            rf'<meta[^>]+name=["\']{name}["\'][^>]+content=["\']([^"\']+)["\']',
+            rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']{name}["\']',
+            rf'<meta[^>]+property=["\']{name}["\'][^>]+content=["\']([^"\']+)["\']',
+            rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']{name}["\']',
+        )
+        for pat in patterns:
+            m = re.search(pat, html, flags=re.I)
+            if m:
+                return m.group(1)
+        return None
+
+    meta_desc = _meta("description")
+    og_image = _meta("og:image")
+    og_title = _meta("og:title")
+    if not meta_desc and not og_title:
+        return None
+    return {"meta_desc": meta_desc, "og_image": og_image, "og_title": og_title}
 
 
 def _timeline_from_user(user: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None, bool]:
