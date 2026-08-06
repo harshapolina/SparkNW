@@ -16,21 +16,19 @@ from instascope_scraper.types import parse_proxy_url
 
 @contextmanager
 def _inline_scrape_caps() -> Iterator[None]:
-    """Speed caps for API-path scrapes so large accounts finish and save data.
+    """Inline scrape env for API Add/Refresh/bulk.
 
-    Server .env often has SCRAPE_MAX_POSTS=0 (all) + SCRAPE_ENRICH_MAX=0 (all),
-    which makes 100k+ accounts hang for 10+ minutes and then timeout with nothing saved.
+    - Posts: default ALL (SCRAPE_INLINE_MAX_POSTS=0) — full public timeline.
+    - Enrich: keep capped so per-post page opens don't make scrapes hang for hours.
     """
-    keys = ("SCRAPE_MAX_POSTS", "SCRAPE_ENRICH_MAX", "SCRAPE_STRICT")
+    keys = ("SCRAPE_MAX_POSTS", "SCRAPE_ENRICH_MAX")
     previous = {k: os.environ.get(k) for k in keys}
 
-    # Default first-pass: recent ~48 posts, light enrich, allow capped completeness.
-    max_posts = (os.getenv("SCRAPE_INLINE_MAX_POSTS") or "48").strip() or "48"
-    enrich_max = (os.getenv("SCRAPE_INLINE_ENRICH_MAX") or "12").strip() or "12"
+    # 0 = all posts (matches server SCRAPE_MAX_POSTS=0 intent).
+    max_posts = (os.getenv("SCRAPE_INLINE_MAX_POSTS") or "0").strip() or "0"
+    enrich_max = (os.getenv("SCRAPE_INLINE_ENRICH_MAX") or "24").strip() or "24"
     os.environ["SCRAPE_MAX_POSTS"] = max_posts
     os.environ["SCRAPE_ENRICH_MAX"] = enrich_max
-    # Completeness is judged against the cap in scrape_pipeline when MAX_POSTS > 0.
-    os.environ.setdefault("SCRAPE_STRICT", previous.get("SCRAPE_STRICT") or "1")
     try:
         yield
     finally:
