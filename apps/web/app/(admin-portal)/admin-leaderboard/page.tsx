@@ -3,13 +3,14 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Download, Search, X } from "lucide-react";
+import { Download, Search } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AdminOverviewResponse, LeaderboardResponse, SparkCreatorRow } from "@/lib/spark/api-types";
 import type { LeaderboardSort } from "@/lib/spark/types";
 import { cn, formatNumber } from "@/lib/utils";
 import { TierBadge } from "@/components/spark/tier-badge";
 import { Movement, SparkAvatar } from "@/components/spark/ui";
+import { DateRangePicker } from "@/components/date-range-picker";
 
 const sorts: { id: LeaderboardSort; label: string }[] = [
   { id: "overall", label: "OVERALL" },
@@ -287,39 +288,16 @@ export default function AdminLeaderboardPage() {
         </div>
 
         <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
-          <label className="flex flex-col gap-1 text-[11px] uppercase tracking-[0.08em] text-zinc-500">
-            From
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => {
-                setFromDate(e.target.value);
-                setPage(1);
-              }}
-              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm normal-case tracking-normal text-zinc-200 [color-scheme:dark]"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-[11px] uppercase tracking-[0.08em] text-zinc-500">
-            To
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => {
-                setToDate(e.target.value);
-                setPage(1);
-              }}
-              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm normal-case tracking-normal text-zinc-200 [color-scheme:dark]"
-            />
-          </label>
-          {rangeActive ? (
-            <button
-              type="button"
-              onClick={clearDates}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-300 hover:border-[#ff4d00]/40"
-            >
-              <X size={14} /> Clear dates
-            </button>
-          ) : null}
+          <DateRangePicker
+            fromDate={fromDate}
+            toDate={toDate}
+            onChange={(from, to) => {
+              setFromDate(from);
+              setToDate(to);
+              setPage(1);
+            }}
+            onClear={clearDates}
+          />
           {rangeActive && appliedFrom && appliedTo ? (
             <span className="rounded-full border border-[#ff4d00]/35 bg-[#ff4d00]/10 px-3 py-1.5 text-xs text-[#ff4d00]">
               {appliedFrom} → {appliedTo}
