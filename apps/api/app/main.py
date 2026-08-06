@@ -30,16 +30,15 @@ async def lifespan(_app: FastAPI):
         logging.getLogger("instascope.api").info("proxy config ready=%s", ok)
     except Exception:
         logging.getLogger("instascope.api").exception("proxy config load failed")
-    # Orphaned scrape_progress.active survives API restarts and blocks the UI.
-    # Resume recent incomplete scrapes first (bulk queue is in-memory), then
-    # clear markers that are truly stale.
+    # Recover BULK queue only after restart. Single-path scrapes are not resumed
+    # (user can click Refresh). Clear truly stale markers so the UI stops looping.
     try:
-        from app.scrape_queue import clear_stale_scrape_progress, resume_incomplete_scrapes
+        from app.scrape_bulk import clear_stale_scrape_progress, resume_incomplete_bulk_scrapes
 
-        resumed = await resume_incomplete_scrapes()
+        resumed = await resume_incomplete_bulk_scrapes()
         if resumed:
             logging.getLogger("instascope.api").warning(
-                "startup resumed %s incomplete scrape(s)", resumed
+                "startup resumed %s incomplete BULK scrape(s)", resumed
             )
         cleared = await clear_stale_scrape_progress()
         if cleared:

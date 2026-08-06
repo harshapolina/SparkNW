@@ -25,7 +25,8 @@ from instascope_shared.services import profiles as profile_service
 from instascope_shared.services.profiles import to_profile_response
 from fastapi import HTTPException
 
-from app.scrape_queue import enqueue_profile_ids, mark_profiles_queued
+from app.scrape_bulk import enqueue_bulk_profile_ids, mark_profiles_queued
+from app.scrape_single import schedule_single_scrape
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
@@ -59,26 +60,9 @@ def _dispatch_jobs(jobs: list) -> bool:
 
 @router.post("", response_model=ProfileResponse, status_code=status.HTTP_201_CREATED)
 async def add_profile(payload: AddProfileRequest, user: User = Depends(get_current_user)):
-    """Create profile and queue scrape in the background (fast HTTP response).
-
-    Awaiting the full scrape here left the browser Network tab on Pending for
-    10+ minutes and often aborted the work. The durable scrape queue runs the
-    same inline scraper after we return.
-    """
-    from datetime import datetime
-
+    """Create profile and scrape via the SINGLE runner (not the bulk queue)."""
     profile = await profile_service.add_profile(str(user.id), payload)
-    profile.scrape_progress = {
-        "active": True,
-        "phase": "queued",
-        "scraped_posts": 0,
-        "total_posts": int(profile.posts_count or 0),
-        "posts_left": int(profile.posts_count or 0),
-        "percent": 0,
-    }
-    profile.updated_at = datetime.utcnow()
-    await profile.save()
-    await enqueue_profile_ids([str(profile.id)])
+    await schedule_single_scrape(str(profile.id), force=True)
     profile = await profile_service.get_profile(str(user.id), str(profile.id))
     return to_profile_response(profile)
 
@@ -195,10 +179,10 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
 
     scraping = False
     if payload.scrape_now and to_scrape:
-        # Sequential queue — one scrape at a time (same path as single Add).
+        # BULK queue only — one at a time, spaced. Does not touch single runner.
         ids = [str(p.id) for p in to_scrape]
         await mark_profiles_queued(ids)
-        queued = await enqueue_profile_ids(ids)
+        queued = await enqueue_bulk_profile_ids(ids)
         scraping = queued > 0
 
     return BulkImportResponse(
@@ -220,11 +204,7 @@ async def bulk_delete(payload: BulkIdsRequest, user: User = Depends(get_current_
 
 @router.post("/bulk/refresh", response_model=list[JobResponse])
 async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current_user)):
-    """Queue refreshes sequentially in the API scrape queue (not on the request).
-
-    Awaiting N sequential scrapes caused browser "Failed to fetch" timeouts.
-    Fire-and-forget create_task loops often never ran — use the durable queue.
-    """
+    """Queue refreshes on the BULK sequential worker (not the single runner)."""
     from datetime import datetime
 
     from instascope_shared.models import Job, JobStatus, JobType
@@ -269,7 +249,7 @@ async def bulk_refresh(payload: BulkIdsRequest, user: User = Depends(get_current
 
     if to_scrape:
         await mark_profiles_queued(to_scrape)
-        await enqueue_profile_ids(to_scrape)
+        await enqueue_bulk_profile_ids(to_scrape)
     return out
 
 
@@ -349,27 +329,13 @@ async def delete_profile(profile_id: str, user: User = Depends(get_current_user)
 
 @router.post("/{profile_id}/refresh", response_model=list[JobResponse])
 async def refresh_profile(profile_id: str, user: User = Depends(get_current_user)):
-    """Queue a scrape and return immediately — do not await Instagram on the request.
-
-    Website Refresh used to await the full scrape; the browser stayed Pending and
-    often cancelled the server work. Queue uses the same scraper as terminal/API.
-    """
+    """Scrape ONE profile via the single runner — never waits behind bulk import."""
     from datetime import datetime
 
     from instascope_shared.models import Job, JobStatus, JobType
 
     try:
         profile = await profile_service.get_profile(str(user.id), profile_id)
-        profile.scrape_progress = {
-            "active": True,
-            "phase": "queued",
-            "scraped_posts": 0,
-            "total_posts": int(profile.posts_count or 0),
-            "posts_left": int(profile.posts_count or 0),
-            "percent": 0,
-        }
-        profile.updated_at = datetime.utcnow()
-        await profile.save()
         job = Job(
             user_id=str(user.id),
             profile_id=str(profile.id),
@@ -378,7 +344,7 @@ async def refresh_profile(profile_id: str, user: User = Depends(get_current_user
             priority=1,
         )
         await job.insert()
-        await enqueue_profile_ids([str(profile.id)], force=True)
+        await schedule_single_scrape(str(profile.id), force=True)
         return [
             JobResponse(
                 id=str(job.id),

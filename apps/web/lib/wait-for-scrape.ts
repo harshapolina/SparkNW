@@ -9,6 +9,7 @@ export type ScrapeProgress = {
   total_posts?: number;
   posts_left?: number;
   percent?: number;
+  source?: string;
 };
 
 export type WaitForScrapeOptions = {
@@ -16,10 +17,18 @@ export type WaitForScrapeOptions = {
   prevFollowers?: number;
   prevPosts?: number;
   timeoutMs?: number;
+  /** Default 5s — avoid hammering the API (and waking proxy use via side effects). */
   intervalMs?: number;
   signal?: AbortSignal;
   onProgress?: (progress: ScrapeProgress | null, profile: Profile) => void;
 };
+
+const TERMINAL_PHASES = new Set([
+  "done",
+  "failed",
+  "interrupted",
+  "http_posts_only",
+]);
 
 function scrapedAfter(profile: Profile, since?: string | null): boolean {
   // Soft-fail / empty attempts used to stamp last_scraped_at with 0 data and
@@ -30,6 +39,26 @@ function scrapedAfter(profile: Profile, since?: string | null): boolean {
   }
   if (!since) return true;
   return new Date(profile.last_scraped_at).getTime() > new Date(since).getTime();
+}
+
+function scrapeTerminal(profile: Profile, since?: string | null): boolean {
+  const prog = profile.scrape_progress;
+  const phase = (prog?.phase || "").toLowerCase();
+
+  if (profile.status === "failed" && profile.last_error) {
+    return true;
+  }
+
+  // Worker finished (success or empty) — stop polling even when counts are 0.
+  if (prog && prog.active === false && TERMINAL_PHASES.has(phase)) {
+    return true;
+  }
+
+  if (scrapedAfter(profile, since)) {
+    return true;
+  }
+
+  return false;
 }
 
 export function formatScrapeProgress(p?: ScrapeProgress | null): string {
@@ -49,22 +78,35 @@ export async function waitForProfileScrape(
   opts: WaitForScrapeOptions = {}
 ): Promise<Profile> {
   const timeoutMs = opts.timeoutMs ?? 12 * 60 * 1000;
-  const intervalMs = opts.intervalMs ?? 2000;
+  const intervalMs = opts.intervalMs ?? 5000;
   const started = Date.now();
+  let sawActive = false;
 
-  await new Promise((r) => setTimeout(r, 600));
+  await new Promise((r) => setTimeout(r, 800));
 
   while (Date.now() - started < timeoutMs) {
     if (opts.signal?.aborted) throw new Error("Scrape wait cancelled");
     const p = await api<Profile>(`/profiles/${profileId}`);
     opts.onProgress?.(p.scrape_progress || null, p);
 
-    if (p.status === "failed" && p.last_error) {
+    if (p.scrape_progress?.active) {
+      sawActive = true;
+    }
+
+    if (scrapeTerminal(p, opts.since)) {
       return p;
     }
-    if (scrapedAfter(p, opts.since)) {
+
+    // Progress went active → inactive without a terminal phase: treat as finished.
+    if (
+      sawActive &&
+      p.scrape_progress &&
+      p.scrape_progress.active === false &&
+      (p.last_scraped_at || p.last_error || p.status === "failed")
+    ) {
       return p;
     }
+
     if (
       opts.since &&
       ((opts.prevFollowers != null && p.followers !== opts.prevFollowers) ||
@@ -74,6 +116,7 @@ export async function waitForProfileScrape(
     ) {
       return p;
     }
+
     await new Promise((r) => setTimeout(r, intervalMs));
   }
   return api<Profile>(`/profiles/${profileId}`);
