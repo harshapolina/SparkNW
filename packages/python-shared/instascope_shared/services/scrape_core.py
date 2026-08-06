@@ -25,12 +25,23 @@ ScrapeSource = Literal["single", "bulk"]
 _PROGRESS_INTERVAL_S = 20.0
 
 
-def _job_timeout_seconds() -> float:
-    raw = (os.getenv("SCRAPE_JOB_TIMEOUT_SECONDS") or "480").strip()
-    try:
-        return max(60.0, float(raw))
-    except ValueError:
-        return 480.0
+def _job_timeout_seconds(*, max_posts: int = 0) -> float:
+    """Wall-clock limit for one scrape job.
+
+    Uncapped large accounts (thousands of posts) need far more than 8 minutes.
+    Capped bulk passes finish faster.
+    """
+    raw = (os.getenv("SCRAPE_JOB_TIMEOUT_SECONDS") or "").strip()
+    if raw:
+        try:
+            return max(60.0, float(raw))
+        except ValueError:
+            pass
+    if max_posts > 0:
+        # ~1s/post worst-case + buffer, capped.
+        return float(max(300, min(900, 120 + max_posts * 2)))
+    # Full timeline — allow up to 45 minutes for ~3k+ accounts.
+    return 2700.0
 
 
 def progress_payload(
@@ -217,6 +228,7 @@ async def run_profile_scrape(
                 return
 
     caps = caps_for_api(source)
+    timeout_s = _job_timeout_seconds(max_posts=int(caps.max_posts or 0))
     with use_caps(caps):
         heartbeat = asyncio.create_task(
             _heartbeat(), name=f"scrape-hb-{source}-{profile.username}"
@@ -233,11 +245,11 @@ async def run_profile_scrape(
                         on_progress=on_progress,
                         caps=caps,
                     ),
-                    timeout=_job_timeout_seconds(),
+                    timeout=timeout_s,
                 )
             except asyncio.TimeoutError as exc:
                 raise ScrapeError(
-                    f"Scrape timed out after {int(_job_timeout_seconds())}s "
+                    f"Scrape timed out after {int(timeout_s)}s "
                     f"(Instagram/proxy too slow). Try Refresh again."
                 ) from exc
 

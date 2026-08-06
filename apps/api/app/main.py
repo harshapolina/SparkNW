@@ -33,8 +33,13 @@ async def lifespan(_app: FastAPI):
     # Recover BULK queue only after restart. Single-path scrapes are not resumed
     # (user can click Refresh). Clear truly stale markers so the UI stops looping.
     try:
-        from app.scrape_bulk import clear_stale_scrape_progress, resume_incomplete_bulk_scrapes
+        from app.scrape_bulk import (
+            clear_stale_scrape_progress,
+            ensure_bulk_worker,
+            resume_incomplete_bulk_scrapes,
+        )
 
+        ensure_bulk_worker()
         resumed = await resume_incomplete_bulk_scrapes()
         if resumed:
             logging.getLogger("instascope.api").warning(

@@ -172,15 +172,11 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
 
     scraping = False
     if payload.scrape_now and to_scrape:
-        # BULK queue only. Enqueue off the request so large sheets return quickly.
+        # BULK queue — await enqueue so the worker starts before the HTTP response.
         ids = [str(p.id) for p in to_scrape]
-
-        async def _queue_scrapes(profile_ids: list[str]) -> None:
-            await mark_profiles_queued(profile_ids)
-            await enqueue_bulk_profile_ids(profile_ids)
-
-        _spawn_background(_queue_scrapes(ids))
-        scraping = True
+        await mark_profiles_queued(ids)
+        queued = await enqueue_bulk_profile_ids(ids, force=True)
+        scraping = queued > 0
 
     return BulkImportResponse(
         imported=imported,

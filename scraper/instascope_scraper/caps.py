@@ -78,7 +78,9 @@ def caps_for_api(source: str) -> ScrapeCaps:
 
     max_posts = int((os.getenv("SCRAPE_INLINE_MAX_POSTS") or "0").strip() or "0")
     if source == "bulk":
-        bulk_raw = (os.getenv("SCRAPE_BULK_MAX_POSTS") or "").strip()
+        # Bulk sheets must finish — default first-pass sample for large accounts.
+        # Full timeline still available via single Refresh (or SCRAPE_BULK_MAX_POSTS=0).
+        bulk_raw = (os.getenv("SCRAPE_BULK_MAX_POSTS") or "48").strip()
         if bulk_raw:
             max_posts = int(bulk_raw)
 

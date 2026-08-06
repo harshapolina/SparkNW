@@ -279,10 +279,24 @@ def _expected_posts_count(user: dict[str, Any]) -> int:
 
 
 def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
-    """True when we've collected the full public timeline for this account."""
+    """True when we've collected enough posts for the active scrape caps.
+
+    Respects SCRAPE_MAX_POSTS / ScrapeCaps.max_posts so a capped bulk pass
+    (e.g. 48 of 3000) is treated as complete.
+    """
     if not posts:
         return False
     got = len(posts)
+    try:
+        cap = int((caps_env("SCRAPE_MAX_POSTS", "0") or "0").strip() or "0")
+    except ValueError:
+        cap = 0
+    if cap > 0:
+        target = min(posts_count, cap) if posts_count > 0 else cap
+        if target <= 12:
+            return got >= target
+        return got >= max(target - 2, 1)
+
     if posts_count <= 0:
         # Unknown total — never treat the first profile-card page (~12) as complete.
         return got > 12
@@ -291,6 +305,46 @@ def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
         return got >= posts_count
     # Large accounts: allow 1–2 deleted/hidden drift.
     return got >= max(posts_count - 2, 1)
+
+
+def _useful_partial(result: ScrapeResult) -> bool:
+    """Card + a real sample — save instead of failing large accounts mid-pagination."""
+    if result.is_private:
+        return True
+    got = len(result.posts)
+    if int(result.followers or 0) > 0 and got >= 12:
+        return True
+    if got >= 48 and int(result.posts_count or 0) > 0:
+        return True
+    return False
+
+
+def _raise_if_incomplete(result: ScrapeResult) -> None:
+    """Raise only when the timeline is useless; accept capped / strong partials."""
+    if result.is_private:
+        return
+    if _posts_complete(result.posts, result.posts_count):
+        return
+    strict = (caps_env("SCRAPE_STRICT", "0") or "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if not strict and _useful_partial(result):
+        logger.warning(
+            "accepting partial timeline @%s posts=%s/%s followers=%s (non-strict)",
+            result.username,
+            len(result.posts),
+            result.posts_count,
+            result.followers,
+        )
+        return
+    got = len(result.posts)
+    expected = result.posts_count
+    raise ScrapeError(
+        f"Incomplete timeline: only {got}/{expected} posts "
+        f"(Instagram pagination blocked). Check SCRAPE_PROXY_URL / Decodo."
+    )
 
 
 def _posts_from_nodes(nodes: list[dict[str, Any]]) -> list[ScrapedPost]:
@@ -1535,20 +1589,6 @@ def _finalize_result(result: ScrapeResult, *, path: str) -> ScrapeResult:
     return result
 
 
-def _raise_if_incomplete(result: ScrapeResult) -> None:
-    """Never accept the first profile-card page (~12) as a full scrape."""
-    if result.is_private:
-        return
-    if _posts_complete(result.posts, result.posts_count):
-        return
-    got = len(result.posts)
-    expected = result.posts_count
-    raise ScrapeError(
-        f"Incomplete timeline: only {got}/{expected} posts "
-        f"(Instagram pagination blocked). Check SCRAPE_PROXY_URL / Decodo."
-    )
-
-
 async def _scrape_live(
     username: str,
     *,
@@ -2260,10 +2300,7 @@ async def _scrape_live_browser(
             if http_result and len(http_result.posts) > len(result.posts):
                 result.posts = list(http_result.posts)
             if not _posts_complete(result.posts, result.posts_count):
-                raise ScrapeError(
-                    f"Incomplete timeline: only {len(result.posts)}/{result.posts_count} posts "
-                    f"(pagination still short — will retry)."
-                )
+                _raise_if_incomplete(result)
 
         return _finalize_result(result, path="browser_full")
 
