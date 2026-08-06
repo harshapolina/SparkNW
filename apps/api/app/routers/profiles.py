@@ -345,6 +345,16 @@ async def refresh_profile(profile_id: str, user: User = Depends(get_current_user
 
     try:
         profile = await profile_service.get_profile(str(user.id), profile_id)
+        profile.scrape_progress = {
+            "active": True,
+            "phase": "queued",
+            "scraped_posts": 0,
+            "total_posts": int(profile.posts_count or 0),
+            "posts_left": int(profile.posts_count or 0),
+            "percent": 0,
+        }
+        profile.updated_at = datetime.utcnow()
+        await profile.save()
         job = Job(
             user_id=str(user.id),
             profile_id=str(profile.id),

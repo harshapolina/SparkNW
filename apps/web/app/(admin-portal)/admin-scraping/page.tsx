@@ -7,7 +7,7 @@ import { AlertCircle, Download, Plus, RefreshCw, Search } from "lucide-react";
 import { api, type Profile } from "@/lib/api";
 import { cn, formatNumber, formatPct } from "@/lib/utils";
 import { SparkAvatar } from "@/components/spark/ui";
-import { waitForProfileScrape } from "@/lib/wait-for-scrape";
+import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
 
 type ListResponse = { items: Profile[]; total: number; page: number; page_size: number };
 
@@ -41,8 +41,12 @@ export default function AdminScrapingPage() {
     queryFn: () => api<ListResponse>(`/profiles?${queryString}`),
   });
 
+  const [bulkNote, setBulkNote] = useState("");
+  const [addProgress, setAddProgress] = useState<{ percent: number; label: string } | null>(null);
+
   const add = useMutation({
     mutationFn: async () => {
+      setAddProgress({ percent: 0, label: "Creating profile…" });
       const created = await api<Profile>("/profiles", {
         method: "POST",
         body: JSON.stringify({
@@ -55,11 +59,17 @@ export default function AdminScrapingPage() {
           },
         }),
       });
-      // POST returns immediately; scrape runs in queue — wait until data lands.
+      setAddProgress({ percent: 5, label: "Queued — scraping…" });
       return waitForProfileScrape(created.id, {
         since: created.last_scraped_at,
         prevFollowers: created.followers,
         prevPosts: created.posts_count,
+        onProgress: (prog) => {
+          setAddProgress({
+            percent: prog?.percent ?? 0,
+            label: formatScrapeProgress(prog),
+          });
+        },
       });
     },
     onSuccess: (p) => {
@@ -68,6 +78,7 @@ export default function AdminScrapingPage() {
       setFullName("");
       setUniversity("");
       setError("");
+      setAddProgress(null);
       setBulkNote(
         p.followers > 0 || p.posts_count > 0
           ? `Scraped @${p.username} — ${formatNumber(p.followers)} followers · ${formatNumber(p.posts_count)} posts`
@@ -76,10 +87,11 @@ export default function AdminScrapingPage() {
       qc.invalidateQueries({ queryKey: ["profiles"] });
       qc.invalidateQueries({ queryKey: ["spark"] });
     },
-    onError: (e: Error) => setError(e.message),
+    onError: (e: Error) => {
+      setAddProgress(null);
+      setError(e.message);
+    },
   });
-
-  const [bulkNote, setBulkNote] = useState("");
 
   const bulk = useMutation({
     mutationFn: async (action: "refresh" | "delete" | "pause" | "resume" | "export") => {

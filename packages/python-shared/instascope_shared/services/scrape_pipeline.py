@@ -203,6 +203,14 @@ async def apply_scrape_result(
     profile.last_scraped_at = datetime.utcnow()
     profile.last_success_at = datetime.utcnow()
     profile.last_error = None
+    profile.scrape_progress = {
+        "active": False,
+        "phase": "done",
+        "scraped_posts": len(posts_data),
+        "total_posts": posts_count or len(posts_data),
+        "posts_left": 0,
+        "percent": 100,
+    }
     profile.updated_at = datetime.utcnow()
     # Preserve SPARK roster fields if present (never wipe on scrape)
     student = getattr(profile, "student", None)

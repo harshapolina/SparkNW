@@ -17,7 +17,7 @@ import {
 import { api, type Profile } from "@/lib/api";
 import { studentDetailFieldsExtra } from "@/lib/student-fields";
 import { cn, formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
-import { waitForProfileScrape } from "@/lib/wait-for-scrape";
+import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
 
 type Post = {
   id: string;
@@ -140,6 +140,10 @@ export default function AdminCreatorDetailPage() {
 
   const [refreshError, setRefreshError] = useState("");
   const [scrapingNote, setScrapingNote] = useState("");
+  const [progress, setProgress] = useState<{
+    percent: number;
+    label: string;
+  } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -154,14 +158,20 @@ export default function AdminCreatorDetailPage() {
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
+      setProgress({ percent: 0, label: "Queued…" });
       setScrapingNote("Queued — scraping in background…");
       await api(`/profiles/${profileId}/refresh`, { method: "POST" });
-      setScrapingNote("Scraping Instagram… this can take a few minutes. Stay on this page.");
+      setScrapingNote("Scraping Instagram…");
       const done = await waitForProfileScrape(profileId, {
         since: before?.last_scraped_at,
         prevFollowers: before?.followers,
         prevPosts: before?.posts_count,
         signal: ac.signal,
+        onProgress: (prog) => {
+          const percent = prog?.percent ?? 0;
+          setProgress({ percent, label: formatScrapeProgress(prog) });
+          setScrapingNote(formatScrapeProgress(prog));
+        },
       });
       return done;
     },
@@ -169,12 +179,15 @@ export default function AdminCreatorDetailPage() {
       setRefreshError("");
       if (done.status === "failed") {
         setScrapingNote("");
+        setProgress(null);
         setRefreshError(humanizeScrapeError(done.last_error) || "Scrape failed");
       } else if (done.followers > 0 || done.posts_count > 0 || done.last_scraped_at) {
+        setProgress({ percent: 100, label: "Done" });
         setScrapingNote(
           `Done — ${formatNumber(done.followers)} followers · ${formatNumber(done.posts_count)} posts`
         );
       } else {
+        setProgress(null);
         setScrapingNote("Scrape finished but no public posts were saved yet. Try again.");
       }
       void qc.invalidateQueries({ queryKey: ["profile", profileId] });
@@ -186,6 +199,7 @@ export default function AdminCreatorDetailPage() {
     },
     onError: (e: Error) => {
       setScrapingNote("");
+      setProgress(null);
       setRefreshError(humanizeScrapeError(e.message) || e.message);
     },
   });
@@ -229,8 +243,19 @@ export default function AdminCreatorDetailPage() {
         </div>
       )}
       {scrapingNote && !refreshError && (
-        <div className="rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-200">
-          {scrapingNote}
+        <div className="space-y-2 rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-200">
+          <div className="flex items-center justify-between gap-3">
+            <span>{scrapingNote}</span>
+            {progress ? <span className="tabular text-xs text-sky-300">{progress.percent}%</span> : null}
+          </div>
+          {progress ? (
+            <div className="h-2 overflow-hidden rounded-full bg-black/40">
+              <div
+                className="h-full rounded-full bg-[#ff3b30] transition-all duration-500"
+                style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
+              />
+            </div>
+          ) : null}
         </div>
       )}
 

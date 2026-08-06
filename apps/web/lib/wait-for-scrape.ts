@@ -1,18 +1,24 @@
-/** Poll a profile until scrape finishes (queued Add/Refresh returns immediately). */
+/** Poll a profile until scrape finishes; reports live scraped/total progress. */
 
 import { api, type Profile } from "@/lib/api";
 
+export type ScrapeProgress = {
+  active?: boolean;
+  phase?: string;
+  scraped_posts?: number;
+  total_posts?: number;
+  posts_left?: number;
+  percent?: number;
+};
+
 export type WaitForScrapeOptions = {
-  /** Baseline last_scraped_at before queueing (ISO string or null). */
   since?: string | null;
-  /** Previous followers count — used when last_scraped_at was already set. */
   prevFollowers?: number;
   prevPosts?: number;
-  /** Max wait in ms (default 12 minutes). */
   timeoutMs?: number;
-  /** Poll interval in ms (default 3s). */
   intervalMs?: number;
   signal?: AbortSignal;
+  onProgress?: (progress: ScrapeProgress | null, profile: Profile) => void;
 };
 
 function scrapedAfter(profile: Profile, since?: string | null): boolean {
@@ -21,37 +27,49 @@ function scrapedAfter(profile: Profile, since?: string | null): boolean {
   return new Date(profile.last_scraped_at).getTime() > new Date(since).getTime();
 }
 
+export function formatScrapeProgress(p?: ScrapeProgress | null): string {
+  if (!p) return "Scraping…";
+  const scraped = p.scraped_posts ?? 0;
+  const total = p.total_posts ?? 0;
+  const pct = p.percent ?? (total > 0 ? Math.round((100 * scraped) / total) : 0);
+  const phase = p.phase || "scraping";
+  if (total > 0) {
+    return `${phase}: ${scraped}/${total} posts (${pct}%) · ${p.posts_left ?? Math.max(0, total - scraped)} left`;
+  }
+  return `${phase}: ${scraped} posts scraped…`;
+}
+
 export async function waitForProfileScrape(
   profileId: string,
   opts: WaitForScrapeOptions = {}
 ): Promise<Profile> {
   const timeoutMs = opts.timeoutMs ?? 12 * 60 * 1000;
-  const intervalMs = opts.intervalMs ?? 3000;
+  const intervalMs = opts.intervalMs ?? 2000;
   const started = Date.now();
 
-  // Give the worker a moment to pick up the job.
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 600));
 
   while (Date.now() - started < timeoutMs) {
     if (opts.signal?.aborted) throw new Error("Scrape wait cancelled");
     const p = await api<Profile>(`/profiles/${profileId}`);
+    opts.onProgress?.(p.scrape_progress || null, p);
+
     if (p.status === "failed" && p.last_error) {
       return p;
     }
     if (scrapedAfter(p, opts.since)) {
       return p;
     }
-    // Fallback: metrics moved even if timestamp edge-case
     if (
       opts.since &&
       ((opts.prevFollowers != null && p.followers !== opts.prevFollowers) ||
         (opts.prevPosts != null && p.posts_count !== opts.prevPosts)) &&
-      (p.followers > 0 || p.posts_count > 0)
+      (p.followers > 0 || p.posts_count > 0) &&
+      !p.scrape_progress?.active
     ) {
       return p;
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
-  // Final read — return whatever we have (may still be scraping).
   return api<Profile>(`/profiles/${profileId}`);
 }

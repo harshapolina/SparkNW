@@ -65,6 +65,14 @@ export type Profile = {
   follower_following_ratio?: number;
   insights?: Record<string, unknown>;
   student?: StudentInfo;
+  scrape_progress?: {
+    active?: boolean;
+    phase?: string;
+    scraped_posts?: number;
+    total_posts?: number;
+    posts_left?: number;
+    percent?: number;
+  } | null;
   status: string;
   last_scraped_at?: string | null;
   last_success_at?: string | null;
