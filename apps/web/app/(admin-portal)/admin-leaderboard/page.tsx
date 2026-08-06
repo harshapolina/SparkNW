@@ -209,6 +209,33 @@ export default function AdminLeaderboardPage() {
       </div>
 
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4 md:p-5">
+        <div className="mb-4 flex flex-col gap-2 border-b border-white/[0.06] pb-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          <DateRangePicker
+            fromDate={fromDate}
+            toDate={toDate}
+            onChange={(from, to) => {
+              setFromDate(from);
+              setToDate(to);
+              setPage(1);
+            }}
+            onClear={clearDates}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            {rangeActive && appliedFrom && appliedTo ? (
+              <span className="rounded-full border border-[#ff4d00]/35 bg-[#ff4d00]/10 px-3 py-1.5 text-xs text-[#ff4d00]">
+                Filtering {appliedFrom} → {appliedTo}
+              </span>
+            ) : (
+              <p className="text-[11px] text-zinc-500">
+                Optional: filter ranks by post dates in a range
+              </p>
+            )}
+          </div>
+        </div>
+        {rangeInvalid ? (
+          <p className="mb-3 text-[11px] text-rose-400">From date must be on or before To date.</p>
+        ) : null}
+
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap gap-1.5">
             {sorts.map((s) => (
@@ -286,32 +313,6 @@ export default function AdminLeaderboardPage() {
             </button>
           </div>
         </div>
-
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
-          <DateRangePicker
-            fromDate={fromDate}
-            toDate={toDate}
-            onChange={(from, to) => {
-              setFromDate(from);
-              setToDate(to);
-              setPage(1);
-            }}
-            onClear={clearDates}
-          />
-          {rangeActive && appliedFrom && appliedTo ? (
-            <span className="rounded-full border border-[#ff4d00]/35 bg-[#ff4d00]/10 px-3 py-1.5 text-xs text-[#ff4d00]">
-              {appliedFrom} → {appliedTo}
-            </span>
-          ) : null}
-        </div>
-        {rangeInvalid ? (
-          <p className="mt-2 text-[11px] text-rose-400">From date must be on or before To date.</p>
-        ) : (
-          <p className="mt-2 text-[11px] text-zinc-500">
-            Date range ranks creators from posts still stored after the latest scrape. Very old ranges may under-count
-            if older posts aged out.
-          </p>
-        )}
 
         <div className="mt-4 overflow-x-auto">
           <table className="w-full min-w-[900px] text-left text-sm">

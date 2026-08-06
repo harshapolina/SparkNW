@@ -179,15 +179,15 @@ html.dark .table-premium td {
 /* SPARK leaderboard date-range calendar */
 .rdp-spark .rdp-range-middle .rdp-day_button {
   border-radius: 0;
-  background: rgba(255, 77, 0, 0.18) !important;
+  background: rgba(255, 77, 0, 0.2) !important;
   color: #ffe8de !important;
 }
 .rdp-spark .rdp-range-start {
-  background: linear-gradient(to right, transparent 50%, rgba(255, 77, 0, 0.18) 50%);
+  background: linear-gradient(to right, transparent 50%, rgba(255, 77, 0, 0.2) 50%);
   border-radius: 9999px 0 0 9999px;
 }
 .rdp-spark .rdp-range-end {
-  background: linear-gradient(to left, transparent 50%, rgba(255, 77, 0, 0.18) 50%);
+  background: linear-gradient(to left, transparent 50%, rgba(255, 77, 0, 0.2) 50%);
   border-radius: 0 9999px 9999px 0;
 }
 .rdp-spark .rdp-range-start.rdp-range-end {
@@ -199,6 +199,6 @@ html.dark .table-premium td {
   background: #ff4d00 !important;
   color: #fff !important;
   border-radius: 9999px;
-  box-shadow: 0 0 0 3px rgba(255, 77, 0, 0.25);
+  box-shadow: 0 0 0 3px rgba(255, 77, 0, 0.28);
 }
 
