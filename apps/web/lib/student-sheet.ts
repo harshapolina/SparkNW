@@ -5,29 +5,50 @@ export type SheetStudent = Record<string, string>;
 const HEADER_ALIASES: Record<string, string[]> = {
   timestamp: ["timestamp"],
   full_name: ["full name", "fullname", "student name"],
-  student_id: ["student id", "studentid", "roll"],
-  program: ["program", "course", "program/course"],
+  student_id: ["student id", "studentid", "roll no", "roll"],
+  program: ["program/course", "program", "course"],
   year_of_study: ["year of study", "year"],
-  mobile: ["mobile", "phone", "contact"],
-  email: ["email"],
+  mobile: ["mobile number", "mobile", "phone", "contact"],
+  email: ["email address", "email"],
   university: ["university", "campus", "college"],
-  instagram_handle: ["instagram handle", "instagram handle link", "ig handle"],
-  instagram_url: ["instagram_url_clean", "instagram url", "instagram_url"],
+  instagram_handle: ["instagram handle link", "instagram handle", "ig handle"],
+  instagram_url: ["instagram_url_clean", "instagram url clean", "instagram url", "instagram_url"],
   instagram_username: ["instagram_username", "instagram username"],
   youtube_link: ["youtube link", "youtube url"],
   youtube_username: ["youtube_username", "youtube username"],
-  created_content_before: ["created content", "have you created"],
-  current_follower_count_raw: ["current follower count"],
+  created_content_before: [
+    "have you created content before",
+    "created content before",
+    "have you created",
+    "created content",
+  ],
+  current_follower_count_raw: [
+    "current follower count (insta and youtube)",
+    "current follower count",
+  ],
   instagram_followers_declared: ["instagram_followers", "instagram followers"],
   youtube_subscribers_declared: ["youtube_subscribers", "youtube subscribers"],
-  why_join_spark: ["why do you want to join", "why join"],
-  content_interest: ["type of content", "content interest", "interested in"],
+  why_join_spark: [
+    "why do you want to join spark",
+    "why do you want to join",
+    "why join spark",
+    "why join",
+  ],
+  content_interest: [
+    "what type of content are you are interested in",
+    "what type of content are you interested in",
+    "type of content",
+    "content interest",
+    "interested in",
+  ],
   uid: ["uid"],
-  duplicate_flag: ["duplicate"],
-  missing_info: ["missing"],
+  duplicate_flag: ["duplicate_flag", "duplicate flag", "duplicate"],
+  missing_info: ["missing_info", "missing info", "missing"],
 };
 
-const INVALID = new Set([
+const EMPTY_CELLS = new Set(["", "nan", "none", "null"]);
+
+const HANDLE_INVALID = new Set([
   "",
   "nan",
   "none",
@@ -38,18 +59,30 @@ const INVALID = new Set([
   "na",
   "n/a",
   "nil",
-  "no",
   "yes",
+  "no",
   "invites",
+  "youtube missing",
 ]);
 
 function normHeader(h: string): string {
-  return h.trim().toLowerCase().replace(/_/g, " ").replace(/\s+/g, " ");
+  return h
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, " ")
+    .replace(/["'`]/g, "")
+    .replace(/[^\w\s/()+.-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function isBlank(text: string): boolean {
+function isEmptyCell(text: string): boolean {
+  return EMPTY_CELLS.has(text.trim().toLowerCase());
+}
+
+function isInvalidHandle(text: string): boolean {
   const t = text.trim().toLowerCase();
-  if (INVALID.has(t)) return true;
+  if (HANDLE_INVALID.has(t)) return true;
   if (t.includes("suspended") || t.includes("not have") || t.includes("don't have") || t.includes("dont have"))
     return true;
   if (t.includes("no youtube") || t.includes("no instagram") || t.includes("no insta")) return true;
@@ -75,11 +108,11 @@ export function extractUsername(raw: string): string {
 
 function firstInstagramCandidate(raw: string): string {
   const text = raw.trim();
-  if (!text || isBlank(text)) return "";
+  if (!text || isInvalidHandle(text)) return "";
   const parts = text.split(/\s+(?:AND|and|&)\s+|,\s*(?=https?:\/\/|@)|;\s*/);
   for (const part of parts) {
     const cand = part.trim();
-    if (!cand || isBlank(cand)) continue;
+    if (!cand || isInvalidHandle(cand)) continue;
     if (cand.toLowerCase().includes("instagram.com")) {
       const m = cand.match(/https?:\/\/(?:www\.)?instagram\.com\/[A-Za-z0-9._]+\/?/i);
       if (m) return m[0].replace(/\/$/, "");
@@ -115,7 +148,7 @@ export function mapSheetRow(headers: string[], values: unknown[]): { student: Sh
       let idx = headerMap.get(normHeader(alias));
       if (idx === undefined) {
         for (const [hk, hi] of headerMap) {
-          if (hk.includes(alias) || alias.includes(hk)) {
+          if (hk.includes(alias) || (alias.length >= 4 && alias.includes(hk))) {
             idx = hi;
             break;
           }
@@ -123,14 +156,23 @@ export function mapSheetRow(headers: string[], values: unknown[]): { student: Sh
       }
       if (idx === undefined || idx >= values.length) continue;
       const text = String(values[idx] ?? "").trim();
-      if (text && !isBlank(text)) {
+      if (text && !isEmptyCell(text)) {
         student[field] = text;
         break;
       }
     }
   }
 
-  return { student, url: resolveInstagramUrl(student) || "" };
+  const url = resolveInstagramUrl(student) || "";
+  if (url) {
+    const username = extractUsername(url);
+    if (username) {
+      if (!student.instagram_username) student.instagram_username = username;
+      if (!student.instagram_url) student.instagram_url = url;
+    }
+  }
+
+  return { student, url };
 }
 
 export function parseSheetMatrix(matrix: string[][]): { url: string; username: string; student: SheetStudent }[] {

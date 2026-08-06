@@ -15,7 +15,7 @@ import {
   YAxis,
 } from "recharts";
 import { api, type Profile } from "@/lib/api";
-import { studentDetailFields } from "@/lib/student-fields";
+import { studentDetailFieldsExtra } from "@/lib/student-fields";
 import { cn, formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
 
 type Post = {
@@ -289,28 +289,61 @@ export default function AdminCreatorDetailPage() {
       </div>
 
       {tab === "student" && (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="space-y-4">
           <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
-            <h2 className="mb-4 text-sm font-semibold">SPARK registration</h2>
+            <h2 className="mb-1 text-sm font-semibold">SPARK registration details</h2>
+            <p className="mb-4 text-xs text-zinc-500">
+              All fields from the registration sheet. Header shows name · campus · student ID only.
+            </p>
             {p.student && Object.keys(p.student).length ? (
-              <dl className="grid gap-3 text-sm">
-                {studentDetailFields(p.student).map(([label, value]) => (
-                  <div key={label} className="grid grid-cols-[140px_minmax(0,1fr)] gap-3 border-b border-white/[0.04] pb-2">
-                    <dt className="text-zinc-500">{label}</dt>
-                    <dd className="break-words font-medium">{value || "—"}</dd>
+              <dl className="grid gap-0 sm:grid-cols-2">
+                {studentDetailFieldsExtra(p.student).map(([label, value]) => (
+                  <div
+                    key={label}
+                    className="grid grid-cols-[minmax(120px,160px)_minmax(0,1fr)] gap-x-3 gap-y-1 border-b border-white/[0.04] py-3"
+                  >
+                    <dt className="text-xs font-medium uppercase tracking-wide text-zinc-500">{label}</dt>
+                    <dd className="break-words text-sm font-medium text-zinc-100">
+                      {value ? (
+                        label.toLowerCase().includes("link") || label.toLowerCase().includes("url") ? (
+                          <a
+                            href={value.startsWith("http") ? value : undefined}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={value.startsWith("http") ? "text-[#ff3b30] hover:underline" : undefined}
+                          >
+                            {value}
+                          </a>
+                        ) : (
+                          value
+                        )
+                      ) : (
+                        <span className="text-zinc-600">—</span>
+                      )}
+                    </dd>
                   </div>
                 ))}
               </dl>
             ) : (
-              <p className="text-sm text-zinc-500">No registration sheet data yet.</p>
+              <p className="text-sm text-zinc-500">
+                No registration sheet data yet. Import a sheet from Admin → Import, or add the student with roster fields.
+              </p>
             )}
           </div>
-          <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
-            <h2 className="mb-2 text-sm font-semibold">Why join Spark?</h2>
-            <p className="whitespace-pre-wrap text-sm text-zinc-400">{p.student?.why_join_spark || "—"}</p>
-            <h2 className="mb-2 mt-6 text-sm font-semibold">Content interest</h2>
-            <p className="text-sm text-zinc-400">{p.student?.content_interest || "—"}</p>
-          </div>
+          {(p.student?.why_join_spark || p.student?.content_interest) && (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+                <h2 className="mb-2 text-sm font-semibold">Why join Spark?</h2>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">
+                  {p.student?.why_join_spark || "—"}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+                <h2 className="mb-2 text-sm font-semibold">Content interest</h2>
+                <p className="text-sm leading-relaxed text-zinc-300">{p.student?.content_interest || "—"}</p>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

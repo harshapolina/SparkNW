@@ -188,7 +188,7 @@ export default function AdminScrapingPage() {
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <label className="relative w-full max-w-sm">
+            <label className="relative w-full max-w-sm shrink">
               <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
               <input
                 value={q}
@@ -200,7 +200,7 @@ export default function AdminScrapingPage() {
                 className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
               />
             </label>
-            <div className="flex flex-wrap gap-1">
+            <div className="flex shrink-0 flex-nowrap items-center gap-1">
               {STATUS_FILTERS.map((f) => (
                 <button
                   key={f.id || "all"}
@@ -210,7 +210,7 @@ export default function AdminScrapingPage() {
                     setPage(1);
                   }}
                   className={cn(
-                    "rounded-full px-3 py-1.5 text-xs font-medium",
+                    "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium",
                     statusFilter === f.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400"
                   )}
                 >
