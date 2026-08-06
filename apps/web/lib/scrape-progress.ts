@@ -1,4 +1,4 @@
-"""Shared scrape progress display helpers + status types."""
+/** Shared scrape progress display helpers + status types. */
 
 export type ScrapeProgress = {
   active?: boolean;
