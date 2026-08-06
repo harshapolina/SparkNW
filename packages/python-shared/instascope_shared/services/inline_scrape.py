@@ -51,14 +51,19 @@ def _inline_scrape_caps() -> Iterator[None]:
     os.environ["SCRAPE_MAX_POSTS"] = max_posts
     os.environ["SCRAPE_ENRICH_MAX"] = enrich_max
     os.environ["SCRAPE_MAX_RETRIES"] = retries
-    # Only enable browser when explicitly requested for API scrapes.
+    # Browser: only when residential proxies exist. Direct VPS browser = login wall.
+    # HTTP-first still preferred; browser is the last resort for card+timeline.
+    from instascope_scraper.proxy_pool import pool_size as _proxy_pool_size
+
     if "SCRAPE_INLINE_USE_BROWSER" in os.environ:
         os.environ["SCRAPE_USE_BROWSER"] = (
             os.environ.get("SCRAPE_INLINE_USE_BROWSER") or "0"
         ).strip() or "0"
     else:
-        os.environ["SCRAPE_USE_BROWSER"] = "0"
-    os.environ["SCRAPE_BROWSER_ON_PARTIAL"] = "0"
+        os.environ["SCRAPE_USE_BROWSER"] = "1" if _proxy_pool_size() > 0 else "0"
+    os.environ["SCRAPE_BROWSER_ON_PARTIAL"] = (
+        os.getenv("SCRAPE_INLINE_BROWSER_ON_PARTIAL") or "0"
+    ).strip() or "0"
     # Don't hard-fail partial HTTP timelines on API scrapes.
     os.environ["SCRAPE_STRICT"] = (os.getenv("SCRAPE_INLINE_STRICT") or "0").strip() or "0"
     prev_page_delay = os.environ.get("SCRAPE_PAGE_DELAY_SECONDS")

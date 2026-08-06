@@ -369,7 +369,10 @@ async def apply_scrape_result(
 
 async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavailable: bool = False) -> None:
     # Soft failures must NEVER leave the profile badge as "failed" when card data exists.
-    if is_soft_scrape_failure(error) and not unavailable:
+    # But empty profiles must stay failed with a visible error — otherwise the UI shows
+    # "Done — 0 followers · 0 posts" and looks like a successful empty scrape.
+    has_card = bool(int(profile.followers or 0) or int(profile.posts_count or 0) or profile.last_success_at)
+    if is_soft_scrape_failure(error) and not unavailable and has_card:
         job.status = JobStatus.FAILED
         job.error_message = humanize_scrape_error(error)
         job.finished_at = datetime.utcnow()
@@ -377,10 +380,8 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
         await job.save()
         if profile.status != ProfileStatus.PAUSED:
             profile.status = ProfileStatus.ACTIVE
-        profile.last_error = None
-        profile.last_scraped_at = datetime.utcnow()
-        if not profile.last_success_at and (profile.followers or profile.posts_count):
-            profile.last_success_at = datetime.utcnow()
+        # Keep a soft note so Refresh messaging is honest; do not pretend we scraped zeros.
+        profile.last_error = humanize_scrape_error(error)
         profile.updated_at = datetime.utcnow()
         student = getattr(profile, "student", None)
         if isinstance(student, dict) and student:
@@ -395,7 +396,10 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
     job.updated_at = datetime.utcnow()
     await job.save()
 
-    profile.last_scraped_at = datetime.utcnow()
+    # Only stamp last_scraped_at on hard failures when we already had data (attempt recorded).
+    # For empty profiles, leave last_scraped_at alone so the UI does not show "Done".
+    if has_card:
+        profile.last_scraped_at = datetime.utcnow()
     profile.last_error = friendly
     profile.status = ProfileStatus.UNAVAILABLE if unavailable else ProfileStatus.FAILED
     profile.updated_at = datetime.utcnow()

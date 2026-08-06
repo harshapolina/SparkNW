@@ -174,36 +174,43 @@ def main() -> int:
     }
     db.profiles.update_one({"_id": profile["_id"]}, {"$set": update})
 
-    # Replace stored posts for this profile
+    # Upsert posts (ig_post_id is globally unique in this DB)
     pid = str(profile["_id"])
-    db.posts.delete_many({"profile_id": pid})
-    if posts_data:
-        docs = []
-        for p in posts_data:
-            docs.append(
-                {
-                    "profile_id": pid,
-                    "user_id": profile.get("user_id"),
-                    "ig_post_id": p.get("ig_post_id") or p.get("id"),
-                    "shortcode": p.get("shortcode"),
-                    "media_type": p.get("media_type") or "unknown",
-                    "caption": p.get("caption"),
-                    "permalink": p.get("permalink")
-                    or (f"https://www.instagram.com/p/{p.get('shortcode')}/" if p.get("shortcode") else None),
-                    "thumbnail_url": p.get("thumbnail_url") or p.get("display_url"),
-                    "likes": int(p.get("likes") or 0),
-                    "comments": int(p.get("comments") or 0),
-                    "views": int(p.get("views") or 0),
-                    "posted_at": p.get("posted_at"),
-                    "created_at": now,
-                    "updated_at": now,
-                }
-            )
-        db.posts.insert_many(docs)
+    saved = 0
+    for p in posts_data:
+        ig_post_id = p.get("ig_post_id") or p.get("id")
+        if not ig_post_id:
+            continue
+        doc = {
+            "profile_id": pid,
+            "user_id": profile.get("user_id"),
+            "ig_post_id": str(ig_post_id),
+            "shortcode": p.get("shortcode"),
+            "media_type": p.get("media_type") or "unknown",
+            "caption": p.get("caption"),
+            "permalink": p.get("permalink")
+            or (f"https://www.instagram.com/p/{p.get('shortcode')}/" if p.get("shortcode") else None),
+            "thumbnail_url": p.get("thumbnail_url") or p.get("display_url"),
+            "likes": int(p.get("likes") or 0),
+            "comments": int(p.get("comments") or 0),
+            "views": int(p.get("views") or 0),
+            "posted_at": p.get("posted_at"),
+            "updated_at": now,
+        }
+        db.posts.update_one(
+            {"ig_post_id": str(ig_post_id)},
+            {"$set": doc, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
+        saved += 1
+    # Drop stale posts for this profile that were not in this scrape
+    keep_ids = [str(p.get("ig_post_id") or p.get("id")) for p in posts_data if p.get("ig_post_id") or p.get("id")]
+    if keep_ids:
+        db.posts.delete_many({"profile_id": pid, "ig_post_id": {"$nin": keep_ids}})
 
     print(
         f"SAVED profile_id={pid} status=active fol={followers} "
-        f"posts_count={posts_count} saved_posts={len(posts_data)}"
+        f"posts_count={posts_count} saved_posts={saved}"
     )
     return 0
 

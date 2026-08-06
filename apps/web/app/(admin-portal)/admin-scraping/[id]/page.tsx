@@ -181,14 +181,21 @@ export default function AdminCreatorDetailPage() {
         setScrapingNote("");
         setProgress(null);
         setRefreshError(humanizeScrapeError(done.last_error) || "Scrape failed");
-      } else if (done.followers > 0 || done.posts_count > 0 || done.last_scraped_at) {
+      } else if (done.followers > 0 || done.posts_count > 0) {
         setProgress({ percent: 100, label: "Done" });
+        const privateNote = done.is_private
+          ? " (private account — Instagram hides most posts without login)"
+          : "";
         setScrapingNote(
-          `Done — ${formatNumber(done.followers)} followers · ${formatNumber(done.posts_count)} posts`
+          `Done — ${formatNumber(done.followers)} followers · ${formatNumber(done.posts_count)} posts${privateNote}`
         );
       } else {
         setProgress(null);
-        setScrapingNote("Scrape finished but no public posts were saved yet. Try again.");
+        setRefreshError(
+          humanizeScrapeError(done.last_error) ||
+            "Scrape finished with no Instagram data. Wait a minute and Refresh again."
+        );
+        setScrapingNote("");
       }
       void qc.invalidateQueries({ queryKey: ["profile", profileId] });
       void qc.invalidateQueries({ queryKey: ["posts", profileId] });

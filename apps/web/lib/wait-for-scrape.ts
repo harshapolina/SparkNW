@@ -22,7 +22,12 @@ export type WaitForScrapeOptions = {
 };
 
 function scrapedAfter(profile: Profile, since?: string | null): boolean {
+  // Soft-fail / empty attempts used to stamp last_scraped_at with 0 data and
+  // make the UI stop waiting as if the scrape succeeded.
   if (!profile.last_scraped_at) return false;
+  if ((profile.followers || 0) <= 0 && (profile.posts_count || 0) <= 0) {
+    return false;
+  }
   if (!since) return true;
   return new Date(profile.last_scraped_at).getTime() > new Date(since).getTime();
 }
