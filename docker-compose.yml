@@ -33,13 +33,9 @@ services:
       SCRAPE_PAGE_DELAY_SECONDS: ${SCRAPE_PAGE_DELAY_SECONDS:-0.6}
       SCRAPE_ENRICH_MAX: ${SCRAPE_ENRICH_MAX:-0}
       SCRAPE_ENRICH_DELAY_SECONDS: ${SCRAPE_ENRICH_DELAY_SECONDS:-0.9}
-      SCRAPE_PROXY_URL: ${SCRAPE_PROXY_URL:-}
-      SCRAPE_PROXY_URLS: ${SCRAPE_PROXY_URLS:-}
-      SCRAPE_PROXY_HOST: ${SCRAPE_PROXY_HOST:-}
-      SCRAPE_PROXY_USER: ${SCRAPE_PROXY_USER:-}
-      SCRAPE_PROXY_PASS: ${SCRAPE_PROXY_PASS:-}
-      SCRAPE_PROXY_PORTS: ${SCRAPE_PROXY_PORTS:-}
-      SCRAPE_PROXY_SCHEME: ${SCRAPE_PROXY_SCHEME:-http}
+      # IMPORTANT: do NOT set SCRAPE_PROXY_* here with ${VAR:-}.
+      # Empty defaults override env_file and wipe Decodo credentials on the cloud.
+      # Proxy settings come from .env (env_file) and/or MongoDB app_config.
     ports:
       - "8000:8000"
     depends_on:
@@ -66,13 +62,9 @@ services:
       SCRAPE_PAGE_DELAY_SECONDS: ${SCRAPE_PAGE_DELAY_SECONDS:-0.6}
       SCRAPE_ENRICH_MAX: ${SCRAPE_ENRICH_MAX:-0}
       SCRAPE_ENRICH_DELAY_SECONDS: ${SCRAPE_ENRICH_DELAY_SECONDS:-0.9}
-      SCRAPE_PROXY_URL: ${SCRAPE_PROXY_URL:-}
-      SCRAPE_PROXY_URLS: ${SCRAPE_PROXY_URLS:-}
-      SCRAPE_PROXY_HOST: ${SCRAPE_PROXY_HOST:-}
-      SCRAPE_PROXY_USER: ${SCRAPE_PROXY_USER:-}
-      SCRAPE_PROXY_PASS: ${SCRAPE_PROXY_PASS:-}
-      SCRAPE_PROXY_PORTS: ${SCRAPE_PROXY_PORTS:-}
-      SCRAPE_PROXY_SCHEME: ${SCRAPE_PROXY_SCHEME:-http}
+      # IMPORTANT: do NOT set SCRAPE_PROXY_* here with ${VAR:-}.
+      # Empty defaults override env_file and wipe Decodo credentials on the cloud.
+      # Proxy settings come from .env (env_file) and/or MongoDB app_config.
     depends_on:
       - redis
       - api

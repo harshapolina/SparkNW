@@ -122,6 +122,14 @@ async def _set_progress(profile: Profile, job: Job, payload: dict[str, Any]) -> 
 
 
 async def scrape_profile_inline(profile: Profile) -> Job:
+    # Ensure Decodo pool is loaded (cloud Docker often blanks SCRAPE_PROXY_* env).
+    try:
+        from instascope_shared.services.app_config import apply_proxy_config_to_env
+
+        await apply_proxy_config_to_env()
+    except Exception:
+        pass
+
     settings = get_settings()
     job = Job(
         user_id=profile.user_id,

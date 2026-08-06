@@ -22,6 +22,14 @@ async def lifespan(_app: FastAPI):
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     await connect_db()
+    # Load Decodo proxy pool from MongoDB when Docker wiped empty SCRAPE_PROXY_* env.
+    try:
+        from instascope_shared.services.app_config import apply_proxy_config_to_env
+
+        ok = await apply_proxy_config_to_env()
+        logging.getLogger("instascope.api").info("proxy config ready=%s", ok)
+    except Exception:
+        logging.getLogger("instascope.api").exception("proxy config load failed")
     # Orphaned scrape_progress.active survives API restarts and blocks the UI.
     try:
         from app.scrape_queue import clear_stale_scrape_progress

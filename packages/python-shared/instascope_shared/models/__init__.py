@@ -276,3 +276,13 @@ DOCUMENT_MODELS = [
     ScrapeLog,
     Notification,
 ]
+
+# Late import avoids circular refs — AppConfig lives with services but is a Document.
+def _register_app_config() -> None:
+    from instascope_shared.services.app_config import AppConfig
+
+    if AppConfig not in DOCUMENT_MODELS:
+        DOCUMENT_MODELS.append(AppConfig)
+
+
+_register_app_config()
