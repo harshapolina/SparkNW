@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import contextmanager
 from datetime import datetime
@@ -14,20 +15,31 @@ from instascope_scraper.profile import ScrapeError, scrape_profile
 from instascope_scraper.types import parse_proxy_url
 
 
+def _job_timeout_seconds() -> float:
+    raw = (os.getenv("SCRAPE_JOB_TIMEOUT_SECONDS") or "480").strip()
+    try:
+        return max(60.0, float(raw))
+    except ValueError:
+        return 480.0
+
+
 @contextmanager
 def _inline_scrape_caps() -> Iterator[None]:
     """Inline scrape env for API Add/Refresh/bulk.
 
     - Posts: default ALL (SCRAPE_INLINE_MAX_POSTS=0) — full public timeline.
     - Enrich: keep capped so per-post page opens don't make scrapes hang for hours.
+    - Retries: keep low so a hung attempt fails and frees the queue.
     """
-    keys = ("SCRAPE_MAX_POSTS", "SCRAPE_ENRICH_MAX")
+    keys = ("SCRAPE_MAX_POSTS", "SCRAPE_ENRICH_MAX", "SCRAPE_MAX_RETRIES")
     previous = {k: os.environ.get(k) for k in keys}
 
     max_posts = (os.getenv("SCRAPE_INLINE_MAX_POSTS") or "0").strip() or "0"
     enrich_max = (os.getenv("SCRAPE_INLINE_ENRICH_MAX") or "12").strip() or "12"
+    retries = (os.getenv("SCRAPE_INLINE_MAX_RETRIES") or "1").strip() or "1"
     os.environ["SCRAPE_MAX_POSTS"] = max_posts
     os.environ["SCRAPE_ENRICH_MAX"] = enrich_max
+    os.environ["SCRAPE_MAX_RETRIES"] = retries
     prev_page_delay = os.environ.get("SCRAPE_PAGE_DELAY_SECONDS")
     if prev_page_delay is None:
         os.environ["SCRAPE_PAGE_DELAY_SECONDS"] = (
@@ -98,32 +110,52 @@ async def scrape_profile_inline(profile: Profile) -> Job:
     await job.insert()
 
     proxy = parse_proxy_url(settings.scrape_proxy_url)
-    await _set_progress(
-        profile,
-        job,
-        _progress_payload(scraped=0, total=int(profile.posts_count or 0), phase="starting"),
+    last_progress = _progress_payload(
+        scraped=0, total=int(profile.posts_count or 0), phase="starting"
     )
+    await _set_progress(profile, job, last_progress)
 
     async def on_progress(info: dict[str, Any]) -> None:
+        nonlocal last_progress
         scraped = int(info.get("scraped_posts") or info.get("scraped") or 0)
         total = int(info.get("total_posts") or info.get("total") or 0)
         phase = str(info.get("phase") or "scraping")
-        await _set_progress(
-            profile,
-            job,
-            _progress_payload(scraped=scraped, total=total, phase=phase, active=True),
-        )
+        last_progress = _progress_payload(scraped=scraped, total=total, phase=phase, active=True)
+        await _set_progress(profile, job, last_progress)
+
+    async def _heartbeat() -> None:
+        """Keep scrape_progress.updated_at fresh so UI/ops can detect live vs orphaned."""
+        while True:
+            await asyncio.sleep(8)
+            payload = dict(last_progress)
+            payload["updated_at"] = datetime.utcnow().isoformat() + "Z"
+            payload["active"] = True
+            try:
+                await _set_progress(profile, job, payload)
+            except Exception:  # noqa: BLE001
+                return
 
     with _inline_scrape_caps():
+        heartbeat = asyncio.create_task(_heartbeat(), name=f"scrape-hb-{profile.username}")
         try:
-            result = await scrape_profile(
-                profile.username,
-                headless=settings.scrape_headless,
-                proxy=proxy,
-                delay_seconds=settings.scrape_delay_seconds,
-                live=True,
-                on_progress=on_progress,
-            )
+            try:
+                result = await asyncio.wait_for(
+                    scrape_profile(
+                        profile.username,
+                        headless=settings.scrape_headless,
+                        proxy=proxy,
+                        delay_seconds=settings.scrape_delay_seconds,
+                        live=True,
+                        on_progress=on_progress,
+                    ),
+                    timeout=_job_timeout_seconds(),
+                )
+            except asyncio.TimeoutError as exc:
+                raise ScrapeError(
+                    f"Scrape timed out after {int(_job_timeout_seconds())}s "
+                    f"(Instagram/proxy too slow). Try Refresh again."
+                ) from exc
+
             await _set_progress(
                 profile,
                 job,
@@ -145,7 +177,10 @@ async def scrape_profile_inline(profile: Profile) -> Job:
         except ScrapeError as exc:
             await mark_scrape_failed(job, profile, str(exc), unavailable=exc.unavailable)
             profile.scrape_progress = _progress_payload(
-                scraped=0, total=int(profile.posts_count or 0), phase="failed", active=False
+                scraped=int(last_progress.get("scraped_posts") or 0),
+                total=int(last_progress.get("total_posts") or profile.posts_count or 0),
+                phase="failed",
+                active=False,
             )
             await profile.save()
         except Exception as exc:  # noqa: BLE001
@@ -154,4 +189,10 @@ async def scrape_profile_inline(profile: Profile) -> Job:
                 scraped=0, total=int(profile.posts_count or 0), phase="failed", active=False
             )
             await profile.save()
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
     return job

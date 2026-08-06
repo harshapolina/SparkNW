@@ -375,7 +375,7 @@ async def refresh_profile(profile_id: str, user: User = Depends(get_current_user
             priority=1,
         )
         await job.insert()
-        await enqueue_profile_ids([str(profile.id)])
+        await enqueue_profile_ids([str(profile.id)], force=True)
         return [
             JobResponse(
                 id=str(job.id),

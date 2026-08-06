@@ -1473,6 +1473,7 @@ async def _scrape_live(
         )
 
         proxy_url = proxy_to_httpx_url(proxy)
+        await _emit_progress(on_progress, phase="http_profile", scraped_posts=0, total_posts=0)
         http_json = await fetch_web_profile_http(username, proxy=proxy_url)
         # If proxy fails profile card, try direct once
         if not http_json and proxy_url and os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0":
@@ -1512,12 +1513,31 @@ async def _scrape_live(
                     len(http_result.posts),
                     http_result.posts_count,
                 )
+                # Under IG rate limits, browser often hangs forever. Prefer a usable
+                # card+sample over zeros unless explicitly forced.
+                force_browser = os.getenv("SCRAPE_BROWSER_ON_PARTIAL", "0").strip() == "1"
+                if (
+                    not force_browser
+                    and _result_is_usable(http_result)
+                    and http_result.followers > 0
+                    and len(http_result.posts) > 0
+                ):
+                    logger.warning(
+                        "http_partial @%s returning without browser "
+                        "(set SCRAPE_BROWSER_ON_PARTIAL=1 to force)",
+                        username,
+                    )
+                    return _finalize_result(http_result, path="http_partial")
         else:
             # web_profile_info blocked (401 Please wait) — username feed often still works
             logger.warning("web_profile_info @%s unavailable — trying username feed", username)
+            await _emit_progress(on_progress, phase="username_feed", scraped_posts=0, total_posts=0)
             try:
                 feed_user, feed_nodes = await fetch_timeline_via_username_feed(
-                    username, expected_count=0, proxy=proxy_url
+                    username,
+                    expected_count=0,
+                    proxy=proxy_url,
+                    on_progress=on_progress,
                 )
                 if feed_nodes:
                     posts = _posts_from_nodes(feed_nodes)
@@ -1589,12 +1609,19 @@ async def _scrape_live(
 
     # 2) Browser path only when HTTP timeline is still short
     try:
+        await _emit_progress(
+            on_progress,
+            phase="browser",
+            scraped_posts=len(http_result.posts) if http_result else 0,
+            total_posts=(http_result.posts_count if http_result else 0) or 0,
+        )
         result = await _scrape_live_browser(
             username,
             headless=headless,
             proxy=proxy,
             delay=delay,
             http_result=http_result,
+            on_progress=on_progress,
         )
         # If browser still short, force one more HTTP expand toward posts_count
         if (
@@ -1631,12 +1658,35 @@ async def _scrape_live(
                         return _finalize_result(result, path="username_feed_after_browser")
                 except Exception:
                     logger.exception("username_feed_after_browser @%s failed", username)
-        _raise_if_incomplete(result)
+        try:
+            _raise_if_incomplete(result)
+        except ScrapeError:
+            if _result_is_usable(result):
+                logger.warning(
+                    "incomplete browser @%s posts=%s/%s — saving usable partial",
+                    username,
+                    len(result.posts),
+                    result.posts_count,
+                )
+                return _finalize_result(result, path="browser_partial")
+            if http_result and _result_is_usable(http_result):
+                return _finalize_result(http_result, path="http_partial_kept")
+            raise
         return _finalize_result(result, path="browser")
     except Exception as exc:
-        # ONLY return HTTP results that actually reached posts_count — never partials
+        # Prefer a complete HTTP timeline; otherwise keep any usable card/posts
+        # rather than failing with zeros after a browser/proxy hang.
         if http_result and _posts_complete(http_result.posts, http_result.posts_count):
             return _finalize_result(http_result, path="http_fallback_complete")
+        if http_result and _result_is_usable(http_result):
+            logger.warning(
+                "browser failed @%s (%s) — saving usable HTTP result posts=%s followers=%s",
+                username,
+                exc,
+                len(http_result.posts),
+                http_result.followers,
+            )
+            return _finalize_result(http_result, path="http_partial_after_browser_fail")
         if _is_tunnel_or_proxy_error(exc) and proxy is not None:
             try:
                 from instascope_scraper.http_profile import (
@@ -1680,6 +1730,7 @@ async def _scrape_live_browser(
     proxy: Optional[ProxyConfig],
     delay: float,
     http_result: ScrapeResult | None,
+    on_progress=None,
 ) -> ScrapeResult:
     from instascope_scraper.http_profile import _timeline_from_user
 
@@ -1688,6 +1739,12 @@ async def _scrape_live_browser(
     media_nodes: list[dict[str, Any]] = []
     feed_cursors: list[str] = []
 
+    await _emit_progress(
+        on_progress,
+        phase="browser_launch",
+        scraped_posts=len(http_result.posts) if http_result else 0,
+        total_posts=(http_result.posts_count if http_result else 0) or 0,
+    )
     async with browser_session(headless=headless, proxy=proxy) as browser:
         context = await browser.new_context(
             user_agent=(

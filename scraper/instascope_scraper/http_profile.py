@@ -122,7 +122,18 @@ async def _get_json_with_retry(
             if "please wait" in low or "rate" in low or "try again" in low:
                 retriable = True
         if retriable:
-            wait = min(60.0, (2 ** attempt) * 1.5)
+            # "Please wait" almost never clears within one scrape — fail fast.
+            please_wait = "please wait" in last_snip.lower() or "require_login" in last_snip.lower()
+            effective_max = min(max_retries, 2) if please_wait else max_retries
+            if attempt + 1 >= effective_max:
+                logger.warning(
+                    "%s giving up after %s rate-limit responses url=%s",
+                    label,
+                    attempt + 1,
+                    url[:160],
+                )
+                return last_status, None, last_snip
+            wait = min(20.0 if please_wait else 60.0, (2 ** attempt) * 1.5)
             # Honor Retry-After when present
             ra = res.headers.get("Retry-After")
             if ra:
@@ -130,12 +141,14 @@ async def _get_json_with_retry(
                     wait = max(wait, float(ra))
                 except ValueError:
                     pass
+            if please_wait:
+                wait = min(wait, 8.0)
             logger.warning(
                 "%s HTTP %s attempt=%s/%s wait=%.1fs url=%s body=%r",
                 label,
                 res.status_code,
                 attempt + 1,
-                max_retries,
+                effective_max,
                 wait,
                 url[:160],
                 last_snip[:180],
@@ -788,6 +801,7 @@ async def fetch_timeline_via_username_feed(
     *,
     expected_count: int = 0,
     proxy: str | None = None,
+    on_progress=None,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """Paginate the full timeline using only /feed/user/{username}/username/.
 
@@ -804,6 +818,23 @@ async def fetch_timeline_via_username_feed(
         limit = min(limit, expected_count)
     page_size = _page_size()
     delay = float(os.getenv("SCRAPE_PAGE_DELAY_SECONDS") or "0.8")
+
+    async def _emit(phase: str = "username_feed") -> None:
+        if not on_progress:
+            return
+        try:
+            payload = {
+                "phase": phase,
+                "scraped_posts": len(nodes),
+                "total_posts": expected_count or limit if limit < 50000 else expected_count,
+            }
+            res = on_progress(payload)
+            if asyncio.iscoroutine(res):
+                await res
+        except Exception:
+            logger.exception("username_feed on_progress failed")
+
+    await _emit("username_feed")
 
     async with httpx.AsyncClient(headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout) as client:
         await _bootstrap_session(client, username)
@@ -829,6 +860,7 @@ async def fetch_timeline_via_username_feed(
                     stagnant,
                     max_id,
                 )
+                await _emit("username_feed")
                 continue
 
             if user_obj is None:
@@ -863,6 +895,7 @@ async def fetch_timeline_via_username_feed(
                 more,
                 expected_count,
             )
+            await _emit("username_feed")
 
             if added == 0:
                 stagnant += 1

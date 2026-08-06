@@ -22,6 +22,17 @@ async def lifespan(_app: FastAPI):
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     await connect_db()
+    # Orphaned scrape_progress.active survives API restarts and blocks the UI.
+    try:
+        from app.scrape_queue import clear_stale_scrape_progress
+
+        cleared = await clear_stale_scrape_progress()
+        if cleared:
+            logging.getLogger("instascope.api").warning(
+                "startup cleared %s stale scrape progress marker(s)", cleared
+            )
+    except Exception:
+        logging.getLogger("instascope.api").exception("startup scrape cleanup failed")
     yield
     await close_db()
 

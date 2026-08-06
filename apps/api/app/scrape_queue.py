@@ -1,9 +1,8 @@
 """Sequential in-process scrape queue for bulk import/refresh.
 
-Single Add/Refresh awaits the scrape on the request. Bulk used fire-and-forget
-`asyncio.create_task` loops that often never completed (or hammered Instagram).
-This queue runs one scrape at a time with a delay between jobs and keeps a
-strong reference to the worker task for the life of the API process.
+Add/Refresh enqueue here and return immediately. This queue runs one scrape at
+a time with a delay between jobs and keeps a strong reference to the worker
+task for the life of the API process.
 """
 
 from __future__ import annotations
@@ -11,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import traceback
+from datetime import datetime
 from typing import Iterable
 
 from instascope_shared.models import Profile
@@ -23,6 +24,8 @@ _queue: asyncio.Queue[str] | None = None
 _worker: asyncio.Task | None = None
 _pending: set[str] = set()
 _lock = asyncio.Lock()
+_running_id: str | None = None
+_running_started: float | None = None
 
 
 def _delay_seconds() -> float:
@@ -38,6 +41,14 @@ def _delay_seconds() -> float:
         return 3.0
 
 
+def _stale_seconds() -> float:
+    raw = (os.getenv("SCRAPE_STALE_SECONDS") or "600").strip()
+    try:
+        return max(120.0, float(raw))
+    except ValueError:
+        return 600.0
+
+
 def _get_queue() -> asyncio.Queue[str]:
     global _queue
     if _queue is None:
@@ -45,11 +56,75 @@ def _get_queue() -> asyncio.Queue[str]:
     return _queue
 
 
+async def _mark_profile_interrupted(profile_id: str, reason: str) -> None:
+    try:
+        profile = await Profile.get(profile_id)
+        if not profile:
+            return
+        prog = dict(getattr(profile, "scrape_progress", None) or {})
+        if not prog.get("active"):
+            return
+        profile.scrape_progress = {
+            **prog,
+            "active": False,
+            "phase": "interrupted",
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        if not profile.last_error:
+            profile.last_error = reason
+        profile.updated_at = datetime.utcnow()
+        await profile.save()
+    except Exception:
+        log.exception("failed to mark interrupted profile_id=%s", profile_id)
+
+
+async def clear_stale_scrape_progress() -> int:
+    """Clear orphaned active scrape_progress left by API restarts / hung jobs."""
+    cleared = 0
+    try:
+        profiles = await Profile.find({"scrape_progress.active": True}).to_list()
+    except Exception:
+        log.exception("clear_stale_scrape_progress query failed")
+        return 0
+    now = time.time()
+    for profile in profiles:
+        prog = dict(getattr(profile, "scrape_progress", None) or {})
+        updated_raw = prog.get("updated_at") or ""
+        stale = True
+        if isinstance(updated_raw, str) and updated_raw:
+            try:
+                ts = updated_raw.replace("Z", "+00:00")
+                age = now - datetime.fromisoformat(ts).timestamp()
+                stale = age >= _stale_seconds()
+            except Exception:
+                stale = True
+        if not stale:
+            continue
+        profile.scrape_progress = {
+            **prog,
+            "active": False,
+            "phase": "interrupted",
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        if not profile.last_error:
+            profile.last_error = "Previous scrape was interrupted — click Refresh to retry."
+        profile.updated_at = datetime.utcnow()
+        await profile.save()
+        cleared += 1
+        _pending.discard(str(profile.id))
+    if cleared:
+        log.warning("cleared %s stale scrape_progress marker(s)", cleared)
+    return cleared
+
+
 async def _worker_loop() -> None:
+    global _running_id, _running_started
     q = _get_queue()
     log.info("bulk scrape worker started")
     while True:
         profile_id = await q.get()
+        _running_id = profile_id
+        _running_started = time.time()
         try:
             profile = await Profile.get(profile_id)
             if not profile:
@@ -67,7 +142,12 @@ async def _worker_loop() -> None:
             )
         except Exception:
             log.error("bulk scrape failed profile_id=%s\n%s", profile_id, traceback.format_exc())
+            await _mark_profile_interrupted(
+                profile_id, "Scrape worker error — click Refresh to retry."
+            )
         finally:
+            _running_id = None
+            _running_started = None
             _pending.discard(profile_id)
             q.task_done()
             delay = _delay_seconds()
@@ -96,8 +176,12 @@ def _ensure_worker() -> None:
     _worker.add_done_callback(_on_done)
 
 
-async def enqueue_profile_ids(profile_ids: Iterable[str]) -> int:
-    """Enqueue profile IDs for sequential scraping. Returns how many were queued."""
+async def enqueue_profile_ids(profile_ids: Iterable[str], *, force: bool = False) -> int:
+    """Enqueue profile IDs for sequential scraping. Returns how many were queued.
+
+    force=True re-queues even if the id is already pending (used by Refresh when
+    a previous attempt looks stuck).
+    """
     q = _get_queue()
     _ensure_worker()
     queued = 0
@@ -107,7 +191,16 @@ async def enqueue_profile_ids(profile_ids: Iterable[str]) -> int:
             if not pid:
                 continue
             if pid in _pending:
-                continue
+                if not force:
+                    continue
+                # Already running — don't duplicate mid-flight.
+                if pid == _running_id:
+                    # If the current job looks hung, leave it; timeout will free it.
+                    if _running_started and (time.time() - _running_started) < _stale_seconds():
+                        continue
+                else:
+                    # Pending but not running (orphaned set entry) — drop and re-add.
+                    _pending.discard(pid)
             _pending.add(pid)
             await q.put(pid)
             queued += 1
@@ -118,3 +211,7 @@ async def enqueue_profile_ids(profile_ids: Iterable[str]) -> int:
 
 def pending_count() -> int:
     return len(_pending)
+
+
+def running_profile_id() -> str | None:
+    return _running_id
