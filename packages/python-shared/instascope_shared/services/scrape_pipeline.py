@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 
@@ -34,6 +35,37 @@ def _media_type(raw: str | None) -> MediaType:
         "GraphSidecar": MediaType.CAROUSEL,
     }
     return mapping.get(raw or "", MediaType.UNKNOWN)
+
+
+def _configured_max_posts() -> int:
+    """0 means uncapped (full timeline)."""
+    raw = (os.getenv("SCRAPE_MAX_POSTS") or "0").strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 0
+
+
+def _is_complete_enough(posts_count: int, scraped: int, followers: int) -> bool:
+    """Accept capped scrapes and first-pass samples so timeouts don't leave zeros."""
+    if scraped <= 0 and followers <= 0:
+        return False
+    cap = _configured_max_posts()
+    if cap > 0:
+        target = min(posts_count, cap) if posts_count > 0 else cap
+        # Hit the intentional cap (allow small shortfall).
+        if scraped >= max(1, target - 2):
+            return True
+        # Useful first sample: card metrics + a page of posts.
+        if followers > 0 and scraped >= min(12, target):
+            return True
+        return False
+
+    # Full-timeline mode (legacy strictness).
+    if posts_count > 0:
+        need = posts_count if posts_count <= 12 else max(posts_count - 2, 1)
+        return scraped >= need
+    return scraped > 0 or followers > 0
 
 
 def humanize_scrape_error(err: BaseException | str) -> str:
@@ -118,14 +150,13 @@ async def apply_scrape_result(
     if posts_count <= 0 and len(posts_data) > 0:
         posts_count = max(int(profile.posts_count or 0), len(posts_data))
 
-    # NEVER wipe a good profile with an incomplete / empty scrape
-    if posts_count > 0 and len(posts_data) < (
-        posts_count if posts_count <= 12 else max(posts_count - 2, 1)
-    ):
+    # NEVER wipe a good profile with an incomplete / empty scrape.
+    # When SCRAPE_MAX_POSTS is capped (API inline/bulk), completeness is vs that cap.
+    if not _is_complete_enough(posts_count, len(posts_data), followers):
         raise ValueError(
-            f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count} posts)"
+            f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count or '?'} posts)"
         )
-    if posts_count > 0 and not posts_data:
+    if posts_count > 0 and not posts_data and _configured_max_posts() <= 0:
         raise ValueError(
             f"Refusing to save empty scrape ({len(posts_data)}/{posts_count} posts)"
         )
