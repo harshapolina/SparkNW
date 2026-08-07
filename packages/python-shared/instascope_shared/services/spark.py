@@ -369,6 +369,7 @@ def score_profile(
 
     next_tier, remaining = _points_to_next(points)
 
+    insights = dict(getattr(profile, "insights", None) or {})
     use_period_totals = window_start is not None
     return {
         "id": str(profile.id),
