@@ -408,8 +408,13 @@ export default function AdminScrapingPage() {
                           size="sm"
                         />
                         <div>
-                          <div className="font-medium">
-                            {p.student?.full_name || p.full_name || p.username}
+                          <div className="flex flex-wrap items-center gap-1.5 font-medium">
+                            <span>{p.student?.full_name || p.full_name || p.username}</span>
+                            {p.is_private ? (
+                              <span className="rounded-full bg-violet-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-300">
+                                Private
+                              </span>
+                            ) : null}
                           </div>
                           <div className="text-[11px] text-zinc-500">@{p.username}</div>
                           {p.status === "failed" && (
