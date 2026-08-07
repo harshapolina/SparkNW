@@ -128,6 +128,7 @@ def is_soft_scrape_failure(error: BaseException | str | None) -> bool:
     return (
         "incomplete timeline" in low
         or "refusing to save" in low
+        or "overwrite insights" in low
         or "failed to save any" in low
         or "pagination" in low
         or "still short" in low
@@ -163,6 +164,11 @@ def humanize_scrape_error(err: BaseException | str) -> str:
         return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
     if "refusing to save" in low:
         return "Scrape was incomplete and was not saved over existing data. Please Refresh again."
+    if "overwrite insights" in low:
+        return (
+            "No posts in the programme window (since 15 Jul 2026). "
+            "Refresh again after deploying the latest fix — empty programme windows now save as success."
+        )
     if "failed to save any" in low:
         return (
             "Posts were scraped but could not be written (duplicate Instagram ids). "
@@ -387,12 +393,15 @@ async def apply_scrape_result(
             raise ValueError("Refusing to save empty scrape result")
 
     metrics = compute_post_metrics(posts_data, followers=followers)
-    # Guard: never replace real insights with an all-zero metrics blob
+    # Guard: never replace real insights with an all-zero metrics blob from a
+    # failed/partial scrape. A completed cohort scrape with 0 programme posts is
+    # legitimate (account hasn't posted since 15 Jul 2026) — allow the update.
     if (
         int(metrics.get("sampled_posts") or 0) == 0
         and isinstance(profile.insights, dict)
         and int((profile.insights or {}).get("sampled_posts") or 0) > 0
         and not posts_data
+        and not hit_cohort_floor
     ):
         raise ValueError("Refusing to overwrite insights with empty metrics")
 
