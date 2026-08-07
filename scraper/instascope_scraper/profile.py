@@ -1891,6 +1891,18 @@ def _finalize_result(result: ScrapeResult, *, path: str) -> ScrapeResult:
     return result
 
 
+async def _finish_scrape_result(
+    username: str,
+    result: ScrapeResult,
+    *,
+    path: str,
+    proxy_url: str | None = None,
+) -> ScrapeResult:
+    """Shared finalize used by HTTP and browser scrape paths."""
+    result = await _ensure_lifetime_posts_count(username, result, proxy_url=proxy_url)
+    return _finalize_result(result, path=path)
+
+
 async def _ensure_lifetime_posts_count(
     username: str,
     result: ScrapeResult,
@@ -1959,8 +1971,9 @@ async def _scrape_live(
 
     async def _done(result: ScrapeResult, path: str) -> ScrapeResult:
         nonlocal proxy_url
-        result = await _ensure_lifetime_posts_count(username, result, proxy_url=proxy_url)
-        return _finalize_result(result, path=path)
+        return await _finish_scrape_result(
+            username, result, path=path, proxy_url=proxy_url
+        )
 
     try:
         from instascope_scraper.http_profile import (
@@ -2548,6 +2561,13 @@ async def _scrape_live_browser(
     on_progress=None,
 ) -> ScrapeResult:
     from instascope_scraper.http_profile import _timeline_from_user
+
+    proxy_url = proxy_to_httpx_url(proxy)
+
+    async def _done(result: ScrapeResult, path: str) -> ScrapeResult:
+        return await _finish_scrape_result(
+            username, result, path=path, proxy_url=proxy_url
+        )
 
     url = f"https://www.instagram.com/{username}/"
     captured: list[dict[str, Any]] = []
