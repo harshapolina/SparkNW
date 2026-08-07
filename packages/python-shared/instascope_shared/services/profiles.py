@@ -17,9 +17,28 @@ from instascope_shared.services.scrape_pipeline import heal_soft_scrape_failure
 from instascope_shared.services.student_roster import merge_student
 
 
+def _programme_posts_from_insights(insights: dict | None) -> int | None:
+    """Return programme-window post count from stored insights, or None if unknown."""
+    if not isinstance(insights, dict) or not insights:
+        return None
+    if "sampled_posts" in insights:
+        try:
+            return max(0, int(insights.get("sampled_posts") or 0))
+        except (TypeError, ValueError):
+            return 0
+    if "posts_in_window" in insights:
+        try:
+            return max(0, int(insights.get("posts_in_window") or 0))
+        except (TypeError, ValueError):
+            return 0
+    return None
+
+
 def to_profile_response(p: Profile) -> ProfileResponse:
     student = dict(getattr(p, "student", None) or {})
     student.setdefault("youtube_status", "Coming soon")
+    insights = dict(getattr(p, "insights", None) or {})
+    programme_posts = _programme_posts_from_insights(insights)
     return ProfileResponse(
         id=str(p.id),
         username=p.username,
@@ -32,6 +51,7 @@ def to_profile_response(p: Profile) -> ProfileResponse:
         followers=p.followers,
         following=p.following,
         posts_count=p.posts_count,
+        programme_posts=int(programme_posts or 0),
         avg_likes=p.avg_likes,
         avg_views=p.avg_views,
         avg_comments=p.avg_comments,
@@ -42,7 +62,7 @@ def to_profile_response(p: Profile) -> ProfileResponse:
         category=getattr(p, "category", None),
         highlight_reel_count=int(getattr(p, "highlight_reel_count", 0) or 0),
         follower_following_ratio=float(getattr(p, "follower_following_ratio", 0.0) or 0.0),
-        insights=dict(getattr(p, "insights", None) or {}),
+        insights=insights,
         student=student,
         scrape_progress=dict(getattr(p, "scrape_progress", None) or {}) or None,
         status=p.status.value if hasattr(p.status, "value") else str(p.status),
@@ -76,12 +96,36 @@ async def to_profile_response_cohort(p: Profile) -> ProfileResponse:
     metrics = compute_post_metrics(posts_data, followers=int(p.followers or 0), programme_window=True)
     # Prefer live cohort metrics over lifetime scrape blob stored on the profile
     resp.insights = metrics
+    resp.programme_posts = int(metrics.get("sampled_posts") or metrics.get("posts_in_window") or 0)
     if int(metrics.get("sampled_posts") or 0) > 0:
         resp.avg_likes = float(metrics.get("avg_likes") or 0)
         resp.avg_views = float(metrics.get("avg_views") or 0)
         resp.avg_comments = float(metrics.get("avg_comments") or 0)
         resp.engagement_rate = float(metrics.get("engagement_rate") or 0)
     return resp
+
+
+async def _live_programme_post_counts(profile_ids: list[str]) -> dict[str, int]:
+    """Count posts with posted_at inside the programme window (batch, for list board)."""
+    if not profile_ids:
+        return {}
+    start, end = clamp_scoring_window()
+    start_n = start.replace(tzinfo=None)
+    end_n = end.replace(tzinfo=None)
+    coll = Post.get_motor_collection()
+    pipeline = [
+        {
+            "$match": {
+                "profile_id": {"$in": profile_ids},
+                "posted_at": {"$gte": start_n, "$lte": end_n},
+            }
+        },
+        {"$group": {"_id": "$profile_id", "n": {"$sum": 1}}},
+    ]
+    out: dict[str, int] = {}
+    async for row in coll.aggregate(pipeline):
+        out[str(row["_id"])] = int(row.get("n") or 0)
+    return out
 
 
 async def list_posts_in_programme_window(profile_id: str) -> list[Post]:
@@ -198,8 +242,22 @@ async def list_profiles(
         except Exception:
             pass
 
+    live_counts = await _live_programme_post_counts([str(p.id) for p in page_items])
+    items: list[ProfileResponse] = []
+    for p in page_items:
+        resp = to_profile_response(p)
+        # Prefer live DB count when available; keep insights value otherwise.
+        if str(p.id) in live_counts:
+            resp.programme_posts = live_counts[str(p.id)]
+        elif resp.programme_posts <= 0:
+            # insights may still have a better inferred count from last scrape
+            inferred = _programme_posts_from_insights(resp.insights)
+            if inferred is not None:
+                resp.programme_posts = inferred
+        items.append(resp)
+
     return ProfileListResponse(
-        items=[to_profile_response(p) for p in page_items],
+        items=items,
         total=total,
         page=page,
         page_size=page_size,

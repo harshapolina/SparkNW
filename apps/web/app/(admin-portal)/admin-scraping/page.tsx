@@ -115,8 +115,8 @@ export default function AdminScrapingPage() {
       setError("");
       setAddProgress(null);
       setBulkNote(
-        p.followers > 0 || p.posts_count > 0
-          ? `Scraped @${p.username} — ${formatNumber(p.followers)} followers · ${formatNumber(p.posts_count)} posts`
+        p.followers > 0 || p.posts_count > 0 || (p.programme_posts ?? 0) > 0
+          ? `Scraped @${p.username} — ${formatNumber(p.followers)} followers · ${formatNumber(p.programme_posts ?? 0)} programme posts (${formatNumber(p.posts_count)} IG)`
           : `Added @${p.username} — scrape still running or no public posts yet`
       );
       qc.invalidateQueries({ queryKey: ["profiles"] });
@@ -378,7 +378,9 @@ export default function AdminScrapingPage() {
                   <th className="px-2 py-3">Student ID</th>
                   <th className="px-2 py-3">Campus</th>
                   <th className="px-2 py-3">Followers</th>
-                  <th className="px-2 py-3">Posts</th>
+                  <th className="px-2 py-3" title="Posts dated from 15 Jul 2026 (programme window)">
+                    Prog. posts
+                  </th>
                   <th className="px-2 py-3">Scrape progress</th>
                   <th className="px-2 py-3">Growth</th>
                   <th className="px-2 py-3">Status</th>
@@ -433,7 +435,18 @@ export default function AdminScrapingPage() {
                     <td className="px-2 py-3 tabular text-zinc-300">{p.student?.student_id || "—"}</td>
                     <td className="px-2 py-3 text-zinc-400">{p.student?.university || "—"}</td>
                     <td className="px-2 py-3 tabular">{formatNumber(p.followers)}</td>
-                    <td className="px-2 py-3 tabular text-zinc-400">{formatNumber(p.posts_count)}</td>
+                    <td className="px-2 py-3 tabular">
+                      <div className="font-medium text-zinc-100">
+                        {formatNumber(
+                          typeof p.programme_posts === "number"
+                            ? p.programme_posts
+                            : Number((p.insights as { sampled_posts?: number } | undefined)?.sampled_posts) || 0
+                        )}
+                      </div>
+                      <div className="text-[10px] text-zinc-600" title="Instagram lifetime post count">
+                        {formatNumber(p.posts_count)} IG total
+                      </div>
+                    </td>
                     <td className="px-2 py-3">
                       {p.scrape_progress?.active ? (
                         <ScrapeRowProgress username={p.username} progress={p.scrape_progress} />

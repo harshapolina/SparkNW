@@ -100,6 +100,8 @@ class ProfileResponse(BaseModel):
     followers: int = 0
     following: int = 0
     posts_count: int = 0
+    # Posts dated inside SPARK programme window (15 Jul 2026 → today). Not IG lifetime.
+    programme_posts: int = 0
     avg_likes: float = 0.0
     avg_views: float = 0.0
     avg_comments: float = 0.0

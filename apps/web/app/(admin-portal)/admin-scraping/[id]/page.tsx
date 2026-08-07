@@ -353,8 +353,17 @@ export default function AdminCreatorDetailPage() {
                 <span className="text-zinc-500">following</span>
               </div>
               <div>
-                <span className="font-semibold tabular">{formatNumber(p.posts_count)}</span>{" "}
-                <span className="text-zinc-500">posts</span>
+                <span className="font-semibold tabular">
+                  {formatNumber(
+                    typeof p.programme_posts === "number"
+                      ? p.programme_posts
+                      : num(insights.sampled_posts)
+                  )}
+                </span>{" "}
+                <span className="text-zinc-500">programme posts</span>
+                <span className="ml-1 text-zinc-600">
+                  ({formatNumber(p.posts_count)} IG lifetime)
+                </span>
               </div>
               <div className={cn("font-semibold tabular", p.growth_pct_today >= 0 ? "text-emerald-400" : "text-rose-400")}>
                 {formatPct(p.growth_pct_today)} today

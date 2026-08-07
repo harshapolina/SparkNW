@@ -53,6 +53,8 @@ export type Profile = {
   followers: number;
   following: number;
   posts_count: number;
+  /** Posts inside SPARK programme window (15 Jul 2026 → today). */
+  programme_posts?: number;
   avg_likes: number;
   avg_views: number;
   avg_comments: number;
