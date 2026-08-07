@@ -59,18 +59,34 @@ def _cohort_stop_enabled() -> bool:
     }
 
 
+def _is_private_scrape_result(result: dict[str, Any]) -> bool:
+    """Private IG accounts: card only — posts are never fetchable without login."""
+    if bool(result.get("is_private")):
+        return True
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    return str(raw.get("path") or "") in {
+        "http_private",
+        "html_private",
+        "browser_private",
+    }
+
+
 def _is_complete_enough(
     posts_count: int,
     scraped: int,
     followers: int,
     *,
     hit_cohort_floor: bool = False,
+    is_private: bool = False,
 ) -> bool:
     """Accept capped scrapes and first-pass samples so timeouts don't leave zeros.
 
     ``hit_cohort_floor`` means the engine walked newest→oldest down to
     SPARK_COHORT_START (2026-07-15) — that is a complete programme scrape.
     """
+    if is_private:
+        # Private profiles resolve to a card; timeline posts are not available.
+        return True
     if hit_cohort_floor:
         return True
 
@@ -109,6 +125,9 @@ def _is_complete_enough(
 
 def _is_confirmed_empty_profile(result: dict[str, Any]) -> bool:
     """True when the scrape resolved a real IG profile that simply has 0 posts."""
+    # Private cards often report a posts_count but no scrapeable timeline.
+    if _is_private_scrape_result(result):
+        return True
     posts_count = int(result.get("posts_count") or 0)
     posts_data = result.get("posts") or []
     if posts_count != 0 or posts_data:
@@ -118,13 +137,8 @@ def _is_confirmed_empty_profile(result: dict[str, Any]) -> bool:
     if path in {
         "http_empty",
         "username_feed_empty",
-        "http_private",
         "http_empty_card",
-        "html_private",
-        "browser_private",
     }:
-        return True
-    if bool(result.get("is_private")):
         return True
     # Card identity proves Instagram returned a profile (not a blank failure).
     return bool(
@@ -191,6 +205,11 @@ def humanize_scrape_error(err: BaseException | str) -> str:
     if "incomplete timeline" in low:
         return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
     if "refusing to save" in low:
+        if "private" in low:
+            return (
+                "This Instagram account is private. We saved the profile card; "
+                "posts and insights need a public account."
+            )
         return "Scrape was incomplete and was not saved over existing data. Please Refresh again."
     if "overwrite insights" in low:
         return (
@@ -338,6 +357,7 @@ async def apply_scrape_result(
     posts_data: list[dict[str, Any]] = result.get("posts") or []
     raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
     hit_cohort_floor = bool(raw.get("hit_cohort_floor"))
+    is_private = _is_private_scrape_result(result)
 
     # Hard filter: ONLY persist posts dated inside the SPARK programme window
     # (15 Jul 2026 → today). Undated / unrecoverable posts are dropped — they must
@@ -446,11 +466,13 @@ async def apply_scrape_result(
     # NEVER wipe a good profile with an incomplete / empty scrape.
     # When SCRAPE_MAX_POSTS is capped (API inline/bulk), completeness is vs that cap.
     # Cohort floor (Jul 15 2026) means we intentionally stopped — treat as complete.
+    # Private accounts: 0 scraped posts with posts_count > 0 is normal (locked grid).
     if not _is_complete_enough(
         posts_count,
         len(posts_data),
         followers,
         hit_cohort_floor=hit_cohort_floor,
+        is_private=is_private,
     ):
         raise ValueError(
             f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count or '?'} posts)"
@@ -460,6 +482,7 @@ async def apply_scrape_result(
         and not posts_data
         and _configured_max_posts() <= 0
         and not hit_cohort_floor
+        and not is_private
     ):
         raise ValueError(
             f"Refusing to save empty scrape ({len(posts_data)}/{posts_count} posts)"
@@ -480,6 +503,7 @@ async def apply_scrape_result(
         and int((profile.insights or {}).get("sampled_posts") or 0) > 0
         and not posts_data
         and not hit_cohort_floor
+        and not is_private
     ):
         raise ValueError("Refusing to overwrite insights with empty metrics")
 
