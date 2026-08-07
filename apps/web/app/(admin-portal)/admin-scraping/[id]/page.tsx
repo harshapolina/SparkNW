@@ -21,6 +21,7 @@ import { ScrapeProgressCard } from "@/components/scrape-progress";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
 import { type ScrapeProgress } from "@/lib/scrape-progress";
 import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
+import { adminScrapingListHref } from "@/lib/admin-scraping-list-state";
 
 type Post = {
   id: string;
@@ -242,7 +243,7 @@ export default function AdminCreatorDetailPage() {
   });
   const del = useMutation({
     mutationFn: () => api(`/profiles/${profileId}`, { method: "DELETE" }),
-    onSuccess: () => router.push("/admin-scraping"),
+    onSuccess: () => router.push(adminScrapingListHref()),
   });
 
   if (profileQ.isPending && !profileQ.data) return <div className="h-48 animate-pulse rounded-2xl bg-zinc-900" />;
@@ -314,7 +315,7 @@ export default function AdminCreatorDetailPage() {
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <Link href="/admin-scraping" className="text-xs text-zinc-500 hover:text-zinc-300">
+            <Link href={adminScrapingListHref()} className="text-xs text-zinc-500 hover:text-zinc-300">
               ← Scraping
             </Link>
             <div className="mt-2 flex flex-wrap items-center gap-2">

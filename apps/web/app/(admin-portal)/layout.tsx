@@ -74,7 +74,7 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
             return (
               <Link
                 key={item.href}
-                href={item.href}
+                href={item.href === "/admin-scraping" ? adminScrapingListHref() : item.href}
                 className={cn(
                   "flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-[13px] transition",
                   active

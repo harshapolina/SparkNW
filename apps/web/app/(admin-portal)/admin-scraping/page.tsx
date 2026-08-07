@@ -16,6 +16,10 @@ import {
   ScrapeRowProgress,
 } from "@/components/scrape-progress";
 import { NumberedPagination } from "@/components/numbered-pagination";
+import {
+  readAdminScrapingListState,
+  writeAdminScrapingListState,
+} from "@/lib/admin-scraping-list-state";
 
 type ListResponse = { items: Profile[]; total: number; page: number; page_size: number };
 
@@ -34,6 +38,19 @@ function AdminScrapingPageInner() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
+  // Restore page from session when URL has no page (e.g. bare /admin-scraping link).
+  useEffect(() => {
+    if (searchParams.has("page") || searchParams.has("q") || searchParams.has("status")) return;
+    const stored = readAdminScrapingListState();
+    if (!stored || (stored.page <= 1 && !stored.q && !stored.status)) return;
+    const params = new URLSearchParams();
+    if (stored.q.trim()) params.set("q", stored.q.trim());
+    if (stored.status) params.set("status", stored.status);
+    if (stored.page > 1) params.set("page", String(stored.page));
+    const qs = params.toString();
+    if (qs) router.replace(`${pathname}?${qs}`, { scroll: false });
+  }, [searchParams, pathname, router]);
+
   const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
   const statusFilter = searchParams.get("status") || "";
   const q = searchParams.get("q") || "";
@@ -42,6 +59,10 @@ function AdminScrapingPageInner() {
   useEffect(() => {
     setQInput(q);
   }, [q]);
+
+  useEffect(() => {
+    writeAdminScrapingListState({ page, q, status: statusFilter });
+  }, [page, q, statusFilter]);
 
   const replaceListParams = useCallback(
     (patch: { page?: number; q?: string; status?: string }) => {
@@ -53,6 +74,7 @@ function AdminScrapingPageInner() {
       if (nextStatus) params.set("status", nextStatus);
       if (nextPage > 1) params.set("page", String(nextPage));
       const qs = params.toString();
+      writeAdminScrapingListState({ page: nextPage, q: nextQ, status: nextStatus });
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
     [pathname, q, statusFilter, page, router]
