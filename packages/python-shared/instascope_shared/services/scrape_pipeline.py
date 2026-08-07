@@ -9,6 +9,7 @@ from instascope_scraper.caps import caps_env
 from instascope_shared.analytics.metrics import compute_post_metrics
 from instascope_shared.core.config import get_settings
 from instascope_shared.domain.instagram import growth_pct
+from instascope_shared.instagram_time import infer_posted_at
 from instascope_shared.models import (
     Job,
     JobStatus,
@@ -293,6 +294,15 @@ async def apply_scrape_result(
                     posted_at = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
                 except ValueError:
                     posted_at = None
+            if posted_at is None:
+                inferred = infer_posted_at(
+                    shortcode=str(p.get("shortcode") or "") or None,
+                    ig_post_id=str(p.get("ig_post_id") or p.get("id") or "") or None,
+                )
+                if inferred is not None:
+                    posted_at = inferred.replace(tzinfo=None) if inferred.tzinfo else inferred
+            elif getattr(posted_at, "tzinfo", None) is not None:
+                posted_at = posted_at.replace(tzinfo=None)
 
             post_docs.append(
                 Post(

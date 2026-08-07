@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 from instascope_shared.analytics.metrics import compute_post_metrics
 from instascope_shared.cohort import clamp_scoring_window
 from instascope_shared.domain.instagram import extract_username, profile_url_for
+from instascope_shared.instagram_time import infer_posted_at
 from instascope_shared.models import DEFAULT_ORG_ID, Job, JobStatus, JobType, Post, Profile, ProfileStatus
 from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse
 from instascope_shared.services.scrape_pipeline import heal_soft_scrape_failure
@@ -90,11 +91,18 @@ async def list_posts_in_programme_window(profile_id: str) -> list[Post]:
     end_n = end.replace(tzinfo=None)
     out: list[Post] = []
     for p in posts:
-        if not p.posted_at:
+        dt = p.posted_at
+        if dt is None:
+            dt = infer_posted_at(shortcode=p.shortcode, ig_post_id=p.ig_post_id)
+        if dt is None:
             continue
-        dt = p.posted_at.replace(tzinfo=None) if p.posted_at.tzinfo else p.posted_at
-        if start_n <= dt <= end_n:
+        dt_n = dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
+        if start_n <= dt_n <= end_n:
+            if p.posted_at is None:
+                p.posted_at = dt.replace(tzinfo=None) if dt.tzinfo else dt
             out.append(p)
+    # Prefer newest first when sort was null-heavy
+    out.sort(key=lambda x: x.posted_at or datetime.min, reverse=True)
     return out
 
 

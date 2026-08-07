@@ -9,6 +9,7 @@ from typing import Any
 
 from instascope_shared.cohort import clamp_scoring_window, cohort_start_ymd
 from instascope_shared.domain.instagram import engagement_rate, mean
+from instascope_shared.instagram_time import infer_posted_at
 
 
 _HASHTAG_RE = re.compile(r"#([A-Za-z0-9_]+)")
@@ -26,19 +27,17 @@ def _int(v: Any) -> int:
         return 0
 
 
-def parse_posted_at(raw: Any) -> datetime | None:
-    if not raw:
-        return None
-    if isinstance(raw, datetime):
-        dt = raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+def parse_posted_at(raw: Any, post: dict[str, Any] | None = None) -> datetime | None:
+    """Parse posted_at; if missing, derive from Instagram shortcode / media id."""
+    if post is None:
+        post = {"posted_at": raw}
     else:
-        try:
-            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+        post = {**post, "posted_at": raw if raw is not None else post.get("posted_at")}
+    return infer_posted_at(
+        posted_at=post.get("posted_at"),
+        shortcode=str(post.get("shortcode") or "") or None,
+        ig_post_id=str(post.get("ig_post_id") or post.get("id") or "") or None,
+    )
 
 
 def filter_posts_to_programme_window(
@@ -54,13 +53,16 @@ def filter_posts_to_programme_window(
     end_n = end.replace(tzinfo=None)
     out: list[dict[str, Any]] = []
     for p in posts:
-        dt = parse_posted_at(p.get("posted_at"))
+        dt = parse_posted_at(p.get("posted_at"), p)
         if dt is None:
             continue
         dt_n = dt.replace(tzinfo=None)
         if dt_n < start_n or dt_n > end_n:
             continue
-        out.append(p)
+        # Attach resolved date so downstream metrics use it
+        enriched = dict(p)
+        enriched["posted_at"] = dt
+        out.append(enriched)
     return out
 
 
@@ -76,8 +78,23 @@ def compute_post_metrics(
     through today are included — not lifetime / all scraped posts.
     """
     window_start, window_end = clamp_scoring_window()
+    posts_stored = len(posts)
+    posts_missing_dates = 0
+    for p in posts:
+        if parse_posted_at(p.get("posted_at"), p) is None:
+            posts_missing_dates += 1
+
     if programme_window:
         posts = filter_posts_to_programme_window(posts, since=window_start, until=window_end)
+
+    empty_meta = {
+        "window_from": window_start.strftime("%Y-%m-%d") if programme_window else None,
+        "window_to": window_end.strftime("%Y-%m-%d") if programme_window else None,
+        "cohort_start": cohort_start_ymd() if programme_window else None,
+        "posts_stored": posts_stored,
+        "posts_missing_dates": posts_missing_dates,
+        "posts_in_window": 0,
+    }
 
     if not posts:
         return {
@@ -118,9 +135,7 @@ def compute_post_metrics(
             "max_likes": 0,
             "max_views": 0,
             "min_likes": 0,
-            "window_from": window_start.strftime("%Y-%m-%d") if programme_window else None,
-            "window_to": window_end.strftime("%Y-%m-%d") if programme_window else None,
-            "cohort_start": cohort_start_ymd() if programme_window else None,
+            **empty_meta,
         }
 
     likes = [_int(p.get("likes")) for p in posts]
@@ -158,7 +173,7 @@ def compute_post_metrics(
     last_30 = now - timedelta(days=30)
     dated: list[datetime] = []
     for p in posts:
-        dt = parse_posted_at(p.get("posted_at"))
+        dt = parse_posted_at(p.get("posted_at"), p)
         if dt is not None:
             dated.append(dt)
 
@@ -235,4 +250,7 @@ def compute_post_metrics(
         "window_from": window_start.strftime("%Y-%m-%d") if programme_window else None,
         "window_to": window_end.strftime("%Y-%m-%d") if programme_window else None,
         "cohort_start": cohort_start_ymd() if programme_window else None,
+        "posts_stored": posts_stored,
+        "posts_missing_dates": posts_missing_dates,
+        "posts_in_window": len(posts),
     }

@@ -98,6 +98,9 @@ type Insights = {
   window_from?: string | null;
   window_to?: string | null;
   cohort_start?: string | null;
+  posts_stored?: number;
+  posts_missing_dates?: number;
+  posts_in_window?: number;
 };
 
 const tabs = ["overview", "student", "insights", "posts", "growth", "analytics", "history"] as const;
@@ -557,6 +560,22 @@ export default function AdminCreatorDetailPage() {
             <span className="text-zinc-400">Profile posts total</span> is Instagram&apos;s lifetime count and is not
             window-scoped.
           </p>
+          {num(insights.posts_stored) > 0 && num(insights.sampled_posts) === 0 ? (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+              {num(insights.posts_stored)} post(s) are stored for this profile, but none fall inside the programme
+              window (15 Jul 2026 → today)
+              {num(insights.posts_missing_dates) > 0
+                ? ` — ${num(insights.posts_missing_dates)} still have no recoverable date.`
+                : " — this account may not have posted since the programme started."}{" "}
+              Open the Posts tab to inspect dates, or Refresh again.
+            </div>
+          ) : null}
+          {num(insights.posts_stored) === 0 && num(insights.sampled_posts) === 0 ? (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+              No posts saved yet for Insights. Click Refresh / Scrape — the header &quot;posts&quot; count is Instagram&apos;s
+              lifetime total, not stored rows.
+            </div>
+          ) : null}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
               ["Posts in programme", formatNumber(num(insights.sampled_posts))],

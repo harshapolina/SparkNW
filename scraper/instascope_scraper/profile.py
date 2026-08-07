@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from instascope_scraper.browser import browser_session
 from instascope_scraper.caps import ScrapeCaps, caps_env, use_caps
+from instascope_scraper.instagram_time import infer_posted_at_iso
 from instascope_scraper.types import ProxyConfig, ScrapedPost, ScrapeResult, proxy_to_httpx_url
 
 logger = logging.getLogger("instascope.scraper.profile")
@@ -125,6 +126,11 @@ def _post_from_node(node: dict[str, Any]) -> ScrapedPost | None:
             posted_at = datetime.fromtimestamp(int(taken), tz=timezone.utc).isoformat()
         except (TypeError, ValueError, OSError):
             posted_at = None
+    if not posted_at:
+        posted_at = infer_posted_at_iso(
+            shortcode=str(shortcode) if shortcode else None,
+            ig_post_id=post_id or None,
+        )
 
     likes = _parse_count(
         (node.get("edge_liked_by") or {}).get("count")
@@ -814,6 +820,7 @@ async def _extract_posts_from_dom(page) -> list[ScrapedPost]:
         if not shortcode:
             continue
         kind = item.get("kind") or "p"
+        posted_at = infer_posted_at_iso(shortcode=str(shortcode), ig_post_id=str(shortcode))
         posts.append(
             ScrapedPost(
                 ig_post_id=shortcode,
@@ -825,7 +832,7 @@ async def _extract_posts_from_dom(page) -> list[ScrapedPost]:
                 likes=0,
                 comments=0,
                 views=0,
-                posted_at=None,
+                posted_at=posted_at,
             )
         )
     return posts
