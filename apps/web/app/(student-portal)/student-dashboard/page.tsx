@@ -17,6 +17,7 @@ import type { StudentDashboardResponse } from "@/lib/spark/api-types";
 import { formatNumber } from "@/lib/utils";
 import { TierBadge } from "@/components/spark/tier-badge";
 import { ProgressBar, SparkAvatar } from "@/components/spark/ui";
+import { ProgrammeWindowNote } from "@/components/programme-window-note";
 
 export default function StudentDashboardPage() {
   const { data, isPending, error } = useQuery({
@@ -130,6 +131,7 @@ export default function StudentDashboardPage() {
             Live SPARK score from scraped Instagram data ·{" "}
             <span className="text-[#ff4d00]">{creator.handle}</span>
           </p>
+          <ProgrammeWindowNote className="mt-2 !text-xs" />
         </div>
         <div className="text-right text-[11px] uppercase tracking-[0.12em] text-zinc-500">
           <div>{data.week_label}</div>

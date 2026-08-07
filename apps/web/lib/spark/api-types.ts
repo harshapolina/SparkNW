@@ -58,6 +58,8 @@ export type LeaderboardResponse = {
   from_date?: string | null;
   /** Inclusive period end when date-range filter is applied */
   to_date?: string | null;
+  /** Programme start floor (YYYY-MM-DD), e.g. 2026-07-15 */
+  cohort_start?: string | null;
 };
 
 export type Top10Response = {

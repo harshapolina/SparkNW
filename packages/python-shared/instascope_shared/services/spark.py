@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Literal
 
+from instascope_shared.cohort import clamp_scoring_window, snapshot_floor_ymd
 from instascope_shared.models import (
     DEFAULT_ORG_ID,
     Job,
@@ -184,6 +185,7 @@ def score_profile(
     as_of: datetime | None = None,
     from_date: datetime | None = None,
     followers_override: int | None = None,
+    growth_pts_override: int | None = None,
 ) -> dict[str, Any]:
     """Compute SPARK points from real scrape metrics."""
     now = _naive_dt(as_of) or datetime.utcnow()
@@ -289,7 +291,11 @@ def score_profile(
             }
         )
 
-    growth = _growth_pts(follower_count)
+    growth = (
+        int(growth_pts_override)
+        if growth_pts_override is not None
+        else _growth_pts(follower_count)
+    )
     if growth:
         task_history.append(
             {
@@ -464,15 +470,11 @@ async def build_leaderboard(
     if posts_map is None:
         posts_map = await _posts_for_profiles(profile_ids)
 
-    window_start = _naive_dt(from_date)
-    window_end = _naive_dt(to_date)
-    period_mode = window_start is not None or window_end is not None
+    # Always score inside the SPARK cohort window (floored at programme start).
+    window_start, window_end = clamp_scoring_window(from_date, to_date)
 
-    # Previous ranks: on/before from_date when ranged, else ~7 days ago (followers proxy)
-    if period_mode and window_start is not None:
-        prev_cutoff = window_start.strftime("%Y-%m-%d")
-    else:
-        prev_cutoff = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    # Previous ranks: snapshot on/before window start (followers proxy).
+    prev_cutoff = window_start.strftime("%Y-%m-%d")
 
     prev_snaps = (
         await ProfileSnapshot.find(
@@ -487,7 +489,8 @@ async def build_leaderboard(
     prev_rank = {pid: i + 1 for i, (pid, _) in enumerate(prev_order)}
 
     followers_at_end: dict[str, int] = {}
-    if period_mode and window_end is not None and profile_ids:
+    followers_at_start: dict[str, int] = {pid: int(f or 0) for pid, f in prev_followers.items()}
+    if profile_ids:
         end_cutoff = window_end.strftime("%Y-%m-%d")
         end_snaps = await ProfileSnapshot.find(
             {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": end_cutoff}}
@@ -498,12 +501,19 @@ async def build_leaderboard(
     rows: list[dict[str, Any]] = []
     for p in profiles:
         pid = str(p.id)
-        score_kwargs: dict[str, Any] = {}
-        if period_mode:
-            score_kwargs["from_date"] = window_start
-            score_kwargs["as_of"] = window_end
-            if pid in followers_at_end:
-                score_kwargs["followers_override"] = followers_at_end[pid]
+        score_kwargs: dict[str, Any] = {
+            "from_date": window_start,
+            "as_of": window_end,
+        }
+        end_fol = followers_at_end.get(pid)
+        if end_fol is not None:
+            score_kwargs["followers_override"] = end_fol
+        # Growth points only for milestones crossed inside the cohort window.
+        start_fol = int(followers_at_start.get(pid, 0) or 0)
+        end_for_growth = int(end_fol if end_fol is not None else (p.followers or 0))
+        score_kwargs["growth_pts_override"] = max(
+            0, _growth_pts(end_for_growth) - _growth_pts(start_fol)
+        )
         rows.append(score_profile(p, posts_map.get(pid, []), **score_kwargs))
 
     def sort_key(r: dict[str, Any]) -> tuple:
@@ -522,20 +532,34 @@ async def build_leaderboard(
         r["prev_rank"] = prev_rank.get(r["id"], i + 1)
         r["rank_delta"] = r["prev_rank"] - r["rank"]
         r["is_you"] = bool(you_profile_id and r["id"] == you_profile_id)
+        r["window_from"] = window_start.strftime("%Y-%m-%d")
+        r["window_to"] = window_end.strftime("%Y-%m-%d")
     return rows
 
 
 async def get_top_10(org_id: str | None = None) -> dict[str, Any]:
-    board = await build_leaderboard(org_id, sort="overall")
+    start, end = clamp_scoring_window(None, None)
+    board = await build_leaderboard(
+        org_id, sort="overall", from_date=start, to_date=end
+    )
     return {
         "items": board[:10],
         "total_creators": len(board),
         "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
+        "from_date": start.strftime("%Y-%m-%d"),
+        "to_date": end.strftime("%Y-%m-%d"),
     }
 
 
 async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
-    board = await build_leaderboard(org_id, sort="overall", you_profile_id=profile_id)
+    start, end = clamp_scoring_window(None, None)
+    board = await build_leaderboard(
+        org_id,
+        sort="overall",
+        you_profile_id=profile_id,
+        from_date=start,
+        to_date=end,
+    )
     if not board:
         return {"empty": True, "creators": [], "creator": None}
 
@@ -649,12 +673,29 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
     oid = org_id or DEFAULT_ORG_ID
     profiles = await _profiles_for_org(oid)
     posts_map = await _posts_for_profiles([str(p.id) for p in profiles])
-    board = await build_leaderboard(oid, sort="overall", profiles=profiles, posts_map=posts_map)
-    # Flatten posts once (already loaded for scoring)
-    posts = [p for bucket in posts_map.values() for p in bucket]
-    today = datetime.utcnow().strftime("%Y-%m-%d")
+    window_start, window_end = clamp_scoring_window(None, None)
+    board = await build_leaderboard(
+        oid,
+        sort="overall",
+        profiles=profiles,
+        posts_map=posts_map,
+        from_date=window_start,
+        to_date=window_end,
+    )
+    # Flatten posts once — keep only cohort-window posts for overview charts/totals.
+    all_posts = [p for bucket in posts_map.values() for p in bucket]
+    posts = [
+        p
+        for p in all_posts
+        if p.posted_at
+        and _naive_dt(p.posted_at) is not None
+        and _naive_dt(p.posted_at) >= window_start
+        and _naive_dt(p.posted_at) <= window_end
+    ]
+    today = window_end.strftime("%Y-%m-%d")
+    since = window_start.strftime("%Y-%m-%d")
 
-    total_followers = sum(p.followers for p in profiles)
+    total_followers = sum(int(r["followers"]) for r in board) if board else sum(p.followers for p in profiles)
     total_views = sum(int(r["views"]) for r in board)
     total_likes = sum(int(r["likes"]) for r in board)
     total_comments = sum(int(r["comments"]) for r in board)
@@ -662,7 +703,7 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
     reels = sum(1 for p in posts if str(getattr(p.media_type, "value", p.media_type)).lower() == "reel")
 
     # Fast WoW: points added in the last 7 days (new post performance + consistency + growth milestone deltas)
-    week_ago_dt = datetime.utcnow() - timedelta(days=7)
+    week_ago_dt = max(window_start, datetime.utcnow() - timedelta(days=7))
     week_ago_str = week_ago_dt.strftime("%Y-%m-%d")
 
     week_perf = 0
@@ -675,8 +716,8 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
 
     week_cons = sum(int((r.get("points_breakdown") or {}).get("consistency") or 0) for r in board)
 
-    # Reuse 14d snaps for growth series + WoW growth deltas (skip full historical re-score)
-    since = (datetime.utcnow() - timedelta(days=14)).strftime("%Y-%m-%d")
+    # Reuse snaps from cohort start for growth series + WoW growth deltas
+    since = snapshot_floor_ymd()
     profile_ids = [str(p.id) for p in profiles]
     snaps = (
         await ProfileSnapshot.find(

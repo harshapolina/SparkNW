@@ -6,6 +6,7 @@ import { ArrowUpRight, BadgeCheck } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AdminOverviewResponse } from "@/lib/spark/api-types";
 import { cn, formatNumber, formatPct } from "@/lib/utils";
+import { ProgrammeWindowNote } from "@/components/programme-window-note";
 
 export default function AdminAnalyticsPage() {
   const { data, isPending, error } = useQuery({
@@ -31,8 +32,9 @@ export default function AdminAnalyticsPage() {
           ← Dashboard
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">Portfolio analytics</h1>
+        <ProgrammeWindowNote className="mt-1" />
         <p className="mt-1 text-sm text-zinc-500">
-          Every tracked creator with followers, engagement, and avg likes — same as the old Analytics page.
+          Every tracked creator with followers, engagement, and avg likes — metrics use the programme window above.
         </p>
       </div>
 

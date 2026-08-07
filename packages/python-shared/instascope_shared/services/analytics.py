@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
+from instascope_shared.cohort import snapshot_floor_ymd
 from instascope_shared.models import Post, Profile, ProfileSnapshot, ProfileStatus
 from instascope_shared.schemas import (
     NamedValue,
@@ -20,6 +21,12 @@ from instascope_shared.services.profiles import to_profile_response
 
 def _today() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def _naive(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
 
 async def get_overview(user_id: str) -> OverviewResponse:
@@ -41,8 +48,8 @@ async def get_overview(user_id: str) -> OverviewResponse:
 
     growth_today = sum(int(p.followers * (p.growth_pct_today / 100)) for p in profiles if p.growth_pct_today)
 
-    # Snapshots for last 30 days (user-scoped)
-    since = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+    # Snapshots from SPARK cohort start onward
+    since = snapshot_floor_ymd()
     snapshots = await ProfileSnapshot.find(
         ProfileSnapshot.user_id == user_id,
         ProfileSnapshot.snapshot_date >= since,
@@ -58,19 +65,22 @@ async def get_overview(user_id: str) -> OverviewResponse:
     ]
 
     posts = await Post.find(Post.user_id == user_id).to_list()
+    floor = datetime.strptime(since, "%Y-%m-%d")
     posts_by_day: Counter[str] = Counter()
     types: Counter[str] = Counter()
     heatmap: dict[tuple[int, int], int] = defaultdict(int)
 
     for post in posts:
-        if post.posted_at:
-            posts_by_day[post.posted_at.strftime("%Y-%m-%d")] += 1
-            heatmap[(post.posted_at.weekday(), post.posted_at.hour)] += 1
+        posted = _naive(post.posted_at)
+        if not posted or posted < floor:
+            continue
+        posts_by_day[posted.strftime("%Y-%m-%d")] += 1
+        heatmap[(posted.weekday(), posted.hour)] += 1
         types[str(post.media_type.value if hasattr(post.media_type, "value") else post.media_type)] += 1
 
     posts_per_day = [
         SeriesPoint(date=d, value=float(c))
-        for d, c in sorted(posts_by_day.items())[-30:]
+        for d, c in sorted(posts_by_day.items())
     ]
     content_types = [NamedValue(name=k, value=float(v)) for k, v in types.items()]
     posting_heatmap = [
@@ -101,12 +111,16 @@ async def get_overview(user_id: str) -> OverviewResponse:
 
 
 async def get_profile_analytics(user_id: str, profile_id: str) -> ProfileAnalyticsResponse:
+    since = snapshot_floor_ymd()
+    floor = datetime.strptime(since, "%Y-%m-%d")
     snapshots = await ProfileSnapshot.find(
         ProfileSnapshot.user_id == user_id,
         ProfileSnapshot.profile_id == profile_id,
+        ProfileSnapshot.snapshot_date >= since,
     ).sort(+ProfileSnapshot.snapshot_date).to_list()
 
     posts = await Post.find(Post.profile_id == profile_id).to_list()
+    posts = [p for p in posts if _naive(p.posted_at) and _naive(p.posted_at) >= floor]
 
     followers_trend = [SeriesPoint(date=s.snapshot_date, value=float(s.followers)) for s in snapshots]
     views_trend = [SeriesPoint(date=s.snapshot_date, value=s.avg_views) for s in snapshots]

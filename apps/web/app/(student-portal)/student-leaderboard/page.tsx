@@ -9,14 +9,20 @@ import type { LeaderboardResponse, SparkCreatorRow } from "@/lib/spark/api-types
 import { cn, formatNumber } from "@/lib/utils";
 import { TierBadge } from "@/components/spark/tier-badge";
 import { LivePill, Movement, ProgressBar, SparkAvatar } from "@/components/spark/ui";
+import { ProgrammeWindowNote } from "@/components/programme-window-note";
+import { defaultCohortRange, utcTodayYmd } from "@/lib/spark/cohort";
 
 export default function StudentLeaderboardPage() {
   const [scope, setScope] = useState<"all" | "campus">("all");
   const [q, setQ] = useState("");
+  const range = defaultCohortRange(utcTodayYmd());
 
   const { data, isPending, error } = useQuery({
-    queryKey: ["spark", "leaderboard", "overall", "student"],
-    queryFn: () => api<LeaderboardResponse>("/spark/leaderboard?sort=overall"),
+    queryKey: ["spark", "leaderboard", "overall", "student", range.from, range.to],
+    queryFn: () =>
+      api<LeaderboardResponse>(
+        `/spark/leaderboard?sort=overall&from_date=${range.from}&to_date=${range.to}`
+      ),
   });
 
   const you = useMemo(() => {
@@ -164,9 +170,10 @@ export default function StudentLeaderboardPage() {
             <br />
             <span className="text-[#ff3b30]">Unlock milestones.</span>
           </h1>
-          <p className="mt-4 text-sm leading-relaxed text-zinc-400">
-            Overall rank uses the SPARK point system from live scrapes. See Top 10 below — your row is highlighted if
-            you&apos;re in it, or pinned when you&apos;re outside.
+          <ProgrammeWindowNote className="mt-3" toDate={range.to} />
+          <p className="mt-3 text-sm leading-relaxed text-zinc-400">
+            Overall rank uses the SPARK point system from live scrapes in the programme window. See Top 10 below — your
+            row is highlighted if you&apos;re in it, or pinned when you&apos;re outside.
           </p>
         </div>
         <label className="flex w-full max-w-sm items-center gap-2 rounded-full border border-white/10 bg-[#121212] px-4 py-2.5">

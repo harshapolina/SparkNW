@@ -11,6 +11,8 @@ import { cn, formatNumber } from "@/lib/utils";
 import { TierBadge } from "@/components/spark/tier-badge";
 import { Movement, SparkAvatar } from "@/components/spark/ui";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { ProgrammeWindowNote } from "@/components/programme-window-note";
+import { defaultCohortRange, utcTodayYmd } from "@/lib/spark/cohort";
 
 const sorts: { id: LeaderboardSort; label: string }[] = [
   { id: "overall", label: "OVERALL" },
@@ -28,20 +30,21 @@ function buildLeaderboardUrl(sort: LeaderboardSort, fromDate: string, toDate: st
 }
 
 export default function AdminLeaderboardPage() {
+  const defaults = defaultCohortRange(utcTodayYmd());
   const [sort, setSort] = useState<LeaderboardSort>("overall");
   const [campus, setCampus] = useState<string>("all");
   const [tier, setTier] = useState<string>("all");
   const [teamOnly, setTeamOnly] = useState(false);
   const [q, setQ] = useState("");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const [fromDate, setFromDate] = useState(defaults.from);
+  const [toDate, setToDate] = useState(defaults.to);
   const [page, setPage] = useState(1);
   const perPage = 10;
 
   const rangeActive = Boolean(fromDate && toDate);
   const rangeInvalid = Boolean(fromDate && toDate && fromDate > toDate);
   // Don't refetch while only one end is set (should not happen; picker waits for both).
-  const rangeReady = (!fromDate && !toDate) || (Boolean(fromDate) && Boolean(toDate));
+  const rangeReady = Boolean(fromDate && toDate);
 
   const boardQ = useQuery({
     queryKey: ["spark", "leaderboard", sort, fromDate || null, toDate || null],
@@ -52,6 +55,13 @@ export default function AdminLeaderboardPage() {
     queryKey: ["spark", "admin"],
     queryFn: () => api<AdminOverviewResponse>("/spark/admin"),
   });
+
+  function clearDates() {
+    const next = defaultCohortRange(utcTodayYmd());
+    setFromDate(next.from);
+    setToDate(next.to);
+    setPage(1);
+  }
 
   const ranked = useMemo(() => {
     let list: SparkCreatorRow[] = [...(boardQ.data?.items || [])];
@@ -86,12 +96,6 @@ export default function AdminLeaderboardPage() {
   const campuses = boardQ.data?.campuses || [];
   const appliedFrom = boardQ.data?.from_date || fromDate || null;
   const appliedTo = boardQ.data?.to_date || toDate || null;
-
-  const clearDates = () => {
-    setFromDate("");
-    setToDate("");
-    setPage(1);
-  };
 
   const exportCsv = () => {
     const header = ["Rank", "Name", "Handle", "Campus", "Team", "Tier", "Points", "Followers", "Views", "Engagement", "Trend"];
@@ -152,33 +156,17 @@ export default function AdminLeaderboardPage() {
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Leaderboard</h1>
+          <ProgrammeWindowNote className="mt-1" toDate={appliedTo || toDate} />
           <p className="mt-1 text-sm text-zinc-500">
-            Sort pills reorder by real scraped metrics. OVERALL uses SPARK points calculated from those metrics.
+            Sort pills reorder by real scraped metrics. OVERALL uses SPARK points calculated from posts in the programme
+            window (started 15 Jul 2026).
             {rangeActive && appliedFrom && appliedTo ? (
               <>
                 {" "}
-                Showing period{" "}
+                Currently showing{" "}
                 <span className="text-zinc-300">
                   {appliedFrom} → {appliedTo}
                 </span>
-                .
-              </>
-            ) : rangeActive ? (
-              <>
-                {" "}
-                Showing period filter
-                {appliedFrom ? (
-                  <>
-                    {" "}
-                    from <span className="text-zinc-300">{appliedFrom}</span>
-                  </>
-                ) : null}
-                {appliedTo ? (
-                  <>
-                    {" "}
-                    to <span className="text-zinc-300">{appliedTo}</span>
-                  </>
-                ) : null}
                 .
               </>
             ) : null}
@@ -225,12 +213,10 @@ export default function AdminLeaderboardPage() {
           <div className="flex flex-wrap items-center gap-2">
             {rangeActive && appliedFrom && appliedTo ? (
               <span className="rounded-full border border-[#ff4d00]/35 bg-[#ff4d00]/10 px-3 py-1.5 text-xs text-[#ff4d00]">
-                Filtering {appliedFrom} → {appliedTo}
+                Scoring {appliedFrom} → {appliedTo}
               </span>
             ) : (
-              <p className="text-[11px] text-zinc-500">
-                Optional: filter ranks by post dates in a range
-              </p>
+              <ProgrammeWindowNote variant="compact" toDate={toDate} />
             )}
           </div>
         </div>
@@ -426,7 +412,7 @@ export default function AdminLeaderboardPage() {
           <span className="text-zinc-300">OVERALL / POINTS</span> = SPARK score from scraped posts (consistency +
           performance + growth).{" "}
           <span className="text-zinc-300">FOLLOWERS / VIEWS / ENGAGEMENT</span> ={" "}
-          {rangeActive ? "metrics for the selected date range" : "live Instagram metrics"}. Orange column is the active
+          {rangeActive ? "metrics for the selected date range (from 15 Jul 2026 onward)" : "cohort metrics from 15 Jul 2026"}. Orange column is the active
           sort.
         </p>
 

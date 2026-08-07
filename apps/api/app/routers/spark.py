@@ -4,6 +4,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.deps import get_current_user, require_admin, require_student
+from instascope_shared.cohort import clamp_scoring_window, cohort_start_ymd
 from instascope_shared.models import DEFAULT_ORG_ID, User
 from instascope_shared.services import spark as spark_service
 
@@ -43,18 +44,21 @@ async def leaderboard(
     sort: SortKey = Query("overall"),
     campus: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
-    from_date: Optional[str] = Query(None, description="Inclusive start date YYYY-MM-DD"),
-    to_date: Optional[str] = Query(None, description="Inclusive end date YYYY-MM-DD"),
+    from_date: Optional[str] = Query(
+        None, description="Inclusive start date YYYY-MM-DD (floored at cohort start)"
+    ),
+    to_date: Optional[str] = Query(
+        None, description="Inclusive end date YYYY-MM-DD (capped at today)"
+    ),
     user: User = Depends(get_current_user),
 ):
     you_id = getattr(user, "profile_id", None)
-    start = _parse_leaderboard_day(from_date, end_of_day=False)
-    end = _parse_leaderboard_day(to_date, end_of_day=True)
-    if start and end and start.date() > end.date():
-        raise HTTPException(status_code=400, detail="from_date must be on or before to_date")
+    start_raw = _parse_leaderboard_day(from_date, end_of_day=False)
+    end_raw = _parse_leaderboard_day(to_date, end_of_day=True)
+    start, end = clamp_scoring_window(start_raw, end_raw)
 
-    applied_from = start.strftime("%Y-%m-%d") if start else None
-    applied_to = end.strftime("%Y-%m-%d") if end else None
+    applied_from = start.strftime("%Y-%m-%d")
+    applied_to = end.strftime("%Y-%m-%d")
 
     rows = await spark_service.build_leaderboard(
         _org_id(user),
@@ -107,6 +111,7 @@ async def leaderboard(
         "in_top_10": bool(you and you.get("rank", 999) <= 10),
         "from_date": applied_from,
         "to_date": applied_to,
+        "cohort_start": cohort_start_ymd(),
     }
 
 

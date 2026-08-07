@@ -10,6 +10,7 @@ import { cn, formatNumber } from "@/lib/utils";
 import { TierBadge } from "@/components/spark/tier-badge";
 import { LivePill, ProgressBar, SparkAvatar } from "@/components/spark/ui";
 import { BrandLogo } from "@/components/brand-logo";
+import { ProgrammeWindowNote } from "@/components/programme-window-note";
 
 export default function PublicTop10Page() {
   const [q, setQ] = useState("");
@@ -59,9 +60,10 @@ export default function PublicTop10Page() {
               Top the <span className="text-[#ff3b30]">board</span>. Unlock{" "}
               <span className="text-[#ff3b30]">milestones</span>.
             </h1>
-            <p className="mt-4 text-sm leading-relaxed text-zinc-400">
-              Points come from weekly content tasks, verified reach, and revenue. Everyone starts at zero — the board
-              only remembers what you posted.
+            <ProgrammeWindowNote className="mt-3" />
+            <p className="mt-3 text-sm leading-relaxed text-zinc-400">
+              Points come from posts and follower growth in the programme window. Everyone starts at zero — the board
+              only remembers what you posted after the programme started.
             </p>
           </div>
           <label className="flex w-full max-w-sm items-center gap-2 rounded-full border border-white/10 bg-[#121212] px-4 py-2.5">

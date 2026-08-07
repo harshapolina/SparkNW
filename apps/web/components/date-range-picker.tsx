@@ -3,10 +3,18 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DayPicker, type DateRange } from "react-day-picker";
-import { format, parseISO } from "date-fns";
+import { format, startOfDay } from "date-fns";
 import { AnimatePresence, motion } from "framer-motion";
 import { CalendarDays, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  SPARK_COHORT_START,
+  PROGRAMME_STARTED_LABEL,
+  clampYmdToCohort,
+  defaultCohortRange,
+  parseYmdLocal,
+  utcTodayYmd,
+} from "@/lib/spark/cohort";
 
 type Props = {
   fromDate: string;
@@ -14,6 +22,10 @@ type Props = {
   onChange: (from: string, to: string) => void;
   onClear: () => void;
   className?: string;
+  /** Inclusive earliest selectable day (YYYY-MM-DD). */
+  minDate?: string;
+  /** Inclusive latest selectable day (YYYY-MM-DD). */
+  maxDate?: string;
 };
 
 function toYmd(d: Date): string {
@@ -21,9 +33,7 @@ function toYmd(d: Date): string {
 }
 
 function fromYmd(s: string): Date | undefined {
-  if (!s) return undefined;
-  const d = parseISO(s);
-  return Number.isNaN(d.getTime()) ? undefined : d;
+  return parseYmdLocal(s);
 }
 
 function labelFor(fromDate: string, toDate: string): string {
@@ -43,8 +53,18 @@ function labelFor(fromDate: string, toDate: string): string {
  * Single range calendar. Draft selection stays local until both ends are chosen,
  * then commits YYYY-MM-DD to the parent (API). Portaled above filters so campus
  * &lt;select&gt; options cannot steal clicks.
+ *
+ * Dates are clamped to the SPARK cohort window (default 15 Jul 2026 → today).
  */
-export function DateRangePicker({ fromDate, toDate, onChange, onClear, className }: Props) {
+export function DateRangePicker({
+  fromDate,
+  toDate,
+  onChange,
+  onClear,
+  className,
+  minDate = SPARK_COHORT_START,
+  maxDate,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<DateRange | undefined>();
   const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
@@ -53,6 +73,12 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
   const panelRef = useRef<HTMLDivElement>(null);
   /** First click = start only; second click = end + commit. DayPicker often sets from=to on first click. */
   const phaseRef = useRef<"idle" | "awaiting_end">("idle");
+
+  const todayYmd = utcTodayYmd();
+  const floorYmd = minDate || SPARK_COHORT_START;
+  const ceilingYmd = maxDate || todayYmd;
+  const minDay = startOfDay(fromYmd(floorYmd) || parseYmdLocal(SPARK_COHORT_START)!);
+  const maxDay = startOfDay(fromYmd(ceilingYmd) || parseYmdLocal(todayYmd)!);
 
   const active = Boolean(fromDate && toDate);
   const displayFrom = draft?.from ? toYmd(draft.from) : "";
@@ -120,8 +146,13 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
 
   function commitRange(from: Date, to: Date) {
     const [a, b] = from.getTime() <= to.getTime() ? [from, to] : [to, from];
-    setDraft({ from: a, to: b });
-    onChange(toYmd(a), toYmd(b));
+    const fromClamped = clampYmdToCohort(toYmd(a), ceilingYmd);
+    const toClamped = clampYmdToCohort(toYmd(b), ceilingYmd);
+    const fromFinal = fromClamped < floorYmd ? floorYmd : fromClamped;
+    const toFinal = toClamped > ceilingYmd ? ceilingYmd : toClamped;
+    const [lo, hi] = fromFinal <= toFinal ? [fromFinal, toFinal] : [toFinal, fromFinal];
+    setDraft({ from: fromYmd(lo), to: fromYmd(hi) });
+    onChange(lo, hi);
     phaseRef.current = "idle";
     setOpen(false);
   }
@@ -166,6 +197,15 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
     }
   }
 
+  function resetToCohort() {
+    const def = defaultCohortRange(ceilingYmd);
+    phaseRef.current = "idle";
+    setDraft({ from: fromYmd(def.from), to: fromYmd(def.to) });
+    onChange(def.from, def.to);
+    onClear();
+    setOpen(false);
+  }
+
   const panel =
     open && mounted
       ? createPortal(
@@ -204,7 +244,7 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
                     <p className="mt-0.5 text-[11px] text-zinc-400">
                       {draft?.from && !draft?.to
                         ? "Now pick the end date"
-                        : "Click a start date, then an end date"}
+                        : `From ${floorYmd} → today only`}
                     </p>
                   </div>
                   <button
@@ -224,8 +264,11 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
                     onSelect={handleSelect}
                     numberOfMonths={1}
                     defaultMonth={
-                      draft?.from || fromYmd(fromDate) || fromYmd(toDate) || new Date()
+                      draft?.from || fromYmd(fromDate) || fromYmd(toDate) || minDay
                     }
+                    startMonth={minDay}
+                    endMonth={maxDay}
+                    disabled={{ before: minDay, after: maxDay }}
                     showOutsideDays={false}
                     components={{
                       Chevron: ({ orientation }) =>
@@ -284,14 +327,10 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
                     {(draft?.from || active) && (
                       <button
                         type="button"
-                        onClick={() => {
-                          phaseRef.current = "idle";
-                          setDraft(undefined);
-                          onClear();
-                        }}
+                        onClick={resetToCohort}
                         className="rounded-lg border border-white/10 px-2.5 py-1.5 text-xs text-zinc-400 hover:border-white/20 hover:text-white"
                       >
-                        Clear
+                        Reset
                       </button>
                     )}
                     <button
@@ -342,18 +381,17 @@ export function DateRangePicker({ fromDate, toDate, onChange, onClear, className
         {active ? (
           <button
             type="button"
-            onClick={() => {
-              phaseRef.current = "idle";
-              onClear();
-              setDraft(undefined);
-              setOpen(false);
-            }}
+            onClick={resetToCohort}
             className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black/40 px-3 py-2.5 text-sm text-zinc-300 hover:border-[#ff4d00]/40"
           >
-            <X size={14} /> Clear
+            <X size={14} /> Reset
           </button>
         ) : null}
       </div>
+      <p className="mt-1.5 text-[11px] text-zinc-500">
+        Dates before {PROGRAMME_STARTED_LABEL} are disabled — data &amp; SPARK points are calculated from programme
+        start to the current / selected date.
+      </p>
       {panel}
     </div>
   );

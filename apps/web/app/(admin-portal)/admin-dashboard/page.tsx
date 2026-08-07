@@ -35,6 +35,7 @@ import { api } from "@/lib/api";
 import type { AdminOverviewResponse, AdminRecentProfile } from "@/lib/spark/api-types";
 import { cn, formatNumber, formatPct } from "@/lib/utils";
 import { SparkAvatar } from "@/components/spark/ui";
+import { ProgrammeWindowNote } from "@/components/programme-window-note";
 
 type Notification = {
   id: string;
@@ -338,8 +339,9 @@ export default function AdminDashboardPage() {
         <div>
           <div className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">{admin.week_label}</div>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">Profile Intelligence</h1>
+          <ProgrammeWindowNote className="mt-1" toDate={admin.date_range?.split("→").pop()?.trim() || admin.today?.date} />
           <p className="mt-1 text-sm text-zinc-500">
-            Full InstaScope portfolio overview + SPARK admin — live Instagram scrapes.
+            Spark portfolio overview + admin — live Instagram scrapes.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -405,12 +407,16 @@ export default function AdminDashboardPage() {
           <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#ff3b30]">
             Overall data
           </div>
+          <ProgrammeWindowNote
+            className="mt-1 !text-xs"
+            toDate={admin.today?.date || admin.date_range?.split("→").pop()?.trim()}
+          />
           <p className="mt-1 text-sm text-zinc-500">
             Exclusive status math:{" "}
             <span className="text-zinc-300">
               Scraped + Failed + Unavailable + Paused + Not scraped = Total ({formatNumber(totalProfiles)})
             </span>
-            . Private is a subset of Scraped — do not add it again.
+            . Private is a subset of Scraped — do not add it again. Totals (likes, views, points) use the programme window above.
           </p>
         </div>
         <KpiGrid items={overallKpis} />

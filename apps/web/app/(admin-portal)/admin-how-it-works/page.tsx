@@ -13,6 +13,8 @@ import {
   Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { ProgrammeWindowNote } from "@/components/programme-window-note";
+import { PROGRAMME_STARTED_LABEL } from "@/lib/spark/cohort";
 
 const SECTIONS = [
   { id: "overview", label: "Overview" },
@@ -126,6 +128,7 @@ export default function AdminHowItWorksPage() {
             SPARK methodology
           </p>
           <h1 className="text-3xl font-semibold tracking-tight">How SPARK works</h1>
+          <ProgrammeWindowNote />
           <p className="max-w-2xl text-sm leading-relaxed text-zinc-400">
             Everything on this site comes from live Instagram scrapes stored in MongoDB. This page
             explains scraping, how averages are calculated, how SPARK points and ranks are decided,
@@ -359,8 +362,14 @@ export default function AdminHowItWorksPage() {
             <h2 className="text-xl font-semibold text-white">SPARK points</h2>
           </div>
           <p className="text-sm leading-relaxed text-zinc-400">
-            Leaderboard “overall” score is SPARK points from scraped posts + follower milestones:
+            Leaderboard “overall” score is SPARK points from scraped posts + follower milestones.{" "}
+            <strong className="font-medium text-zinc-200">
+              Data and points are calculated from {PROGRAMME_STARTED_LABEL} (programme start) through the selected /
+              current date.
+            </strong>{" "}
+            Posts and milestones outside that window do not count.
           </p>
+          <ProgrammeWindowNote className="!text-xs" />
           <Formula>SPARK points = consistency + min(performance, 3000) + growth_milestones</Formula>
 
           <h3 className="pt-2 text-sm font-semibold text-zinc-200">1) Consistency (0 or +10)</h3>
@@ -495,8 +504,8 @@ export default function AdminHowItWorksPage() {
           <DataTable
             headers={["Feature", "What it does"]}
             rows={[
-              ["Dashboard", "Overall data (unique till-date scrapes) + Today's data (day-based)"],
-              ["Leaderboard", "Full SPARK ranks, campus filters, date range, sort modes"],
+              ["Dashboard", "Overall + Today — metrics scored from 15 Jul 2026 onward"],
+              ["Leaderboard", "Ranks / points / likes / views from cohort start → selected end date"],
               ["Scraping", "Profile list, live scrape progress, Refresh / Pause / Delete"],
               ["Analytics", "Trends from snapshots (followers, engagement over time)"],
               ["Alerts", "Notifications for scrape fails, growth, engagement spikes"],
