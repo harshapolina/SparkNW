@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any
 
@@ -50,6 +51,14 @@ def _configured_max_posts() -> int:
         return 0
 
 
+def _cohort_stop_enabled() -> bool:
+    return (os.getenv("SCRAPE_STOP_AT_COHORT") or "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+
 def _is_complete_enough(
     posts_count: int,
     scraped: int,
@@ -71,6 +80,12 @@ def _is_complete_enough(
 
     if scraped <= 0 and followers <= 0:
         return False
+
+    # Programme mode: first-page samples (~12) are NOT complete. We must reach
+    # the Jul 15 floor (or the scraper marks feed exhausted as floor).
+    if _cohort_stop_enabled():
+        return False
+
     cap = _configured_max_posts()
     if cap > 0:
         target = min(posts_count, cap) if posts_count > 0 else cap

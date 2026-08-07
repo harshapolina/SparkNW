@@ -748,7 +748,6 @@ async def fetch_all_media_nodes(
         nonlocal hit_cohort_floor
         added = 0
         skipped_old = 0
-        skipped_undated = 0
         keyed = 0
         for node in nodes:
             key = _node_key(node)
@@ -757,23 +756,22 @@ async def fetch_all_media_nodes(
             keyed += 1
             if floor is not None:
                 ts = _node_taken_unix(node)
-                if ts is None:
-                    # Programme scrapes need a date. Skipping prevents lifetime downloads
-                    # when taken_at is missing but shortcode decode also fails.
-                    skipped_undated += 1
-                    continue
-                if ts < floor:
+                if ts is not None and ts < floor:
                     # Newest-first feed: older than programme start → stop paging
                     skipped_old += 1
                     hit_cohort_floor = True
                     continue
+                # Undated nodes are KEPT — shortcode/pk decode often recovers the
+                # date later. Skipping them + treating a page of undated seeds as
+                # "floor" previously stopped scrapes after the first ~12 posts.
             seen.add(key)
             out.append(node)
             added += 1
             if len(out) >= limit:
                 break
-        # Whole page is pre-cohort / undateable → treat as floor hit and stop.
-        if floor is not None and keyed > 0 and added == 0 and (skipped_old > 0 or skipped_undated >= keyed):
+        # Only a page of *confirmed* pre-cohort posts means we hit the floor.
+        # Undated-only pages must not stop pagination.
+        if floor is not None and keyed > 0 and added == 0 and skipped_old > 0:
             hit_cohort_floor = True
         return added
 
@@ -1213,7 +1211,6 @@ async def fetch_timeline_via_username_feed(
                 break
             added = 0
             skipped_old = 0
-            skipped_undated = 0
             keyed = 0
             for node in page_nodes:
                 key = _node_key(node)
@@ -1222,20 +1219,18 @@ async def fetch_timeline_via_username_feed(
                 keyed += 1
                 if floor is not None:
                     ts = _node_taken_unix(node)
-                    if ts is None:
-                        skipped_undated += 1
-                        continue
-                    if ts < floor:
+                    if ts is not None and ts < floor:
                         skipped_old += 1
                         hit_cohort_floor = True
                         continue
+                    # Keep undated — do not invent a cohort floor from missing dates.
                 seen.add(key)
                 nodes.append(node)
                 added += 1
                 if len(nodes) >= limit:
                     break
 
-            if floor is not None and keyed > 0 and added == 0 and (skipped_old > 0 or skipped_undated >= keyed):
+            if floor is not None and keyed > 0 and added == 0 and skipped_old > 0:
                 hit_cohort_floor = True
 
             logger.info(
@@ -1287,13 +1282,22 @@ async def fetch_timeline_via_username_feed(
                 break
 
     logger.info(
-        "username_feed @%s done collected=%s expected=%s user=%s cohort_floor=%s",
+        "username_feed @%s done collected=%s expected=%s user=%s cohort_floor=%s more=%s",
         username,
         len(nodes),
         expected_count,
         bool(user_obj),
         hit_cohort_floor,
+        more,
     )
+    # Natural end of feed without a pre-Jul-15 post still completes the window.
+    if (not hit_cohort_floor) and (not more) and len(nodes) > 0:
+        hit_cohort_floor = True
+        logger.info(
+            "username_feed @%s feed exhausted — treating as programme-complete collected=%s",
+            username,
+            len(nodes),
+        )
     return user_obj, nodes[:limit], hit_cohort_floor
 
 

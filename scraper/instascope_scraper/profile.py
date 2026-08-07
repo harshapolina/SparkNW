@@ -305,6 +305,7 @@ def _posts_complete(
     posts_count: int,
     *,
     hit_cohort_floor: bool = False,
+    feed_exhausted: bool = False,
 ) -> bool:
     """True when we've collected enough posts for the active scrape caps.
 
@@ -314,6 +315,10 @@ def _posts_complete(
     When ``hit_cohort_floor`` is True we already walked newest→oldest down to
     SPARK_COHORT_START (2026-07-15) — that is a complete programme scrape even
     if Instagram's lifetime ``posts_count`` is much larger.
+
+    When cohort stop is on, do **not** treat a first-page sample as complete
+    just because SCRAPE_MAX_POSTS / lifetime math looks satisfied — we must
+    reach the Jul 15 floor or exhaust the feed.
 
     posts_count == 0 with no posts means a confirmed-empty timeline (callers
     must only set posts_count=0 when Instagram explicitly reported it).
@@ -325,6 +330,18 @@ def _posts_complete(
     # Confirmed empty account: nothing to fetch.
     if posts_count == 0:
         return len(posts) == 0
+
+    # Cohort mode: first-page (~12) is never "done" unless we hit Jul 15 or
+    # Instagram says the feed has no more pages.
+    try:
+        from instascope_scraper.http_profile import _cohort_floor_unix
+
+        if _cohort_floor_unix() is not None:
+            if feed_exhausted:
+                return True
+            return False
+    except Exception:
+        pass
 
     if not posts:
         return False
@@ -346,6 +363,12 @@ def _posts_complete(
     return got >= max(posts_count - 2, 1)
 
 
+def _result_feed_exhausted(result: ScrapeResult | None) -> bool:
+    if not result or not isinstance(result.raw, dict):
+        return False
+    return bool(result.raw.get("feed_exhausted"))
+
+
 def _result_hit_cohort_floor(result: ScrapeResult | None) -> bool:
     if not result or not isinstance(result.raw, dict):
         return False
@@ -364,9 +387,19 @@ def _useful_partial(result: ScrapeResult) -> bool:
         return True
     if _result_hit_cohort_floor(result):
         return True
+    if _result_feed_exhausted(result):
+        return True
     # Confirmed empty public profile with a card is a finished scrape.
     if int(result.posts_count or 0) == 0 and len(result.posts) == 0 and int(result.followers or 0) > 0:
         return True
+    # Cohort programme scrapes must reach Jul 15 — never accept first-page-only.
+    try:
+        from instascope_scraper.http_profile import _cohort_floor_unix
+
+        if _cohort_floor_unix() is not None:
+            return False
+    except Exception:
+        pass
     got = len(result.posts)
     if int(result.followers or 0) > 0 and got >= 12:
         return True
@@ -383,6 +416,7 @@ def _raise_if_incomplete(result: ScrapeResult) -> None:
         result.posts,
         result.posts_count,
         hit_cohort_floor=_result_hit_cohort_floor(result),
+        feed_exhausted=_result_feed_exhausted(result),
     ):
         return
     strict = (caps_env("SCRAPE_STRICT", "0") or "0").strip().lower() in {
@@ -506,17 +540,29 @@ async def _expand_all_posts(
         )
 
     def _seed_nodes_from_posts(items: list[ScrapedPost]) -> list[dict[str, Any]]:
-        """Re-seed pagination from posts we already have (continue past page 1)."""
+        """Re-seed pagination from posts we already have (continue past page 1).
+
+        Must include timestamps — undated seeds were treated as a cohort-floor hit
+        and stopped pagination after the first ~12 posts.
+        """
         seed: list[dict[str, Any]] = []
         for p in items:
-            seed.append(
-                {
-                    "code": p.shortcode,
-                    "shortcode": p.shortcode,
-                    "id": p.ig_post_id,
-                    "pk": p.ig_post_id,
-                }
-            )
+            node: dict[str, Any] = {
+                "code": p.shortcode,
+                "shortcode": p.shortcode,
+                "id": p.ig_post_id,
+                "pk": p.ig_post_id,
+            }
+            if p.posted_at:
+                try:
+                    ts = int(
+                        datetime.fromisoformat(p.posted_at.replace("Z", "+00:00")).timestamp()
+                    )
+                    node["taken_at"] = ts
+                    node["taken_at_timestamp"] = ts
+                except ValueError:
+                    pass
+            seed.append(node)
         return seed
 
     # Keep going until cohort floor or posts_count (or exhaust rounds).
@@ -608,12 +654,13 @@ async def _expand_all_posts(
                     stagnant_rounds += 1
                     if stagnant_rounds >= 2:
                         logger.warning(
-                            "expand @%s stagnant — stopping early posts=%s/%s",
+                            "expand @%s stagnant on proxy — rotate/retry posts=%s/%s cohort_floor=%s",
                             username,
                             len(posts),
                             expected,
+                            hit_cohort_floor,
                         )
-                        return posts, hit_cohort_floor
+                        break  # next round / proxy — do NOT mark programme complete
             except Exception as exc:
                 msg = str(exc).lower()
                 if "please wait" in msg or "rate" in msg:
@@ -1843,6 +1890,7 @@ def _complete(result: ScrapeResult) -> bool:
         result.posts,
         result.posts_count,
         hit_cohort_floor=_result_hit_cohort_floor(result),
+        feed_exhausted=_result_feed_exhausted(result),
     )
 
 
@@ -1963,10 +2011,24 @@ async def _scrape_live(
                     http_result.posts_count,
                 )
                 # Under IG rate limits, browser often hangs forever. Prefer a usable
-                # card+sample over zeros unless explicitly forced.
+                # card+sample over zeros unless explicitly forced — BUT never accept a
+                # first-page sample as done while SPARK cohort stop is on (must reach
+                # 15 Jul 2026 or exhaust the feed).
                 force_browser = caps_env("SCRAPE_BROWSER_ON_PARTIAL", "0").strip() == "1"
+                cohort_incomplete = False
+                try:
+                    from instascope_scraper.http_profile import _cohort_floor_unix
+
+                    cohort_incomplete = (
+                        _cohort_floor_unix() is not None
+                        and not _result_hit_cohort_floor(http_result)
+                        and not _result_feed_exhausted(http_result)
+                    )
+                except Exception:
+                    cohort_incomplete = False
                 if (
                     not force_browser
+                    and not cohort_incomplete
                     and _result_is_usable(http_result)
                     and http_result.followers > 0
                     and len(http_result.posts) > 0
@@ -1977,6 +2039,12 @@ async def _scrape_live(
                         username,
                     )
                     return await _done(http_result, path="http_partial")
+                if cohort_incomplete:
+                    logger.warning(
+                        "http_partial @%s posts=%s — missing programme floor, continuing",
+                        username,
+                        len(http_result.posts),
+                    )
         else:
             # web_profile_info blocked (401 Please wait) — username feed often still works
             logger.warning("web_profile_info @%s unavailable — trying username feed", username)
@@ -2110,18 +2178,25 @@ async def _scrape_live(
                     if http_result and _result_is_usable(http_result) and _has_card_metrics(
                         http_result
                     ):
+                        if _complete(http_result):
+                            logger.warning(
+                                "username_feed_partial @%s posts=%s/%s — keeping usable HTTP",
+                                username,
+                                len(http_result.posts),
+                                http_result.posts_count,
+                            )
+                            return await _done(http_result, path="username_feed_partial")
                         logger.warning(
-                            "username_feed_partial @%s posts=%s/%s — keeping usable HTTP",
+                            "username_feed_partial @%s posts=%s/%s — incomplete programme window",
                             username,
                             len(http_result.posts),
                             http_result.posts_count,
                         )
-                        return await _done(http_result, path="username_feed_partial")
                     if http_result and _result_is_usable(http_result):
                         http_result = await _fill_card_via_html_meta(
                             username, http_result, proxy_url=proxy_url
                         )
-                        if _has_card_metrics(http_result):
+                        if _has_card_metrics(http_result) and _complete(http_result):
                             return await _done(
                                 http_result, path="username_feed_partial_meta"
                             )
@@ -2155,16 +2230,15 @@ async def _scrape_live(
     if http_result and http_result.is_private:
         return await _done(http_result, path="http_private")
     if http_result and _result_is_usable(http_result) and _has_card_metrics(http_result):
-        if not _complete(http_result):
-            logger.warning(
-                "http_usable @%s posts=%s/%s followers=%s — returning without browser",
-                username,
-                len(http_result.posts),
-                http_result.posts_count,
-                http_result.followers,
-            )
-            return await _done(http_result, path="http_usable")
-        return await _done(http_result, path="http_full")
+        if _complete(http_result):
+            return await _done(http_result, path="http_full")
+        logger.warning(
+            "http_usable @%s posts=%s/%s followers=%s — programme window incomplete, continuing",
+            username,
+            len(http_result.posts),
+            http_result.posts_count,
+            http_result.followers,
+        )
 
     # API card blocked (common for private) — detect private from HTML before failing.
     proxy_url = proxy_to_httpx_url(proxy) if proxy is not None else None
