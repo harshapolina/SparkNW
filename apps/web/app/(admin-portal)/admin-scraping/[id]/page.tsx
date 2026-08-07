@@ -219,8 +219,14 @@ export default function AdminCreatorDetailPage() {
         const privateNote = done.is_private
           ? " (private account — Instagram hides most posts without login)"
           : "";
+        const programmeN = Number((done.insights as { sampled_posts?: number } | undefined)?.sampled_posts ?? 0);
+        const storedN = Number((done.insights as { posts_stored?: number } | undefined)?.posts_stored ?? 0);
+        const windowNote =
+          !done.is_private && done.posts_count > 0 && programmeN === 0 && storedN === 0
+            ? ` · 0 programme posts (lifetime ${formatNumber(done.posts_count)} — likely all before 15 Jul 2026)`
+            : ` · ${formatNumber(done.posts_count)} posts`;
         setScrapingNote(
-          `Done — ${formatNumber(done.followers)} followers · ${formatNumber(done.posts_count)} posts${privateNote}`
+          `Done — ${formatNumber(done.followers)} followers${windowNote}${privateNote}`
         );
       } else {
         setLiveProgress(null);
@@ -627,10 +633,29 @@ export default function AdminCreatorDetailPage() {
           ) : null}
           {num(insights.posts_stored) === 0 && num(insights.sampled_posts) === 0 ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-              No post rows are saved in the database yet. The header &quot;{formatNumber(p.posts_count)} posts&quot; is
-              Instagram&apos;s lifetime total only — it is not scraped content. Click{" "}
-              <span className="font-semibold">Refresh / Scrape</span> and wait until it finishes; Insights then count
-              only posts from 15 Jul 2026 onward.
+              {p.is_private ? (
+                <>
+                  This account is <span className="font-semibold">private</span>. Instagram hides the post grid
+                  without login, so Insights stay at 0. The header &quot;{formatNumber(p.posts_count)} posts&quot; is
+                  only the public lifetime count.
+                </>
+              ) : num(p.posts_count) > 0 ? (
+                <>
+                  Scrape finished, but <span className="font-semibold">0 posts</span> fall inside the programme
+                  window (15 Jul 2026 → today). The header &quot;{formatNumber(p.posts_count)} posts&quot; is
+                  Instagram&apos;s lifetime total — those posts are likely all older than 15 Jul 2026 (or dates
+                  could not be read). Insights correctly stay at 0 until they post in-window. Try{" "}
+                  <span className="font-semibold">Refresh / Scrape</span> once more if you believe they posted
+                  after 15 Jul.
+                </>
+              ) : (
+                <>
+                  No post rows are saved in the database yet. The header &quot;{formatNumber(p.posts_count)} posts&quot; is
+                  Instagram&apos;s lifetime total only — it is not scraped content. Click{" "}
+                  <span className="font-semibold">Refresh / Scrape</span> and wait until it finishes; Insights then count
+                  only posts from 15 Jul 2026 onward.
+                </>
+              )}
             </div>
           ) : null}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

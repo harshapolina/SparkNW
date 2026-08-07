@@ -287,15 +287,20 @@ async def run_profile_scrape(
             if not _current():
                 return job
 
-            profile.scrape_progress = progress_payload(
-                scraped=len(result.posts),
-                total=int(result.posts_count or len(result.posts)),
-                phase="done",
-                active=False,
-                source=source,
-            )
-            profile.updated_at = datetime.utcnow()
-            await profile.save()
+            # apply_scrape_result already persisted programme-window progress.
+            # Never clobber it with len(result.posts) (lifetime scrape size) — that
+            # made UI show "16 scraped" while Insights correctly had 0 in-window posts.
+            refreshed = await Profile.get(profile.id)
+            if refreshed is not None and isinstance(refreshed.scrape_progress, dict):
+                prog = dict(refreshed.scrape_progress)
+                prog["active"] = False
+                prog["phase"] = "done"
+                prog["source"] = source
+                prog["percent"] = 100
+                prog["updated_at"] = datetime.utcnow().isoformat() + "Z"
+                profile.scrape_progress = prog
+                profile.updated_at = datetime.utcnow()
+                await profile.save()
         except asyncio.CancelledError:
             if _current():
                 profile.scrape_progress = progress_payload(
