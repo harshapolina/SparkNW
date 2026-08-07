@@ -18,6 +18,7 @@ import {
   Upload,
 } from "lucide-react";
 import { clearTokens, getStoredUser, type User } from "@/lib/api";
+import { BrandLogo } from "@/components/brand-logo";
 import { useRequireRole } from "@/lib/spark/auth-guard";
 import { cn } from "@/lib/utils";
 
@@ -55,7 +56,14 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
   return (
     <div className="flex min-h-screen bg-black text-white">
       <aside className="sticky top-0 hidden h-screen w-[220px] shrink-0 flex-col border-r border-white/[0.06] bg-[#0a0a0a] lg:flex">
-        <div className="px-4 py-5 text-xs font-bold uppercase tracking-[0.16em] text-[#ff3b30]">SPARK Admin</div>
+        <div className="px-4 py-5">
+          <Link href="/admin-dashboard" className="inline-flex items-center">
+            <BrandLogo height={26} priority />
+          </Link>
+          <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[#ff3b30]">
+            Admin
+          </div>
+        </div>
         <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2">
           {nav.map((item) => {
             const Icon = item.icon;
@@ -102,7 +110,7 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
       </aside>
       <div className="min-w-0 flex-1">
         <header className="flex items-center justify-between gap-2 overflow-x-auto border-b border-white/[0.06] px-4 py-3 lg:hidden">
-          <span className="text-xs font-bold uppercase tracking-[0.16em] text-[#ff3b30]">SPARK Admin</span>
+          <span className="text-xs font-bold uppercase tracking-[0.16em] text-[#ff3b30]">Spark</span>
           <div className="flex gap-3 text-xs text-zinc-400">
             <Link href="/admin-scraping">Scraping</Link>
             <Link href="/admin-import">Import</Link>

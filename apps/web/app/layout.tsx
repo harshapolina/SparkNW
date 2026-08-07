@@ -12,8 +12,12 @@ const display = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "InstaScope",
-  description: "Enterprise Instagram profile monitoring",
+  title: "Spark",
+  description: "Spark — Instagram creator monitoring and SPARK rankings",
+  icons: {
+    icon: "/spark-logo.png",
+    apple: "/spark-logo.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

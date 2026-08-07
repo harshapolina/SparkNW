@@ -14,6 +14,7 @@ import {
   ScrapeProgressCard,
   ScrapeRowProgress,
 } from "@/components/scrape-progress";
+import { NumberedPagination } from "@/components/numbered-pagination";
 
 type ListResponse = { items: Profile[]; total: number; page: number; page_size: number };
 
@@ -22,6 +23,8 @@ const STATUS_FILTERS = [
   { id: "active", label: "Active" },
   { id: "failed", label: "Failed" },
   { id: "paused", label: "Paused" },
+  { id: "private", label: "Private" },
+  { id: "unavailable", label: "Unavailable" },
 ] as const;
 
 export default function AdminScrapingPage() {
@@ -297,7 +300,7 @@ export default function AdminScrapingPage() {
                 className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
               />
             </label>
-            <div className="flex shrink-0 flex-nowrap items-center gap-1">
+            <div className="flex max-w-full shrink-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5">
               {STATUS_FILTERS.map((f) => (
                 <button
                   key={f.id || "all"}
@@ -469,28 +472,19 @@ export default function AdminScrapingPage() {
           )}
         </div>
 
-        <div className="mt-4 flex items-center justify-between text-xs text-zinc-500">
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
           <span>
             {data?.total || 0} creators · {selected.length} selected
+            {data && data.page_size
+              ? ` · page ${page} of ${Math.max(1, Math.ceil(data.total / data.page_size))}`
+              : ""}
           </span>
-          <div className="flex gap-2">
-            <button
-              type="button"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => p - 1)}
-              className="rounded-lg border border-white/10 px-3 py-1.5 disabled:opacity-40"
-            >
-              Previous
-            </button>
-            <button
-              type="button"
-              disabled={!data || page * data.page_size >= data.total}
-              onClick={() => setPage((p) => p + 1)}
-              className="rounded-lg border border-white/10 px-3 py-1.5 disabled:opacity-40"
-            >
-              Next
-            </button>
-          </div>
+          <NumberedPagination
+            page={page}
+            pageSize={data?.page_size || 20}
+            total={data?.total || 0}
+            onPageChange={setPage}
+          />
         </div>
       </div>
     </div>

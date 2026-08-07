@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { motion } from "framer-motion";
-import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { BrandLogo } from "@/components/brand-logo";
 import { api, saveUser, setTokens, type User } from "@/lib/api";
 
 export default function SignupPage() {
@@ -51,11 +51,8 @@ export default function SignupPage() {
         onSubmit={onSubmit}
         className="w-full max-w-[420px] rounded-3xl border border-border bg-white p-8 md:p-9 shadow-lift"
       >
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-white">
-            <Sparkles size={14} />
-          </div>
-          <span className="font-[family-name:var(--font-display)] text-sm font-semibold">InstaScope</span>
+        <div className="flex items-center">
+          <BrandLogo height={28} />
         </div>
         <h1 className="mt-6 font-[family-name:var(--font-display)] text-2xl font-semibold tracking-[-0.03em]">
           Create your workspace

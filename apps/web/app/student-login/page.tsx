@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { BrandLogo } from "@/components/brand-logo";
 import { api, saveUser, setTokens, type User } from "@/lib/api";
 
 export default function StudentLoginPage() {
@@ -41,10 +42,10 @@ export default function StudentLoginPage() {
     <div className="min-h-screen bg-black text-white">
       <div className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-4 py-12">
         <div className="mb-8">
-          <Link href="/top-10" className="text-xs uppercase tracking-[0.16em] text-[#ff3b30]">
-            SPARK
+          <Link href="/top-10" className="inline-flex items-center">
+            <BrandLogo height={32} priority />
           </Link>
-          <h1 className="mt-3 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
+          <h1 className="mt-4 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
             Student login
           </h1>
           <p className="mt-2 text-sm text-zinc-400">

@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { motion } from "framer-motion";
-import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { BrandLogo } from "@/components/brand-logo";
 import { api, saveUser, setTokens, type User } from "@/lib/api";
 
 export default function LoginPage() {
@@ -52,11 +52,8 @@ export default function LoginPage() {
             backgroundSize: "48px 48px",
           }}
         />
-        <div className="relative z-10 flex items-center gap-2.5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent shadow-[0_0_32px_rgba(79,70,229,0.45)]">
-            <Sparkles size={16} />
-          </div>
-          <span className="font-[family-name:var(--font-display)] text-lg font-semibold tracking-tight">InstaScope</span>
+        <div className="relative z-10 flex items-center">
+          <BrandLogo height={32} priority />
         </div>
 
         <div className="relative z-10 max-w-lg">
@@ -101,11 +98,8 @@ export default function LoginPage() {
           onSubmit={onSubmit}
           className="w-full max-w-[400px]"
         >
-          <div className="lg:hidden mb-8 flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-white">
-              <Sparkles size={14} />
-            </div>
-            <span className="font-[family-name:var(--font-display)] font-semibold">InstaScope</span>
+          <div className="lg:hidden mb-8 flex items-center">
+            <BrandLogo height={28} />
           </div>
 
           <div className="eyebrow">Welcome back</div>

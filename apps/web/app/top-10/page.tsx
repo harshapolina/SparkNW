@@ -9,6 +9,7 @@ import type { Top10Response } from "@/lib/spark/api-types";
 import { cn, formatNumber } from "@/lib/utils";
 import { TierBadge } from "@/components/spark/tier-badge";
 import { LivePill, ProgressBar, SparkAvatar } from "@/components/spark/ui";
+import { BrandLogo } from "@/components/brand-logo";
 
 export default function PublicTop10Page() {
   const [q, setQ] = useState("");
@@ -38,8 +39,8 @@ export default function PublicTop10Page() {
       <div className="mx-auto max-w-5xl space-y-8 px-4 py-8 md:px-8 md:py-12">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
+            <BrandLogo height={28} priority />
             <LivePill />
-            <span className="text-xs text-zinc-500">SPARK / Rankings</span>
           </div>
           <div className="flex items-center gap-3 text-xs">
             <Link href="/student-login" className="text-zinc-400 hover:text-white">

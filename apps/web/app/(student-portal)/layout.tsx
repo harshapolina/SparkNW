@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { clearTokens, getStoredUser, type User } from "@/lib/api";
+import { BrandLogo } from "@/components/brand-logo";
 import { useRequireRole } from "@/lib/spark/auth-guard";
 import { cn } from "@/lib/utils";
 
@@ -36,8 +37,8 @@ export default function StudentPortalLayout({ children }: { children: React.Reac
       <header className="sticky top-0 z-20 border-b border-white/[0.06] bg-black/90 backdrop-blur">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-4 px-4 md:px-6">
           <div className="flex items-center gap-6">
-            <Link href="/student-dashboard" className="text-xs font-bold uppercase tracking-[0.16em] text-[#ff3b30]">
-              SPARK
+            <Link href="/student-dashboard" className="inline-flex items-center">
+              <BrandLogo height={24} priority />
             </Link>
             <nav className="flex items-center gap-1">
               {nav.map((item) => (

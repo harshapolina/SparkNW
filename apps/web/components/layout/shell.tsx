@@ -9,9 +9,9 @@ import {
   LogOut,
   Search,
   Settings,
-  Sparkles,
 } from "lucide-react";
 import { api, clearTokens, getStoredUser, type Profile, type User } from "@/lib/api";
+import { BrandLogo } from "@/components/brand-logo";
 import { prefetchSparkData, sparkQueryKeyForApi } from "@/lib/spark/prefetch";
 import { cn } from "@/lib/utils";
 
@@ -106,13 +106,8 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen bg-cream text-stone-900">
       <header className="sticky top-0 z-30 border-b border-stone-200/70 bg-[#f3efe8]/85 backdrop-blur-xl">
         <div className="mx-auto flex h-[68px] max-w-[1600px] items-center gap-3 px-4 md:px-7">
-          <Link href="/overview" className="flex shrink-0 items-center gap-2.5" onMouseEnter={() => prefetchRoute("/overview", "/analytics/overview")}>
-            <div className="flex h-9 w-9 items-center justify-center rounded-2xl bg-stone-900 text-white shadow-card">
-              <Sparkles size={15} />
-            </div>
-            <span className="font-[family-name:var(--font-display)] text-[17px] font-semibold tracking-tight">
-              InstaScope
-            </span>
+          <Link href="/overview" className="flex shrink-0 items-center" onMouseEnter={() => prefetchRoute("/overview", "/analytics/overview")}>
+            <BrandLogo height={30} priority />
           </Link>
 
           <nav className="ml-1 hidden items-center gap-0.5 xl:flex">

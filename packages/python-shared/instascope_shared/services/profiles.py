@@ -94,7 +94,11 @@ async def list_profiles(
 ) -> ProfileListResponse:
     filt: dict = {"user_id": user_id}
     if status_filter:
-        filt["status"] = status_filter
+        # "private" is a flag filter, not ProfileStatus.
+        if status_filter.strip().lower() == "private":
+            filt["is_private"] = True
+        else:
+            filt["status"] = status_filter
     q_raw = (q or "").strip()
     if q_raw:
         rx = {"$regex": q_raw, "$options": "i"}

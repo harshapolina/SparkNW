@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
+import { BrandLogo } from "@/components/brand-logo";
 import { api, saveUser, setTokens, type User } from "@/lib/api";
 
 export default function AdminLoginPage() {
@@ -39,10 +40,10 @@ export default function AdminLoginPage() {
     <div className="min-h-screen bg-black text-white">
       <div className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-4 py-12">
         <div className="mb-8">
-          <Link href="/top-10" className="text-xs uppercase tracking-[0.16em] text-[#ff3b30]">
-            SPARK
+          <Link href="/top-10" className="inline-flex items-center">
+            <BrandLogo height={32} priority />
           </Link>
-          <h1 className="mt-3 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
+          <h1 className="mt-4 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
             Admin login
           </h1>
           <p className="mt-2 text-sm text-zinc-400">Sign in with your admin email and password.</p>
@@ -88,7 +89,7 @@ export default function AdminLoginPage() {
             Student login
           </Link>
           <Link href="/login" className="hover:text-zinc-300">
-            InstaScope login
+            Spark login
           </Link>
         </div>
       </div>
