@@ -56,16 +56,59 @@ def _cohort_floor_unix() -> int | None:
             return None
 
 
+def _normalize_taken_unix(raw: Any) -> int | None:
+    """Coerce Instagram taken_at values to unix seconds (handles ms clocks)."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return None
+            # ISO datetime
+            if "T" in text or "-" in text:
+                try:
+                    from datetime import datetime
+
+                    dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+                    return int(dt.timestamp())
+                except ValueError:
+                    pass
+            ts = int(float(text))
+        else:
+            ts = int(raw)
+    except (TypeError, ValueError):
+        return None
+    # Milliseconds → seconds (IG occasionally returns ms)
+    if ts > 10_000_000_000:
+        ts //= 1000
+    # Sanity: 2010-01-01 .. 2100-01-01
+    if ts < 1_262_304_000 or ts > 4_102_444_800:
+        return None
+    return ts
+
+
 def _node_taken_unix(node: dict[str, Any]) -> int | None:
-    taken = node.get("taken_at_timestamp") or node.get("taken_at")
-    if taken:
-        try:
-            return int(taken)
-        except (TypeError, ValueError):
-            pass
-    # Fall back to shortcode / pk decode
+    if not isinstance(node, dict):
+        return None
+    for key in (
+        "taken_at_timestamp",
+        "taken_at",
+        "device_timestamp",
+        "media_created_at",
+        "created_at",
+    ):
+        ts = _normalize_taken_unix(node.get(key))
+        if ts is not None:
+            return ts
+    caption = node.get("caption")
+    if isinstance(caption, dict):
+        ts = _normalize_taken_unix(caption.get("created_at") or caption.get("created_at_utc"))
+        if ts is not None:
+            return ts
+    # Fall back to shortcode / pk decode (same path Insights uses)
     key = str(node.get("shortcode") or node.get("code") or "")
-    pk = str(node.get("id") or node.get("pk") or "")
+    pk = str(node.get("id") or node.get("pk") or node.get("pk_id") or "")
     iso = infer_posted_at_iso(shortcode=key or None, ig_post_id=pk or None)
     if not iso:
         return None
@@ -633,9 +676,16 @@ def _node_key(node: dict[str, Any]) -> str:
 
 
 def _still_short(collected: int, *, limit: int, expected_count: int) -> bool:
-    """True when we must keep paginating toward Instagram's posts_count."""
+    """True when we must keep paginating.
+
+    With SPARK cohort stop enabled we do **not** chase Instagram's lifetime
+    ``posts_count`` — that would pull every pre-programme post. Pagination ends
+    via cohort floor, feed exhaustion, or ``SCRAPE_MAX_POSTS``.
+    """
     if collected >= limit:
         return False
+    if _cohort_floor_unix() is not None:
+        return collected < limit
     if expected_count > 0:
         # Small accounts: require every post (2/6 must keep going).
         # Large accounts: allow 1–2 deleted/hidden drift.
@@ -681,28 +731,40 @@ async def fetch_all_media_nodes(
         logger.info("fetch_all_media @%s expected=0 — empty timeline, skipping pagination", username)
         return list(initial_nodes or []), False
 
+    floor = _cohort_floor_unix()
     limit = _max_posts()
-    if expected_count > 0:
+    # Lifetime posts_count is NOT a scrape target when cohort stop is on — otherwise
+    # undated/mis-dated feeds pull every pre-programme post up to that count.
+    if expected_count > 0 and floor is None:
         limit = min(limit, expected_count)
     page_size = _page_size()
     delay = float(caps_env("SCRAPE_PAGE_DELAY_SECONDS", "0.8") or "0.8")
 
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
-    floor = _cohort_floor_unix()
     hit_cohort_floor = False
 
     def _add(nodes: list[dict[str, Any]]) -> int:
         nonlocal hit_cohort_floor
         added = 0
+        skipped_old = 0
+        skipped_undated = 0
+        keyed = 0
         for node in nodes:
             key = _node_key(node)
             if not key or key in seen:
                 continue
+            keyed += 1
             if floor is not None:
                 ts = _node_taken_unix(node)
-                if ts is not None and ts < floor:
+                if ts is None:
+                    # Programme scrapes need a date. Skipping prevents lifetime downloads
+                    # when taken_at is missing but shortcode decode also fails.
+                    skipped_undated += 1
+                    continue
+                if ts < floor:
                     # Newest-first feed: older than programme start → stop paging
+                    skipped_old += 1
                     hit_cohort_floor = True
                     continue
             seen.add(key)
@@ -710,6 +772,9 @@ async def fetch_all_media_nodes(
             added += 1
             if len(out) >= limit:
                 break
+        # Whole page is pre-cohort / undateable → treat as floor hit and stop.
+        if floor is not None and keyed > 0 and added == 0 and (skipped_old > 0 or skipped_undated >= keyed):
+            hit_cohort_floor = True
         return added
 
     _add(initial_nodes or [])
@@ -1067,12 +1132,12 @@ async def fetch_timeline_via_username_feed(
     user_obj: dict[str, Any] | None = None
     nodes: list[dict[str, Any]] = []
     seen: set[str] = set()
+    floor = _cohort_floor_unix()
     limit = _max_posts()
-    if expected_count > 0:
+    if expected_count > 0 and floor is None:
         limit = min(limit, expected_count)
     page_size = _page_size()
     delay = float(caps_env("SCRAPE_PAGE_DELAY_SECONDS", "0.8") or "0.8")
-    floor = _cohort_floor_unix()
     hit_cohort_floor = False
 
     async def _emit(phase: str = "username_feed") -> None:
@@ -1131,7 +1196,7 @@ async def fetch_timeline_via_username_feed(
                     user_obj = raw_user
                     if expected_count <= 0:
                         expected_count = _parse_media_count(raw_user)
-                        if expected_count > 0:
+                        if expected_count > 0 and floor is None:
                             limit = min(_max_posts(), expected_count)
 
             page_nodes, next_cursor, more = _nodes_from_feed(feed)
@@ -1147,13 +1212,21 @@ async def fetch_timeline_via_username_feed(
                 await _emit("username_feed")
                 break
             added = 0
+            skipped_old = 0
+            skipped_undated = 0
+            keyed = 0
             for node in page_nodes:
                 key = _node_key(node)
                 if not key or key in seen:
                     continue
+                keyed += 1
                 if floor is not None:
                     ts = _node_taken_unix(node)
-                    if ts is not None and ts < floor:
+                    if ts is None:
+                        skipped_undated += 1
+                        continue
+                    if ts < floor:
+                        skipped_old += 1
                         hit_cohort_floor = True
                         continue
                 seen.add(key)
@@ -1161,6 +1234,9 @@ async def fetch_timeline_via_username_feed(
                 added += 1
                 if len(nodes) >= limit:
                     break
+
+            if floor is not None and keyed > 0 and added == 0 and (skipped_old > 0 or skipped_undated >= keyed):
+                hit_cohort_floor = True
 
             logger.info(
                 "username_feed @%s page=%s got=%s added=%s total=%s next=%s more=%s expected=%s cohort_floor=%s",

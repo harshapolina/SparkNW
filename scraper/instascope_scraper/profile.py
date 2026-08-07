@@ -119,13 +119,16 @@ def _post_from_node(node: dict[str, Any]) -> ScrapedPost | None:
     if not shortcode and not post_id:
         return None
     shortcode = shortcode or post_id
-    taken = node.get("taken_at_timestamp") or node.get("taken_at")
     posted_at = None
-    if taken:
-        try:
-            posted_at = datetime.fromtimestamp(int(taken), tz=timezone.utc).isoformat()
-        except (TypeError, ValueError, OSError):
-            posted_at = None
+    # Prefer normalized taken_at (handles ms clocks) then shortcode decode
+    try:
+        from instascope_scraper.http_profile import _node_taken_unix
+
+        ts = _node_taken_unix(node)
+        if ts is not None:
+            posted_at = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+    except Exception:
+        posted_at = None
     if not posted_at:
         posted_at = infer_posted_at_iso(
             shortcode=str(shortcode) if shortcode else None,
@@ -407,10 +410,24 @@ def _raise_if_incomplete(result: ScrapeResult) -> None:
 def _posts_from_nodes(nodes: list[dict[str, Any]]) -> list[ScrapedPost]:
     posts: list[ScrapedPost] = []
     seen: set[str] = set()
+    floor: int | None = None
+    try:
+        from instascope_scraper.http_profile import _cohort_floor_unix
+
+        floor = _cohort_floor_unix()
+    except Exception:
+        floor = None
     for node in nodes:
         post = _post_from_node(node)
         if not post or post.shortcode in seen:
             continue
+        if floor is not None and post.posted_at:
+            try:
+                ts = int(datetime.fromisoformat(post.posted_at.replace("Z", "+00:00")).timestamp())
+                if ts < floor:
+                    continue
+            except ValueError:
+                pass
         seen.add(post.shortcode)
         posts.append(post)
     return posts

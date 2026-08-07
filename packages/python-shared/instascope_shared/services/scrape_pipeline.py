@@ -305,6 +305,51 @@ async def apply_scrape_result(
     raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
     hit_cohort_floor = bool(raw.get("hit_cohort_floor"))
 
+    # Hard filter: never persist posts older than SPARK_COHORT_START.
+    # Prevents lifetime timelines from sticking around when pagination missed the floor.
+    try:
+        from instascope_shared.cohort import cohort_start_dt
+
+        floor_dt = cohort_start_dt()
+        kept: list[dict[str, Any]] = []
+        dropped_old = 0
+        for p in posts_data:
+            posted_at = p.get("posted_at")
+            dt = None
+            if isinstance(posted_at, datetime):
+                dt = posted_at.replace(tzinfo=None) if posted_at.tzinfo else posted_at
+            elif isinstance(posted_at, str) and posted_at.strip():
+                try:
+                    parsed = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+                    dt = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+                except ValueError:
+                    dt = None
+            if dt is None:
+                inferred = infer_posted_at(
+                    shortcode=str(p.get("shortcode") or "") or None,
+                    ig_post_id=str(p.get("ig_post_id") or p.get("id") or "") or None,
+                )
+                if inferred is not None:
+                    dt = inferred.replace(tzinfo=None) if inferred.tzinfo else inferred
+            if dt is not None and dt < floor_dt:
+                dropped_old += 1
+                hit_cohort_floor = True
+                continue
+            kept.append(p)
+        if dropped_old:
+            logger.info(
+                "dropped %s pre-cohort posts for @%s (kept=%s)",
+                dropped_old,
+                result.get("username") or profile.username,
+                len(kept),
+            )
+        posts_data = kept
+        if dropped_old and not posts_data:
+            hit_cohort_floor = True
+            raw = {**raw, "hit_cohort_floor": True}
+    except Exception:
+        logger.exception("programme-window post filter failed — keeping scrape payload")
+
     # Login-wall / rate-limit scrapes often return full posts but followers=0.
     # Never wipe known card metrics with zeros when the timeline itself is good.
     if followers <= 0 and profile.followers > 0:
@@ -461,8 +506,9 @@ async def apply_scrape_result(
             raise ValueError(
                 f"Failed to save any of {len(post_docs)} scraped posts to the database"
             )
-    elif posts_count == 0:
-        # Confirmed empty IG account — clear any stale rows
+    elif posts_count == 0 or hit_cohort_floor:
+        # Empty IG account OR programme window has no posts (all older than cohort).
+        # Clear stale lifetime rows left by older scrapes.
         await Post.find(Post.profile_id == str(profile.id)).delete()
     # else: keep existing posts (card-only / incomplete path should have raised earlier)
 
