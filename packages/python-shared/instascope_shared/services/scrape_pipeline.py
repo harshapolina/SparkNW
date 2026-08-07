@@ -49,8 +49,21 @@ def _configured_max_posts() -> int:
         return 0
 
 
-def _is_complete_enough(posts_count: int, scraped: int, followers: int) -> bool:
-    """Accept capped scrapes and first-pass samples so timeouts don't leave zeros."""
+def _is_complete_enough(
+    posts_count: int,
+    scraped: int,
+    followers: int,
+    *,
+    hit_cohort_floor: bool = False,
+) -> bool:
+    """Accept capped scrapes and first-pass samples so timeouts don't leave zeros.
+
+    ``hit_cohort_floor`` means the engine walked newest→oldest down to
+    SPARK_COHORT_START (2026-07-15) — that is a complete programme scrape.
+    """
+    if hit_cohort_floor:
+        return True
+
     # Instagram-reported empty timeline — card alone is enough (followers may be 0).
     if posts_count == 0 and scraped == 0:
         return True
@@ -194,6 +207,8 @@ async def apply_scrape_result(
     posts_count = int(result.get("posts_count") or 0)
 
     posts_data: list[dict[str, Any]] = result.get("posts") or []
+    raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+    hit_cohort_floor = bool(raw.get("hit_cohort_floor"))
 
     # Login-wall / rate-limit scrapes often return full posts but followers=0.
     # Never wipe known card metrics with zeros when the timeline itself is good.
@@ -206,11 +221,22 @@ async def apply_scrape_result(
 
     # NEVER wipe a good profile with an incomplete / empty scrape.
     # When SCRAPE_MAX_POSTS is capped (API inline/bulk), completeness is vs that cap.
-    if not _is_complete_enough(posts_count, len(posts_data), followers):
+    # Cohort floor (Jul 15 2026) means we intentionally stopped — treat as complete.
+    if not _is_complete_enough(
+        posts_count,
+        len(posts_data),
+        followers,
+        hit_cohort_floor=hit_cohort_floor,
+    ):
         raise ValueError(
             f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count or '?'} posts)"
         )
-    if posts_count > 0 and not posts_data and _configured_max_posts() <= 0:
+    if (
+        posts_count > 0
+        and not posts_data
+        and _configured_max_posts() <= 0
+        and not hit_cohort_floor
+    ):
         raise ValueError(
             f"Refusing to save empty scrape ({len(posts_data)}/{posts_count} posts)"
         )

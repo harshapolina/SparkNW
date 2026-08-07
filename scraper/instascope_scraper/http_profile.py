@@ -25,22 +25,35 @@ from instascope_scraper.instagram_time import infer_posted_at_iso
 logger = logging.getLogger("instascope.scraper.http_profile")
 
 
-def _cohort_floor_unix() -> int | None:
-    """If SPARK_COHORT_START is set, stop paginating once posts are older than this day.
+# Hard programme floor — scrape never collects posts older than this day (inclusive).
+_DEFAULT_COHORT_START = "2026-07-15"
 
-    Timeline is newest-first, so we only need posts on/after programme start for Insights.
-    Set SCRAPE_STOP_AT_COHORT=0 to disable.
+
+def _cohort_floor_unix() -> int | None:
+    """Unix timestamp for SPARK_COHORT_START (default 2026-07-15).
+
+    Timeline is newest-first: once a page yields a post older than this floor we
+    stop paging immediately. That is the intentional completion signal — we do
+    NOT scrape the full lifetime timeline.
+
+    Set SCRAPE_STOP_AT_COHORT=0 only for debugging a full-timeline scrape.
     """
-    if (os.getenv("SCRAPE_STOP_AT_COHORT") or "1").strip() in {"0", "false", "no"}:
+    if (os.getenv("SCRAPE_STOP_AT_COHORT") or "1").strip().lower() in {"0", "false", "no"}:
         return None
-    raw = (os.getenv("SPARK_COHORT_START") or "2026-07-15").strip()
+    raw = (os.getenv("SPARK_COHORT_START") or _DEFAULT_COHORT_START).strip()
     try:
         from datetime import datetime, timezone
 
         day = datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         return int(day.timestamp())
     except ValueError:
-        return None
+        try:
+            from datetime import datetime, timezone
+
+            day = datetime.strptime(_DEFAULT_COHORT_START, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            return int(day.timestamp())
+        except ValueError:
+            return None
 
 
 def _node_taken_unix(node: dict[str, Any]) -> int | None:
@@ -657,11 +670,16 @@ async def fetch_all_media_nodes(
     initial_has_next: bool = False,
     expected_count: int = 0,
     proxy: str | None = None,
-) -> list[dict[str, Any]]:
-    """Paginate until all (or SCRAPE_MAX_POSTS) timeline media nodes are collected."""
+) -> tuple[list[dict[str, Any]], bool]:
+    """Paginate newest-first until cohort floor, SCRAPE_MAX_POSTS, or feed end.
+
+    Returns ``(nodes, hit_cohort_floor)``. When ``hit_cohort_floor`` is True the
+    scrape has every post on/after SPARK_COHORT_START — treat as complete even if
+    ``len(nodes) << expected_count`` (lifetime Instagram total).
+    """
     if expected_count == 0:
         logger.info("fetch_all_media @%s expected=0 — empty timeline, skipping pagination", username)
-        return list(initial_nodes or [])
+        return list(initial_nodes or []), False
 
     limit = _max_posts()
     if expected_count > 0:
@@ -702,7 +720,7 @@ async def fetch_all_media_nodes(
                 username,
                 len(out),
             )
-        return out[:limit]
+        return out[:limit], hit_cohort_floor
 
     # Feed API wants media id/pk as max_id — NOT GraphQL end_cursor
     feed_seed_cursor = _cursor_from_node(out[-1]) if out else None
@@ -862,17 +880,28 @@ async def fetch_all_media_nodes(
                 pages,
             )
 
-        # --- 2) doc_id GraphQL POST (run whenever still short — including exactly 12) ---
-        need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
+        # --- 2) doc_id GraphQL POST (skip once cohort floor hit — lifetime count is irrelevant) ---
+        need_more = (not hit_cohort_floor) and _still_short(
+            len(out), limit=limit, expected_count=expected_count
+        )
         if need_more:
             cursor = graphql_cursor or (_cursor_from_node(out[-1]) if out else None)
             has_next = initial_has_next or bool(cursor) or need_more
             working_doc: str | None = None
             stagnant = 0
             pages = 0
-            while has_next and need_more and cursor and stagnant < 5 and pages < 80:
+            while (
+                has_next
+                and need_more
+                and not hit_cohort_floor
+                and cursor
+                and stagnant < 5
+                and pages < 80
+            ):
                 pages += 1
-                need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
+                need_more = (not hit_cohort_floor) and _still_short(
+                    len(out), limit=limit, expected_count=expected_count
+                )
                 await asyncio.sleep(delay)
                 payload: dict[str, Any] | None = None
                 if working_doc:
@@ -920,19 +949,25 @@ async def fetch_all_media_nodes(
                 stagnant = 0 if added else stagnant + 1
                 if not cursor:
                     has_next = False
-                need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
+                need_more = (not hit_cohort_floor) and _still_short(
+                    len(out), limit=limit, expected_count=expected_count
+                )
 
         # --- 3) Legacy query_hash / query_id ---
-        need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
+        need_more = (not hit_cohort_floor) and _still_short(
+            len(out), limit=limit, expected_count=expected_count
+        )
         if need_more:
             cursor = graphql_cursor or (_cursor_from_node(out[-1]) if out else None)
             has_next = initial_has_next or bool(cursor) or need_more
             working_hash: str | None = None
             working_qid: str | None = None
             pages = 0
-            while has_next and need_more and cursor and pages < 80:
+            while has_next and need_more and not hit_cohort_floor and cursor and pages < 80:
                 pages += 1
-                need_more = _still_short(len(out), limit=limit, expected_count=expected_count)
+                need_more = (not hit_cohort_floor) and _still_short(
+                    len(out), limit=limit, expected_count=expected_count
+                )
                 await asyncio.sleep(delay)
                 payload = None
                 if working_hash:
@@ -989,17 +1024,27 @@ async def fetch_all_media_nodes(
                 if not nodes:
                     break
                 _add(nodes)
+                if hit_cohort_floor:
+                    break
                 if not cursor:
                     has_next = False
 
-    logger.info(
-        "fetch_all_media_nodes @%s done collected=%s expected=%s limit=%s",
-        username,
-        len(out),
-        expected_count,
-        limit,
-    )
-    return out[:limit]
+    if hit_cohort_floor:
+        logger.info(
+            "fetch_all_media_nodes @%s cohort-complete collected=%s (lifetime expected=%s)",
+            username,
+            len(out),
+            expected_count,
+        )
+    else:
+        logger.info(
+            "fetch_all_media_nodes @%s done collected=%s expected=%s limit=%s",
+            username,
+            len(out),
+            expected_count,
+            limit,
+        )
+    return out[:limit], hit_cohort_floor
 
 
 async def fetch_timeline_via_username_feed(
@@ -1008,11 +1053,14 @@ async def fetch_timeline_via_username_feed(
     expected_count: int = 0,
     proxy: str | None = None,
     on_progress=None,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], bool]:
     """Paginate the full timeline using only /feed/user/{username}/username/.
 
     Works when web_profile_info is rate-limited (401 Please wait). The first feed
     page often includes a `user` object with id + media_count.
+
+    Returns ``(user_obj, nodes, hit_cohort_floor)``. Stops at SPARK_COHORT_START
+    the same way as ``fetch_all_media_nodes``.
     """
     headers = _client_headers(username)
     timeout = httpx.Timeout(60.0)
@@ -1024,6 +1072,8 @@ async def fetch_timeline_via_username_feed(
         limit = min(limit, expected_count)
     page_size = _page_size()
     delay = float(caps_env("SCRAPE_PAGE_DELAY_SECONDS", "0.8") or "0.8")
+    floor = _cohort_floor_unix()
+    hit_cohort_floor = False
 
     async def _emit(phase: str = "username_feed") -> None:
         if not on_progress:
@@ -1050,7 +1100,13 @@ async def fetch_timeline_via_username_feed(
         pages = 0
         max_pages = max(80, (limit // max(page_size, 1)) + 40)
 
-        while more and _still_short(len(nodes), limit=limit, expected_count=expected_count) and stagnant < 10 and pages < max_pages:
+        while (
+            more
+            and not hit_cohort_floor
+            and _still_short(len(nodes), limit=limit, expected_count=expected_count)
+            and stagnant < 10
+            and pages < max_pages
+        ):
             pages += 1
             if pages > 1:
                 await asyncio.sleep(delay)
@@ -1095,6 +1151,11 @@ async def fetch_timeline_via_username_feed(
                 key = _node_key(node)
                 if not key or key in seen:
                     continue
+                if floor is not None:
+                    ts = _node_taken_unix(node)
+                    if ts is not None and ts < floor:
+                        hit_cohort_floor = True
+                        continue
                 seen.add(key)
                 nodes.append(node)
                 added += 1
@@ -1102,7 +1163,7 @@ async def fetch_timeline_via_username_feed(
                     break
 
             logger.info(
-                "username_feed @%s page=%s got=%s added=%s total=%s next=%s more=%s expected=%s",
+                "username_feed @%s page=%s got=%s added=%s total=%s next=%s more=%s expected=%s cohort_floor=%s",
                 username,
                 pages,
                 len(page_nodes),
@@ -1111,8 +1172,17 @@ async def fetch_timeline_via_username_feed(
                 next_cursor,
                 more,
                 expected_count,
+                hit_cohort_floor,
             )
             await _emit("username_feed")
+
+            if hit_cohort_floor:
+                logger.info(
+                    "username_feed @%s stopped at SPARK cohort floor collected=%s",
+                    username,
+                    len(nodes),
+                )
+                break
 
             if added == 0:
                 stagnant += 1
@@ -1141,13 +1211,14 @@ async def fetch_timeline_via_username_feed(
                 break
 
     logger.info(
-        "username_feed @%s done collected=%s expected=%s user=%s",
+        "username_feed @%s done collected=%s expected=%s user=%s cohort_floor=%s",
         username,
         len(nodes),
         expected_count,
         bool(user_obj),
+        hit_cohort_floor,
     )
-    return user_obj, nodes[:limit]
+    return user_obj, nodes[:limit], hit_cohort_floor
 
 
 def _parse_media_count(user: dict[str, Any]) -> int:

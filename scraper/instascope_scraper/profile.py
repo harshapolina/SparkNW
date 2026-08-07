@@ -297,15 +297,28 @@ def _posts_count_known(user: dict[str, Any] | None) -> bool:
     return False
 
 
-def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
+def _posts_complete(
+    posts: list[ScrapedPost],
+    posts_count: int,
+    *,
+    hit_cohort_floor: bool = False,
+) -> bool:
     """True when we've collected enough posts for the active scrape caps.
 
     Respects SCRAPE_MAX_POSTS / ScrapeCaps.max_posts so a capped bulk pass
     (e.g. 48 of 3000) is treated as complete.
 
+    When ``hit_cohort_floor`` is True we already walked newest→oldest down to
+    SPARK_COHORT_START (2026-07-15) — that is a complete programme scrape even
+    if Instagram's lifetime ``posts_count`` is much larger.
+
     posts_count == 0 with no posts means a confirmed-empty timeline (callers
     must only set posts_count=0 when Instagram explicitly reported it).
     """
+    # Programme window complete — do not chase lifetime posts_count.
+    if hit_cohort_floor:
+        return True
+
     # Confirmed empty account: nothing to fetch.
     if posts_count == 0:
         return len(posts) == 0
@@ -330,9 +343,23 @@ def _posts_complete(posts: list[ScrapedPost], posts_count: int) -> bool:
     return got >= max(posts_count - 2, 1)
 
 
+def _result_hit_cohort_floor(result: ScrapeResult | None) -> bool:
+    if not result or not isinstance(result.raw, dict):
+        return False
+    return bool(result.raw.get("hit_cohort_floor"))
+
+
+def _mark_cohort_floor(result: ScrapeResult, hit: bool = True) -> ScrapeResult:
+    if hit:
+        result.raw = {**(result.raw or {}), "hit_cohort_floor": True}
+    return result
+
+
 def _useful_partial(result: ScrapeResult) -> bool:
     """Card + a real sample — save instead of failing large accounts mid-pagination."""
     if result.is_private:
+        return True
+    if _result_hit_cohort_floor(result):
         return True
     # Confirmed empty public profile with a card is a finished scrape.
     if int(result.posts_count or 0) == 0 and len(result.posts) == 0 and int(result.followers or 0) > 0:
@@ -349,7 +376,11 @@ def _raise_if_incomplete(result: ScrapeResult) -> None:
     """Raise only when the timeline is useless; accept capped / strong partials."""
     if result.is_private:
         return
-    if _posts_complete(result.posts, result.posts_count):
+    if _posts_complete(
+        result.posts,
+        result.posts_count,
+        hit_cohort_floor=_result_hit_cohort_floor(result),
+    ):
         return
     strict = (caps_env("SCRAPE_STRICT", "0") or "0").strip().lower() in {
         "1",
@@ -413,18 +444,23 @@ async def _expand_all_posts(
     *,
     proxy_url: str | None,
     on_progress=None,
-) -> list[ScrapedPost]:
-    """Paginate until scraped posts reach Instagram posts_count (not just first ~12)."""
+) -> tuple[list[ScrapedPost], bool]:
+    """Paginate newest-first until cohort floor (Jul 15 2026) or posts_count.
+
+    Returns ``(posts, hit_cohort_floor)``. Hitting the programme floor is success —
+    we intentionally ignore older lifetime posts.
+    """
     from instascope_scraper.http_profile import _timeline_from_user, fetch_all_media_nodes
 
     user_id = str(user.get("id") or user.get("pk") or "")
     if not user_id:
         logger.warning("expand @%s: missing user_id — returning card edges only", username)
-        return _result_from_user(username, user).posts
+        return _result_from_user(username, user).posts, False
 
     expected = _expected_posts_count(user)
     initial_nodes, cursor, has_next = _timeline_from_user(user)
     posts = _posts_from_nodes(initial_nodes)
+    hit_cohort_floor = False
     await _emit_progress(
         on_progress,
         phase="timeline",
@@ -445,7 +481,7 @@ async def _expand_all_posts(
     # Only when the count field is present (missing count ≠ empty account).
     if expected == 0 and _posts_count_known(user):
         logger.info("expand @%s expected=0 — empty timeline, skipping pagination", username)
-        return posts
+        return posts, False
     if expected == 0 and not _posts_count_known(user):
         logger.warning(
             "expand @%s posts_count unknown — will paginate until feed ends/stagnant",
@@ -466,7 +502,7 @@ async def _expand_all_posts(
             )
         return seed
 
-    # Keep going until we hit posts_count (or exhaust rounds).
+    # Keep going until cohort floor or posts_count (or exhaust rounds).
     # Rotate residential proxies so one rate-limited port doesn't stall pagination.
     rounds = max(1, int(os.getenv("SCRAPE_EXPAND_ROUNDS") or "8"))
     from instascope_scraper.proxy_pool import all_proxy_httpx_urls
@@ -485,20 +521,24 @@ async def _expand_all_posts(
 
     stagnant_rounds = 0
     for round_i in range(rounds):
-        if expected > 0 and _posts_complete(posts, expected):
+        if hit_cohort_floor or _posts_complete(
+            posts, expected, hit_cohort_floor=hit_cohort_floor
+        ):
             break
         if expected <= 0 and len(posts) > 12:
             break
 
         progressed = False
         for pxy in proxy_cycle:
-            if expected > 0 and _posts_complete(posts, expected):
+            if hit_cohort_floor or _posts_complete(
+                posts, expected, hit_cohort_floor=hit_cohort_floor
+            ):
                 break
             try:
                 seed = initial_nodes if (round_i == 0 and not posts) else _seed_nodes_from_posts(posts)
                 # Always ask for more while short of Instagram's count
                 force_next = expected > len(posts) or (expected <= 0 and len(posts) <= 12)
-                all_nodes = await fetch_all_media_nodes(
+                all_nodes, floor_hit = await fetch_all_media_nodes(
                     username,
                     user_id=user_id,
                     initial_nodes=seed,
@@ -507,17 +547,35 @@ async def _expand_all_posts(
                     expected_count=expected,
                     proxy=pxy,
                 )
+                if floor_hit:
+                    hit_cohort_floor = True
                 before = len(posts)
                 posts = _merge_posts(posts, _posts_from_nodes(all_nodes))
                 logger.info(
-                    "expand @%s round=%s proxy=%s before=%s after=%s expected=%s",
+                    "expand @%s round=%s proxy=%s before=%s after=%s expected=%s cohort_floor=%s",
                     username,
                     round_i,
                     bool(pxy),
                     before,
                     len(posts),
                     expected,
+                    hit_cohort_floor,
                 )
+                if hit_cohort_floor:
+                    await _emit_progress(
+                        on_progress,
+                        phase="timeline",
+                        scraped_posts=len(posts),
+                        total_posts=expected,
+                    )
+                    logger.info(
+                        "expand @%s cohort-complete posts=%s (lifetime expected=%s)",
+                        username,
+                        len(posts),
+                        expected,
+                    )
+                    # Skip further proxy/round loops — programme window is done.
+                    break
                 if len(posts) > before:
                     progressed = True
                     stagnant_rounds = 0
@@ -538,7 +596,7 @@ async def _expand_all_posts(
                             len(posts),
                             expected,
                         )
-                        return posts
+                        return posts, hit_cohort_floor
             except Exception as exc:
                 msg = str(exc).lower()
                 if "please wait" in msg or "rate" in msg:
@@ -552,7 +610,9 @@ async def _expand_all_posts(
                 )
                 continue
 
-        if expected > 0 and _posts_complete(posts, expected):
+        if hit_cohort_floor or _posts_complete(
+            posts, expected, hit_cohort_floor=hit_cohort_floor
+        ):
             break
         if progressed:
             stagnant_rounds = 0
@@ -582,14 +642,20 @@ async def _expand_all_posts(
     except Exception:
         logger.exception("expand @%s view enrich failed", username)
 
-    logger.info("expand @%s done collected=%s expected=%s", username, len(posts), expected)
+    logger.info(
+        "expand @%s done collected=%s expected=%s cohort_floor=%s",
+        username,
+        len(posts),
+        expected,
+        hit_cohort_floor,
+    )
     await _emit_progress(
         on_progress,
         phase="timeline",
         scraped_posts=len(posts),
         total_posts=expected or len(posts),
     )
-    return posts
+    return posts, hit_cohort_floor
 
 
 async def _enrich_views_via_http(
@@ -1706,6 +1772,15 @@ def _finalize_result(result: ScrapeResult, *, path: str) -> ScrapeResult:
     return result
 
 
+def _complete(result: ScrapeResult) -> bool:
+    """Timeline complete for programme scrape (cohort floor or full/capped count)."""
+    return _posts_complete(
+        result.posts,
+        result.posts_count,
+        hit_cohort_floor=_result_hit_cohort_floor(result),
+    )
+
+
 async def _scrape_live(
     username: str,
     *,
@@ -1784,10 +1859,12 @@ async def _scrape_live(
 
             if not bool(user.get("is_private")):
                 try:
-                    all_posts = await _expand_all_posts(
+                    all_posts, floor_hit = await _expand_all_posts(
                         username, user, proxy_url=proxy_url, on_progress=on_progress
                     )
                     http_result = _result_from_user(username, user, posts_override=all_posts)
+                    if floor_hit:
+                        _mark_cohort_floor(http_result)
                 except Exception:
                     logger.exception("http expand @%s failed — falling back to card edges", username)
                     http_result = _result_from_user(username, user)
@@ -1797,13 +1874,14 @@ async def _scrape_live(
             if http_result and http_result.is_private:
                 return _finalize_result(http_result, path="http_private")
 
-            # Full timeline via HTTP → success immediately (no browser).
-            if http_result and _posts_complete(http_result.posts, http_result.posts_count):
+            # Full programme timeline via HTTP → success immediately (no browser).
+            if http_result and _complete(http_result):
                 logger.info(
-                    "http_full @%s posts=%s/%s",
+                    "http_full @%s posts=%s/%s cohort_floor=%s",
                     username,
                     len(http_result.posts),
                     http_result.posts_count,
+                    _result_hit_cohort_floor(http_result),
                 )
                 return _finalize_result(http_result, path="http_full")
             if http_result:
@@ -1833,7 +1911,7 @@ async def _scrape_live(
             logger.warning("web_profile_info @%s unavailable — trying username feed", username)
             await _emit_progress(on_progress, phase="username_feed", scraped_posts=0, total_posts=0)
             try:
-                feed_user, feed_nodes = await fetch_timeline_via_username_feed(
+                feed_user, feed_nodes, feed_floor = await fetch_timeline_via_username_feed(
                     username,
                     expected_count=0,
                     proxy=proxy_url,
@@ -1902,8 +1980,10 @@ async def _scrape_live(
                             posts=posts,
                             raw={"source": "username_feed"},
                         )
+                    if feed_floor:
+                        _mark_cohort_floor(http_result)
                     if http_result and (
-                        _posts_complete(http_result.posts, http_result.posts_count)
+                        _complete(http_result)
                         or (http_result.posts_count < 0 and len(http_result.posts) > 12)
                     ):
                         # If posts_count unknown (<0 sentinel unused), trust feed exhaustion.
@@ -1915,22 +1995,25 @@ async def _scrape_live(
                             and len(http_result.posts) > 12
                         ):
                             http_result.posts_count = len(http_result.posts)
-                        if _posts_complete(http_result.posts, http_result.posts_count):
+                        if _complete(http_result):
                             # Feed user payload is thin (often no follower_count) — only
                             # short-circuit when card metrics exist; else fill card via
                             # HTML meta (no Playwright) so bulk/single keep posts + counts.
                             if _has_card_metrics(http_result):
                                 logger.info(
-                                    "username_feed_full @%s posts=%s/%s followers=%s",
+                                    "username_feed_full @%s posts=%s/%s followers=%s cohort_floor=%s",
                                     username,
                                     len(http_result.posts),
                                     http_result.posts_count,
                                     http_result.followers,
+                                    feed_floor,
                                 )
                                 return _finalize_result(http_result, path="username_feed_full")
                             http_result = await _fill_card_via_html_meta(
                                 username, http_result, proxy_url=proxy_url
                             )
+                            if feed_floor:
+                                _mark_cohort_floor(http_result)
                             if _has_card_metrics(http_result):
                                 return _finalize_result(
                                     http_result, path="username_feed_meta"
@@ -1992,7 +2075,7 @@ async def _scrape_live(
     if http_result and http_result.is_private:
         return _finalize_result(http_result, path="http_private")
     if http_result and _result_is_usable(http_result) and _has_card_metrics(http_result):
-        if not _posts_complete(http_result.posts, http_result.posts_count):
+        if not _complete(http_result):
             logger.warning(
                 "http_usable @%s posts=%s/%s followers=%s — returning without browser",
                 username,
@@ -2057,7 +2140,7 @@ async def _scrape_live(
         if (
             result
             and not result.is_private
-            and not _posts_complete(result.posts, result.posts_count)
+            and not _complete(result)
             and result.ig_user_id
         ):
             try:
@@ -2067,24 +2150,28 @@ async def _scrape_live(
                 http_json = await fetch_web_profile_http(username, proxy=proxy_url)
                 user = _user_from_web_profile(http_json) if http_json else None
                 if user:
-                    more = await _expand_all_posts(username, user, proxy_url=proxy_url)
+                    more, floor_hit = await _expand_all_posts(username, user, proxy_url=proxy_url)
                     result.posts = _merge_posts(result.posts, more)
-                    if _posts_complete(result.posts, result.posts_count):
+                    if floor_hit:
+                        _mark_cohort_floor(result)
+                    if _complete(result):
                         return _finalize_result(result, path="http_after_browser")
             except Exception:
                 logger.exception("http_after_browser @%s failed", username)
             # Username feed rescue when web_profile still blocked
-            if not _posts_complete(result.posts, result.posts_count):
+            if not _complete(result):
                 try:
                     from instascope_scraper.http_profile import fetch_timeline_via_username_feed
 
-                    _, feed_nodes = await fetch_timeline_via_username_feed(
+                    _, feed_nodes, feed_floor = await fetch_timeline_via_username_feed(
                         username,
                         expected_count=result.posts_count,
                         proxy=proxy_to_httpx_url(proxy),
                     )
                     result.posts = _merge_posts(result.posts, _posts_from_nodes(feed_nodes))
-                    if _posts_complete(result.posts, result.posts_count):
+                    if feed_floor:
+                        _mark_cohort_floor(result)
+                    if _complete(result):
                         return _finalize_result(result, path="username_feed_after_browser")
                 except Exception:
                     logger.exception("username_feed_after_browser @%s failed", username)
@@ -2106,7 +2193,7 @@ async def _scrape_live(
     except Exception as exc:
         # Prefer a complete HTTP timeline; otherwise keep any usable card/posts
         # rather than failing with zeros after a browser/proxy hang.
-        if http_result and _posts_complete(http_result.posts, http_result.posts_count):
+        if http_result and _complete(http_result):
             return _finalize_result(http_result, path="http_fallback_complete")
         if http_result and _result_is_usable(http_result):
             logger.warning(
@@ -2141,15 +2228,17 @@ async def _scrape_live(
                     http_json = await fetch_web_profile_http(username, proxy=use_proxy)
                     user = _user_from_web_profile(http_json) if http_json else None
                     if user:
-                        posts = await _expand_all_posts(
+                        posts, floor_hit = await _expand_all_posts(
                             username, user, proxy_url=use_proxy, on_progress=on_progress
                         )
                         rescued = _result_from_user(username, user, posts_override=posts)
+                        if floor_hit:
+                            _mark_cohort_floor(rescued)
                         if _result_is_usable(rescued):
-                            if _posts_complete(rescued.posts, rescued.posts_count):
+                            if _complete(rescued):
                                 return _finalize_result(rescued, path="http_rescue_full")
                             return _finalize_result(rescued, path="http_rescue_partial")
-                    feed_user, feed_nodes = await fetch_timeline_via_username_feed(
+                    feed_user, feed_nodes, feed_floor = await fetch_timeline_via_username_feed(
                         username,
                         expected_count=0,
                         proxy=use_proxy,
@@ -2176,6 +2265,8 @@ async def _scrape_live(
                                 posts=posts,
                                 raw={"source": "username_feed_rescue"},
                             )
+                        if feed_floor:
+                            _mark_cohort_floor(rescued)
                         if rescued.posts_count <= 0:
                             rescued.posts_count = len(posts)
                         if _result_is_usable(rescued):
@@ -2200,19 +2291,23 @@ async def _scrape_live(
                         http_json = await fetch_web_profile_http(username, proxy=use_proxy)
                         user = _user_from_web_profile(http_json) if http_json else None
                         if user:
-                            posts = await _expand_all_posts(username, user, proxy_url=use_proxy)
+                            posts, floor_hit = await _expand_all_posts(username, user, proxy_url=use_proxy)
                             result = _result_from_user(username, user, posts_override=posts)
-                            if _posts_complete(result.posts, result.posts_count):
+                            if floor_hit:
+                                _mark_cohort_floor(result)
+                            if _complete(result):
                                 return _finalize_result(result, path="http_after_tunnel_fail")
-                        feed_user, feed_nodes = await fetch_timeline_via_username_feed(
+                        feed_user, feed_nodes, feed_floor = await fetch_timeline_via_username_feed(
                             username, expected_count=0, proxy=use_proxy
                         )
                         if feed_nodes and feed_user:
                             posts = _posts_from_nodes(feed_nodes)
                             result = _result_from_user(username, feed_user, posts_override=posts)
+                            if feed_floor:
+                                _mark_cohort_floor(result)
                             if result.posts_count <= 0:
                                 result.posts_count = len(posts)
-                            if _posts_complete(result.posts, result.posts_count):
+                            if _complete(result):
                                 return _finalize_result(result, path="username_feed_after_tunnel")
                     except Exception:
                         logger.exception("tunnel fallback @%s proxy=%s failed", username, bool(use_proxy))
@@ -2309,7 +2404,7 @@ async def _scrape_live_browser(
             response = await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
         except Exception as exc:
             await context.close()
-            if http_result and _posts_complete(http_result.posts, http_result.posts_count):
+            if http_result and _complete(http_result):
                 http_result.raw = {
                     **(http_result.raw or {}),
                     "browser_error": str(exc)[:400],
@@ -2469,7 +2564,7 @@ async def _scrape_live_browser(
         )
 
         # Full timeline for public profiles — skip when HTTP already completed it
-        if not result.is_private and not _posts_complete(result.posts, result.posts_count):
+        if not result.is_private and not _complete(result):
             try:
                 result.posts = await _collect_full_timeline_in_browser(
                     page,
@@ -2492,25 +2587,29 @@ async def _scrape_live_browser(
             )
 
         # Last-chance HTTP expand with cookies already warmed by browser session
-        if not result.is_private and not _posts_complete(result.posts, result.posts_count):
+        if not result.is_private and not _complete(result):
             try:
                 proxy_url = proxy_to_httpx_url(proxy)
                 if user_payload:
-                    more_posts = await _expand_all_posts(username, user_payload, proxy_url=proxy_url)
+                    more_posts, floor_hit = await _expand_all_posts(username, user_payload, proxy_url=proxy_url)
                     seen = {p.shortcode for p in result.posts}
                     for p in more_posts:
                         if p.shortcode not in seen:
                             result.posts.append(p)
                             seen.add(p.shortcode)
-                if not _posts_complete(result.posts, result.posts_count):
+                    if floor_hit:
+                        _mark_cohort_floor(result)
+                if not _complete(result):
                     from instascope_scraper.http_profile import fetch_timeline_via_username_feed
 
-                    _, feed_nodes = await fetch_timeline_via_username_feed(
+                    _, feed_nodes, feed_floor = await fetch_timeline_via_username_feed(
                         username,
                         expected_count=result.posts_count,
                         proxy=proxy_url,
                     )
                     result.posts = _merge_posts(result.posts, _posts_from_nodes(feed_nodes))
+                    if feed_floor:
+                        _mark_cohort_floor(result)
             except Exception:
                 logger.exception("browser last-chance HTTP expand @%s failed", username)
 
@@ -2552,10 +2651,10 @@ async def _scrape_live_browser(
             raise ScrapeError("Scraped profile returned empty metrics")
 
         # Must reach Instagram posts_count — never accept first-card-only (~12).
-        if not result.is_private and not _posts_complete(result.posts, result.posts_count):
+        if not result.is_private and not _complete(result):
             if http_result and len(http_result.posts) > len(result.posts):
                 result.posts = list(http_result.posts)
-            if not _posts_complete(result.posts, result.posts_count):
+            if not _complete(result):
                 _raise_if_incomplete(result)
 
         return _finalize_result(result, path="browser_full")

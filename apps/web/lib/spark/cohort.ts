@@ -1,4 +1,4 @@
-/** SPARK programme window — all calendars & metrics start here (inclusive). */
+/** SPARK programme window — scrapes & metrics start here (inclusive). No date-range UI. */
 export const SPARK_COHORT_START = "2026-07-15";
 
 export const PROGRAMME_STARTED_LABEL = "15 Jul 2026";

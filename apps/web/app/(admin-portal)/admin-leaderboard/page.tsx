@@ -10,7 +10,6 @@ import type { LeaderboardSort } from "@/lib/spark/types";
 import { cn, formatNumber } from "@/lib/utils";
 import { TierBadge } from "@/components/spark/tier-badge";
 import { Movement, SparkAvatar } from "@/components/spark/ui";
-import { DateRangePicker } from "@/components/date-range-picker";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
 import { defaultCohortRange, utcTodayYmd } from "@/lib/spark/cohort";
 
@@ -24,44 +23,30 @@ const sorts: { id: LeaderboardSort; label: string }[] = [
 
 function buildLeaderboardUrl(sort: LeaderboardSort, fromDate: string, toDate: string) {
   const params = new URLSearchParams({ sort });
-  if (fromDate) params.set("from_date", fromDate);
-  if (toDate) params.set("to_date", toDate);
+  params.set("from_date", fromDate);
+  params.set("to_date", toDate);
   return `/spark/leaderboard?${params.toString()}`;
 }
 
 export default function AdminLeaderboardPage() {
-  const defaults = defaultCohortRange(utcTodayYmd());
+  // Fixed programme window: 15 Jul 2026 → today (no calendar picker).
+  const range = defaultCohortRange(utcTodayYmd());
   const [sort, setSort] = useState<LeaderboardSort>("overall");
   const [campus, setCampus] = useState<string>("all");
   const [tier, setTier] = useState<string>("all");
   const [teamOnly, setTeamOnly] = useState(false);
   const [q, setQ] = useState("");
-  const [fromDate, setFromDate] = useState(defaults.from);
-  const [toDate, setToDate] = useState(defaults.to);
   const [page, setPage] = useState(1);
   const perPage = 10;
 
-  const rangeActive = Boolean(fromDate && toDate);
-  const rangeInvalid = Boolean(fromDate && toDate && fromDate > toDate);
-  // Don't refetch while only one end is set (should not happen; picker waits for both).
-  const rangeReady = Boolean(fromDate && toDate);
-
   const boardQ = useQuery({
-    queryKey: ["spark", "leaderboard", sort, fromDate || null, toDate || null],
-    queryFn: () => api<LeaderboardResponse>(buildLeaderboardUrl(sort, fromDate, toDate)),
-    enabled: !rangeInvalid && rangeReady,
+    queryKey: ["spark", "leaderboard", sort, range.from, range.to],
+    queryFn: () => api<LeaderboardResponse>(buildLeaderboardUrl(sort, range.from, range.to)),
   });
   const adminQ = useQuery({
     queryKey: ["spark", "admin"],
     queryFn: () => api<AdminOverviewResponse>("/spark/admin"),
   });
-
-  function clearDates() {
-    const next = defaultCohortRange(utcTodayYmd());
-    setFromDate(next.from);
-    setToDate(next.to);
-    setPage(1);
-  }
 
   const ranked = useMemo(() => {
     let list: SparkCreatorRow[] = [...(boardQ.data?.items || [])];
@@ -81,21 +66,11 @@ export default function AdminLeaderboardPage() {
     return list.map((c, i) => ({ ...c, rank: i + 1 }));
   }, [boardQ.data, campus, tier, teamOnly, q]);
 
-  const rangeKpis = useMemo(() => {
-    if (!rangeActive) return null;
-    const totalPoints = ranked.reduce((sum, c) => sum + (c.points || 0), 0);
-    const totalFollowers = ranked.reduce((sum, c) => sum + (c.followers || 0), 0);
-    const totalViews = ranked.reduce((sum, c) => sum + (c.views || 0), 0);
-    const totalEngagement = ranked.reduce((sum, c) => sum + (c.likes || 0) + (c.comments || 0), 0);
-    return { totalPoints, totalFollowers, totalViews, totalEngagement, creators: ranked.length };
-  }, [rangeActive, ranked]);
-
   const totalPages = Math.max(1, Math.ceil(ranked.length / perPage));
   const pageRows = ranked.slice((page - 1) * perPage, page * perPage);
   const admin = adminQ.data;
   const campuses = boardQ.data?.campuses || [];
-  const appliedFrom = boardQ.data?.from_date || fromDate || null;
-  const appliedTo = boardQ.data?.to_date || toDate || null;
+  const appliedTo = boardQ.data?.to_date || range.to;
 
   const exportCsv = () => {
     const header = ["Rank", "Name", "Handle", "Campus", "Team", "Tier", "Points", "Followers", "Views", "Engagement", "Trend"];
@@ -106,15 +81,13 @@ export default function AdminLeaderboardPage() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const rangeSuffix =
-      appliedFrom || appliedTo ? `-${appliedFrom || "start"}_to_${appliedTo || "end"}` : "";
-    a.download = `spark-leaderboard${rangeSuffix}.csv`;
+    a.download = `spark-leaderboard-${range.from}_to_${appliedTo}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  if (boardQ.isPending && !boardQ.data && !rangeInvalid) return <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />;
-  if (boardQ.error && !rangeInvalid) {
+  if (boardQ.isPending && !boardQ.data) return <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />;
+  if (boardQ.error) {
     return (
       <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
         {(boardQ.error as Error).message}
@@ -122,54 +95,31 @@ export default function AdminLeaderboardPage() {
     );
   }
 
-  const kpiCards = rangeActive && rangeKpis
-    ? [
-        { label: "Total Creators", value: formatNumber(rangeKpis.creators), sub: "In selected range" },
-        {
-          label: "Total Points Distributed",
-          value: formatNumber(rangeKpis.totalPoints),
-          sub: "Period SPARK points",
-        },
-        { label: "Total Followers (All)", value: formatNumber(rangeKpis.totalFollowers), sub: "As of range end" },
-        { label: "Total Views (All)", value: formatNumber(rangeKpis.totalViews), sub: "Posts in range" },
-        { label: "Total Engagement (All)", value: formatNumber(rangeKpis.totalEngagement), sub: "Likes + comments in range" },
-      ]
-    : [
-        { label: "Total Creators", value: formatNumber(admin?.total_participants ?? ranked.length), sub: "Across campuses" },
-        {
-          label: "Total Points Distributed",
-          value: formatNumber(admin?.total_points_distributed ?? 0),
-          sub:
-            admin?.points_wow_pct != null
-              ? `${admin.points_wow_pct > 0 ? "+" : ""}${admin.points_wow_pct.toFixed(1)}% WoW`
-              : "SPARK point system",
-          subClass:
-            (admin?.points_wow_pct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400",
-        },
-        { label: "Total Followers (All)", value: formatNumber(admin?.total_followers ?? 0), sub: "Live scrapes" },
-        { label: "Total Views (All)", value: formatNumber(admin?.total_views ?? 0), sub: "Post views sum" },
-        { label: "Total Engagement (All)", value: formatNumber(admin?.total_engagement ?? 0), sub: "Likes + comments" },
-      ];
+  const kpiCards = [
+    { label: "Total Creators", value: formatNumber(admin?.total_participants ?? ranked.length), sub: "Across campuses" },
+    {
+      label: "Total Points Distributed",
+      value: formatNumber(admin?.total_points_distributed ?? 0),
+      sub:
+        admin?.points_wow_pct != null
+          ? `${admin.points_wow_pct > 0 ? "+" : ""}${admin.points_wow_pct.toFixed(1)}% WoW`
+          : "SPARK point system",
+      subClass: (admin?.points_wow_pct ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400",
+    },
+    { label: "Total Followers (All)", value: formatNumber(admin?.total_followers ?? 0), sub: "Live scrapes" },
+    { label: "Total Views (All)", value: formatNumber(admin?.total_views ?? 0), sub: "Post views sum" },
+    { label: "Total Engagement (All)", value: formatNumber(admin?.total_engagement ?? 0), sub: "Likes + comments" },
+  ];
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Leaderboard</h1>
-          <ProgrammeWindowNote className="mt-1" toDate={appliedTo || toDate} />
+          <ProgrammeWindowNote className="mt-1" toDate={appliedTo} />
           <p className="mt-1 text-sm text-zinc-500">
-            Sort pills reorder by real scraped metrics. OVERALL uses SPARK points calculated from posts in the programme
-            window (started 15 Jul 2026).
-            {rangeActive && appliedFrom && appliedTo ? (
-              <>
-                {" "}
-                Currently showing{" "}
-                <span className="text-zinc-300">
-                  {appliedFrom} → {appliedTo}
-                </span>
-                .
-              </>
-            ) : null}
+            Sort pills reorder by real scraped metrics. OVERALL uses SPARK points calculated from posts since the
+            programme started (15 Jul 2026). Scraping ignores earlier posts.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -199,30 +149,10 @@ export default function AdminLeaderboardPage() {
       </div>
 
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4 md:p-5">
-        <div className="mb-4 flex flex-col gap-2 border-b border-white/[0.06] pb-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-          <DateRangePicker
-            fromDate={fromDate}
-            toDate={toDate}
-            onChange={(from, to) => {
-              setFromDate(from);
-              setToDate(to);
-              setPage(1);
-            }}
-            onClear={clearDates}
-          />
-          <div className="flex flex-wrap items-center gap-2">
-            {rangeActive && appliedFrom && appliedTo ? (
-              <span className="rounded-full border border-[#ff4d00]/35 bg-[#ff4d00]/10 px-3 py-1.5 text-xs text-[#ff4d00]">
-                Scoring {appliedFrom} → {appliedTo}
-              </span>
-            ) : (
-              <ProgrammeWindowNote variant="compact" toDate={toDate} />
-            )}
-          </div>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-4">
+          <ProgrammeWindowNote variant="compact" toDate={appliedTo} />
+          <p className="text-[11px] text-zinc-500">Scoring window is fixed — no date range picker.</p>
         </div>
-        {rangeInvalid ? (
-          <p className="mb-3 text-[11px] text-rose-400">From date must be on or before To date.</p>
-        ) : null}
 
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap gap-1.5">
@@ -397,7 +327,7 @@ export default function AdminLeaderboardPage() {
                   </td>
                 </tr>
               ))}
-              {!pageRows.length && !rangeInvalid && (
+              {!pageRows.length && (
                 <tr>
                   <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
                     No creators match these filters.
@@ -409,11 +339,9 @@ export default function AdminLeaderboardPage() {
         </div>
 
         <p className="mt-3 text-[11px] text-zinc-500">
-          <span className="text-zinc-300">OVERALL / POINTS</span> = SPARK score from scraped posts (consistency +
-          performance + growth).{" "}
-          <span className="text-zinc-300">FOLLOWERS / VIEWS / ENGAGEMENT</span> ={" "}
-          {rangeActive ? "metrics for the selected date range (from 15 Jul 2026 onward)" : "cohort metrics from 15 Jul 2026"}. Orange column is the active
-          sort.
+          <span className="text-zinc-300">OVERALL / POINTS</span> = SPARK score from scraped posts since 15 Jul 2026.{" "}
+          <span className="text-zinc-300">FOLLOWERS / VIEWS / ENGAGEMENT</span> = cohort metrics from that date onward.
+          Orange column is the active sort.
         </p>
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">

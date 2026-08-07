@@ -1,4 +1,4 @@
-"""SPARK cohort date window — all rankings/metrics start on this day."""
+"""SPARK cohort date window — scrapes and rankings start on this day."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ import os
 from datetime import date, datetime, time, timedelta
 
 
-# Programme / SPARK scoring starts here (inclusive). Override with SPARK_COHORT_START=YYYY-MM-DD.
+# Programme floor (inclusive). Scrapes stop here; scoring ignores older posts.
+# Override with SPARK_COHORT_START=YYYY-MM-DD only if the programme start moves.
 _DEFAULT_COHORT_START = "2026-07-15"
 
 
