@@ -2,7 +2,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { FormEvent, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Download, Plus, RefreshCw, Search } from "lucide-react";
 import { api, type Profile } from "@/lib/api";
 import { cn, formatNumber, formatPct } from "@/lib/utils";
@@ -27,23 +28,58 @@ const STATUS_FILTERS = [
   { id: "unavailable", label: "Unavailable" },
 ] as const;
 
-export default function AdminScrapingPage() {
+function AdminScrapingPageInner() {
   const qc = useQueryClient();
-  const [q, setQ] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+
+  const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
+  const statusFilter = searchParams.get("status") || "";
+  const q = searchParams.get("q") || "";
+  const [qInput, setQInput] = useState(q);
+
+  useEffect(() => {
+    setQInput(q);
+  }, [q]);
+
+  const replaceListParams = useCallback(
+    (patch: { page?: number; q?: string; status?: string }) => {
+      const nextQ = patch.q !== undefined ? patch.q : q;
+      const nextStatus = patch.status !== undefined ? patch.status : statusFilter;
+      const nextPage = patch.page !== undefined ? patch.page : page;
+      const params = new URLSearchParams();
+      if (nextQ.trim()) params.set("q", nextQ.trim());
+      if (nextStatus) params.set("status", nextStatus);
+      if (nextPage > 1) params.set("page", String(nextPage));
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [pathname, q, statusFilter, page, router]
+  );
+
   const [ig, setIg] = useState("");
   const [studentId, setStudentId] = useState("");
   const [fullName, setFullName] = useState("");
   const [university, setUniversity] = useState("");
   const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState("");
-  const [page, setPage] = useState(1);
 
   const queryString = useMemo(() => {
-    const params = new URLSearchParams({ q, page: String(page), page_size: "20" });
+    const params = new URLSearchParams({ page: String(page), page_size: "20" });
+    if (q) params.set("q", q);
     if (statusFilter) params.set("status", statusFilter);
     return params.toString();
   }, [q, page, statusFilter]);
+
+  // Debounce search typing into the URL (keeps page when returning from a profile).
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (qInput === q) return;
+      replaceListParams({ q: qInput, page: 1 });
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [qInput, q, replaceListParams]);
 
   const scrapeStatusQ = useQuery({
     queryKey: ["scrape-status"],
@@ -291,11 +327,8 @@ export default function AdminScrapingPage() {
             <label className="relative w-full max-w-sm shrink">
               <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
               <input
-                value={q}
-                onChange={(e) => {
-                  setQ(e.target.value);
-                  setPage(1);
-                }}
+                value={qInput}
+                onChange={(e) => setQInput(e.target.value)}
                 placeholder="Search name, student ID, campus, @handle…"
                 className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
               />
@@ -305,10 +338,7 @@ export default function AdminScrapingPage() {
                 <button
                   key={f.id || "all"}
                   type="button"
-                  onClick={() => {
-                    setStatusFilter(f.id);
-                    setPage(1);
-                  }}
+                  onClick={() => replaceListParams({ status: f.id, page: 1 })}
                   className={cn(
                     "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium",
                     statusFilter === f.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400"
@@ -437,11 +467,7 @@ export default function AdminScrapingPage() {
                     <td className="px-2 py-3 tabular">{formatNumber(p.followers)}</td>
                     <td className="px-2 py-3 tabular">
                       <div className="font-medium text-zinc-100">
-                        {formatNumber(
-                          typeof p.programme_posts === "number"
-                            ? p.programme_posts
-                            : Number((p.insights as { sampled_posts?: number } | undefined)?.sampled_posts) || 0
-                        )}
+                        {formatNumber(typeof p.programme_posts === "number" ? p.programme_posts : 0)}
                       </div>
                       <div className="text-[10px] text-zinc-600" title="Instagram lifetime post count">
                         {formatNumber(p.posts_count)} IG total
@@ -501,10 +527,18 @@ export default function AdminScrapingPage() {
             page={page}
             pageSize={data?.page_size || 20}
             total={data?.total || 0}
-            onPageChange={setPage}
+            onPageChange={(next) => replaceListParams({ page: next })}
           />
         </div>
       </div>
     </div>
+  );
+}
+
+export default function AdminScrapingPage() {
+  return (
+    <Suspense fallback={<div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />}>
+      <AdminScrapingPageInner />
+    </Suspense>
   );
 }

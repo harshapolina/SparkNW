@@ -38,7 +38,8 @@ def to_profile_response(p: Profile) -> ProfileResponse:
     student = dict(getattr(p, "student", None) or {})
     student.setdefault("youtube_status", "Coming soon")
     insights = dict(getattr(p, "insights", None) or {})
-    programme_posts = _programme_posts_from_insights(insights)
+    # List board overwrites with a live programme-window count. Do not seed from
+    # stale lifetime ``sampled_posts`` here — that made 0-in-window look like 36.
     return ProfileResponse(
         id=str(p.id),
         username=p.username,
@@ -51,7 +52,7 @@ def to_profile_response(p: Profile) -> ProfileResponse:
         followers=p.followers,
         following=p.following,
         posts_count=p.posts_count,
-        programme_posts=int(programme_posts or 0),
+        programme_posts=0,
         avg_likes=p.avg_likes,
         avg_views=p.avg_views,
         avg_comments=p.avg_comments,
@@ -113,25 +114,41 @@ async def to_profile_response_cohort(p: Profile) -> ProfileResponse:
 
 
 async def _live_programme_post_counts(profile_ids: list[str]) -> dict[str, int]:
-    """Count posts with posted_at inside the programme window (batch, for list board)."""
+    """Count posts inside the programme window (batch, for list board).
+
+    Matches Insights: missing posted_at is recovered from shortcode/media id.
+    Profiles with no in-window posts are explicitly 0 (never fall back to stale
+    lifetime ``insights.sampled_posts``).
+    """
+    out: dict[str, int] = {pid: 0 for pid in profile_ids}
     if not profile_ids:
-        return {}
+        return out
     start, end = clamp_scoring_window()
-    start_n = start.replace(tzinfo=None)
-    end_n = end.replace(tzinfo=None)
-    coll = Post.get_motor_collection()
-    pipeline = [
-        {
-            "$match": {
-                "profile_id": {"$in": profile_ids},
-                "posted_at": {"$gte": start_n, "$lte": end_n},
-            }
-        },
-        {"$group": {"_id": "$profile_id", "n": {"$sum": 1}}},
-    ]
-    out: dict[str, int] = {}
-    async for row in coll.aggregate(pipeline):
-        out[str(row["_id"])] = int(row.get("n") or 0)
+    start_n = start.replace(tzinfo=None) if getattr(start, "tzinfo", None) else start
+    end_n = end.replace(tzinfo=None) if getattr(end, "tzinfo", None) else end
+
+    posts = await Post.find({"profile_id": {"$in": profile_ids}}).to_list()
+    for p in posts:
+        pid = str(p.profile_id)
+        if pid not in out:
+            continue
+        try:
+            dt = p.posted_at
+            if dt is None:
+                dt = infer_posted_at(
+                    shortcode=p.shortcode,
+                    ig_post_id=getattr(p, "ig_post_id", None),
+                )
+            if dt is None:
+                continue
+            if getattr(dt, "tzinfo", None) is not None:
+                dt_n = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                dt_n = dt
+            if start_n <= dt_n <= end_n:
+                out[pid] = out.get(pid, 0) + 1
+        except Exception:
+            continue
     return out
 
 
@@ -259,14 +276,8 @@ async def list_profiles(
     items: list[ProfileResponse] = []
     for p in page_items:
         resp = to_profile_response(p)
-        # Prefer live DB count when available; keep insights value otherwise.
-        if str(p.id) in live_counts:
-            resp.programme_posts = live_counts[str(p.id)]
-        elif resp.programme_posts <= 0:
-            # insights may still have a better inferred count from last scrape
-            inferred = _programme_posts_from_insights(resp.insights)
-            if inferred is not None:
-                resp.programme_posts = inferred
+        # Always prefer live programme-window count (0 is meaningful).
+        resp.programme_posts = int(live_counts.get(str(p.id), 0))
         items.append(resp)
 
     return ProfileListResponse(
