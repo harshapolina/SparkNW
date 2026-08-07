@@ -490,10 +490,11 @@ export default function ProfileDetailPage() {
             toDate={typeof insights.window_to === "string" ? insights.window_to : undefined}
           />
           <p className="text-xs text-muted">
-            Every card below uses only posts dated on/after 15 Jul 2026.{" "}
-            <span className="text-foreground/70">Profile posts total (IG)</span> and{" "}
-            <span className="text-foreground/70">Highlights</span> are Instagram profile fields, not
-            programme-window metrics.
+            Cards below use only posts dated in the programme window (15 Jul 2026 → today). Posts / 7d and Posts / 30d
+            are rolling windows inside that set. Instagram lifetime total:{" "}
+            <span className="tabular text-foreground/80">{formatNumber(p.posts_count)}</span> posts · Highlights:{" "}
+            <span className="tabular text-foreground/80">{formatNumber(p.highlight_reel_count || 0)}</span>{" "}
+            (profile-level, not window-scoped).
           </p>
           {num(insights.posts_stored) > 0 && num(insights.sampled_posts) === 0 ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
@@ -513,15 +514,15 @@ export default function ProfileDetailPage() {
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {[
               ["Posts in programme", formatNumber(num(insights.sampled_posts))],
-              ["Posts / 7d", formatNumber(num(insights.posts_last_7d))],
-              ["Posts / 30d", formatNumber(num(insights.posts_last_30d))],
+              ["Posts / 7d (in window)", formatNumber(num(insights.posts_last_7d))],
+              ["Posts / 30d (in window)", formatNumber(num(insights.posts_last_30d))],
               ["Posting / week", `${num(insights.posting_frequency_per_week)}`],
               ["Median likes", formatNumber(num(insights.median_likes))],
               ["Max likes", formatNumber(num(insights.max_likes))],
-              ["Max reel views", formatNumber(num(insights.max_reel_views || insights.max_views))],
-              ["Avg reel views", formatNumber(num(insights.avg_reel_views || insights.avg_views))],
-              ["Total reel views", formatNumber(num(insights.total_reel_views || insights.total_views_sampled))],
               ["Min likes", formatNumber(num(insights.min_likes))],
+              ["Max reel views", formatNumber(num(insights.max_reel_views || insights.max_views))],
+              ["Avg reel views", formatNumber(num(insights.avg_reel_views))],
+              ["Total reel views", formatNumber(num(insights.total_reel_views))],
               ["Like / follower %", `${num(insights.like_follower_ratio).toFixed(3)}%`],
               ["Comment / follower %", `${num(insights.comment_follower_ratio).toFixed(3)}%`],
               ["Comments / likes %", `${num(insights.comments_to_likes_ratio).toFixed(2)}%`],
@@ -531,13 +532,10 @@ export default function ProfileDetailPage() {
               ["Videos", formatNumber(num(insights.video_count))],
               ["Carousels", formatNumber(num(insights.carousel_count))],
               ["Total likes (programme)", formatNumber(num(insights.total_likes_sampled))],
-              ["Total comments", formatNumber(num(insights.total_comments_sampled))],
-              ["Reel/video views total", formatNumber(num(insights.total_views_sampled))],
+              ["Total comments (programme)", formatNumber(num(insights.total_comments_sampled))],
               ["Posts with views", `${num(insights.posts_with_views)} / ${num(insights.sampled_posts)}`],
               ["Avg caption length", `${num(insights.avg_caption_length)}`],
-              ["Highlights", formatNumber(p.highlight_reel_count || 0)],
               ["Last post", insights.last_post_at ? new Date(insights.last_post_at).toLocaleDateString() : "—"],
-              ["Profile posts total (IG)", formatNumber(p.posts_count)],
             ].map(([label, value]) => (
               <Card key={String(label)} hover>
                 <div className="eyebrow">{label}</div>
@@ -610,7 +608,7 @@ export default function ProfileDetailPage() {
             <p className="text-sm text-muted">No insights yet — click Refresh to scrape exact post metrics.</p>
           )}
           <p className="text-xs text-muted leading-relaxed">
-            Posts in programme are dated from 15 Jul 2026 onward. Profile posts total is Instagram’s lifetime count.
+            Posts in programme are dated from 15 Jul 2026 onward. Instagram lifetime post count and highlights are shown above the cards, not as programme metrics.
             Metrics (avg likes, hashtags, etc.) use only the programme window.
             Views are reel/video play counts only — photos/carousels usually have no public view field.
             Private profiles and Instagram blocks can stop pagination early; use Refresh again or set SCRAPE_PROXY_URL.

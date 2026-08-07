@@ -566,9 +566,11 @@ export default function AdminCreatorDetailPage() {
             }
           />
           <p className="text-xs text-zinc-500">
-            Cards below use only posts dated in the programme window.{" "}
-            <span className="text-zinc-400">Profile posts total</span> is Instagram&apos;s lifetime count and is not
-            window-scoped.
+            Cards below use only posts dated in the programme window (15 Jul 2026 → today). Posts / 7d and Posts / 30d
+            are rolling windows inside that set. Instagram lifetime total:{" "}
+            <span className="tabular text-zinc-300">{formatNumber(p.posts_count)}</span> posts · Highlights:{" "}
+            <span className="tabular text-zinc-300">{formatNumber(p.highlight_reel_count || 0)}</span> (profile-level,
+            not window-scoped).
           </p>
           {num(insights.posts_stored) > 0 && num(insights.sampled_posts) === 0 ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
@@ -591,16 +593,15 @@ export default function AdminCreatorDetailPage() {
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
               ["Posts in programme", formatNumber(num(insights.sampled_posts))],
-              ["Posts / 7d", formatNumber(num(insights.posts_last_7d))],
-              ["Posts / 30d", formatNumber(num(insights.posts_last_30d))],
+              ["Posts / 7d (in window)", formatNumber(num(insights.posts_last_7d))],
+              ["Posts / 30d (in window)", formatNumber(num(insights.posts_last_30d))],
               ["Posting / week", `${num(insights.posting_frequency_per_week)}`],
               ["Median likes", formatNumber(num(insights.median_likes))],
               ["Max likes", formatNumber(num(insights.max_likes))],
               ["Min likes", formatNumber(num(insights.min_likes))],
               ["Max reel views", formatNumber(num(insights.max_reel_views || insights.max_views))],
-              ["Avg reel views", formatNumber(num(insights.avg_reel_views || insights.avg_views))],
-              ["Total reel views", formatNumber(num(insights.total_reel_views || insights.total_views_sampled))],
-              ["Reel/video views total", formatNumber(num(insights.total_views_sampled))],
+              ["Avg reel views", formatNumber(num(insights.avg_reel_views))],
+              ["Total reel views", formatNumber(num(insights.total_reel_views))],
               ["Like / follower %", `${num(insights.like_follower_ratio).toFixed(3)}%`],
               ["Comment / follower %", `${num(insights.comment_follower_ratio).toFixed(3)}%`],
               ["Comments / likes %", `${num(insights.comments_to_likes_ratio).toFixed(2)}%`],
@@ -610,11 +611,9 @@ export default function AdminCreatorDetailPage() {
               ["Videos", formatNumber(num(insights.video_count))],
               ["Carousels", formatNumber(num(insights.carousel_count))],
               ["Total likes (programme)", formatNumber(num(insights.total_likes_sampled))],
-              ["Total comments", formatNumber(num(insights.total_comments_sampled))],
+              ["Total comments (programme)", formatNumber(num(insights.total_comments_sampled))],
               ["Posts with views", `${num(insights.posts_with_views)} / ${num(insights.sampled_posts)}`],
               ["Avg caption length", `${num(insights.avg_caption_length)}`],
-              ["Highlights", formatNumber(p.highlight_reel_count || 0)],
-              ["Profile posts total (IG)", formatNumber(p.posts_count)],
               ["Last post", insights.last_post_at ? new Date(insights.last_post_at).toLocaleDateString() : "—"],
             ].map(([label, value]) => (
               <div key={String(label)} className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4">
