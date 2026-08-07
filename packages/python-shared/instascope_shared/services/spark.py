@@ -145,9 +145,14 @@ def compute_spark_points(
     as_of: datetime | None = None,
     from_date: datetime | None = None,
 ) -> int:
-    """Raw SPARK points (consistency + capped performance + growth) as of a timestamp."""
+    """Raw SPARK points (consistency + capped performance + growth) as of a timestamp.
+
+    Always floors at SPARK_COHORT_START — never scores lifetime / pre-programme posts.
+    """
     now = _naive_dt(as_of) or datetime.utcnow()
-    window_start = _naive_dt(from_date)
+    window_start, window_end = clamp_scoring_window(from_date, as_of or now)
+    window_start = _naive_dt(window_start) or window_start
+    now = min(now, _naive_dt(window_end) or now)
     week_ago = now - timedelta(days=7)
     consistency = 0
     posts_7d = 0
@@ -158,14 +163,13 @@ def compute_spark_points(
     for post in posts:
         posted = post.posted_at
         posted_naive = _naive_dt(posted)
-        if window_start is not None:
-            if posted_naive is None or posted_naive < window_start:
-                continue
-        if as_of and posted_naive and posted_naive > now:
+        if posted_naive is None or posted_naive < window_start:
+            continue
+        if posted_naive > now:
             continue
         pts, long_form, mt = _post_performance_pts(post)
         performance += pts
-        if posted_naive and posted_naive >= week_ago:
+        if posted_naive >= week_ago:
             posts_7d += 1
             if long_form or mt == "carousel":
                 longs_7d += 1
@@ -187,9 +191,15 @@ def score_profile(
     followers_override: int | None = None,
     growth_pts_override: int | None = None,
 ) -> dict[str, Any]:
-    """Compute SPARK points from real scrape metrics."""
+    """Compute SPARK points from real scrape metrics.
+
+    Always floors at SPARK_COHORT_START (15 Jul 2026) — never scores lifetime posts.
+    """
     now = _naive_dt(as_of) or datetime.utcnow()
-    window_start = _naive_dt(from_date)
+    # Always programme-window: caller dates are clamped to cohort → today.
+    window_start, window_end = clamp_scoring_window(from_date, as_of or now)
+    window_start = _naive_dt(window_start) or window_start
+    now = min(now, _naive_dt(window_end) or now)
     week_ago = now - timedelta(days=7)
     follower_count = int(followers_override if followers_override is not None else (profile.followers or 0))
 
@@ -201,18 +211,19 @@ def score_profile(
     total_views = 0
     total_likes = 0
     total_comments = 0
+    programme_posts = 0
     task_history: list[dict[str, Any]] = []
 
     for post in posts:
         posted = post.posted_at
         posted_naive = _naive_dt(posted)
-        if window_start is not None:
-            # Period mode: posts without posted_at cannot be attributed to the window.
-            if posted_naive is None or posted_naive < window_start:
-                continue
-        if as_of and posted_naive and posted_naive > now:
+        # Period mode: posts without posted_at cannot be attributed to the window.
+        if posted_naive is None or posted_naive < window_start:
+            continue
+        if posted_naive > now:
             continue
 
+        programme_posts += 1
         views = int(post.views or 0)
         likes = int(post.likes or 0)
         comments = int(post.comments or 0)
@@ -223,7 +234,7 @@ def score_profile(
         pts, long_form, mt = _post_performance_pts(post)
         performance += pts
 
-        if posted_naive and posted_naive >= week_ago:
+        if posted_naive >= week_ago:
             posts_7d += 1
             if long_form or mt == "carousel":
                 longs_7d += 1
@@ -320,39 +331,25 @@ def score_profile(
         bonus = 0
     points = consistency + performance_capped + growth + max(0, bonus)
 
-    # Consistency score 0-100 from recent posting
-    insights = profile.insights or {}
-    posts_30 = int(insights.get("posts_last_30d") or 0) if window_start is None else 0
-    if posts_30 == 0:
-        posts_30 = sum(
-            1
-            for p in posts
-            if p.posted_at
-            and (window_start is None or _naive_dt(p.posted_at) >= window_start)
-            and _naive_dt(p.posted_at) >= now - timedelta(days=30)
-            and (not as_of or _naive_dt(p.posted_at) <= now)
-        )
+    # Consistency score 0-100 from recent posting (programme window only)
+    posts_30 = sum(
+        1
+        for p in posts
+        if p.posted_at
+        and _naive_dt(p.posted_at) is not None
+        and _naive_dt(p.posted_at) >= window_start
+        and _naive_dt(p.posted_at) >= now - timedelta(days=30)
+        and _naive_dt(p.posted_at) <= now
+    )
     consistency_score = min(100, int((posts_7d / 3) * 40 + min(posts_30, 12) / 12 * 60))
 
     engagement = float(profile.engagement_rate or 0)
-    if window_start is not None:
-        # Period board: rate from posts in the selected window only.
-        period_posts = sum(
-            1
-            for p in posts
-            if p.posted_at
-            and _naive_dt(p.posted_at) is not None
-            and _naive_dt(p.posted_at) >= window_start
-            and (not as_of or _naive_dt(p.posted_at) <= now)
-        )
-        if follower_count > 0 and period_posts > 0:
-            avg_eng = (total_likes + total_comments) / period_posts
-            engagement = round((avg_eng / follower_count) * 100, 2)
-        else:
-            engagement = 0.0
-    elif engagement <= 0 and profile.followers:
-        avg_eng = (float(profile.avg_likes or 0) + float(profile.avg_comments or 0))
-        engagement = round((avg_eng / max(profile.followers, 1)) * 100, 2)
+    # Period board: rate from posts in the programme window only.
+    if follower_count > 0 and programme_posts > 0:
+        avg_eng = (total_likes + total_comments) / programme_posts
+        engagement = round((avg_eng / follower_count) * 100, 2)
+    else:
+        engagement = 0.0
 
     grit = "not_eligible"
     if follower_count >= 50_000:
@@ -400,7 +397,9 @@ def score_profile(
         "avg_likes": float(profile.avg_likes or 0),
         "avg_views": float(profile.avg_views or 0),
         "avg_comments": float(profile.avg_comments or 0),
-        "posts_count": int(profile.posts_count or 0),
+        "posts_count": programme_posts,
+        "programme_posts": programme_posts,
+        "ig_posts_count": int(profile.posts_count or 0),
         "posts_7d": posts_7d,
         "growth_pct_today": float(profile.growth_pct_today or 0),
         "consistency_score": consistency_score,
@@ -590,11 +589,35 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
         return {"empty": True, "creators": [], "creator": None, "error": "Profile not on leaderboard"}
 
     profile = await Profile.get(profile_id)
-    posts = await Post.find(Post.profile_id == profile_id).sort(-Post.posted_at).to_list()
+    from instascope_shared.instagram_time import infer_posted_at
 
-    # Performance series from snapshots
+    window_start, window_end = clamp_scoring_window(start, end)
+    start_n = _naive_dt(window_start) or window_start
+    end_n = _naive_dt(window_end) or window_end
+    all_posts = await Post.find(Post.profile_id == profile_id).sort(-Post.posted_at).to_list()
+    posts: list[Post] = []
+    for p in all_posts:
+        dt = _naive_dt(p.posted_at)
+        if dt is None:
+            inferred = infer_posted_at(
+                shortcode=p.shortcode,
+                ig_post_id=getattr(p, "ig_post_id", None),
+            )
+            dt = _naive_dt(inferred)
+            if dt is not None:
+                p.posted_at = dt
+        if dt is None:
+            continue
+        if start_n <= dt <= end_n:
+            posts.append(p)
+
+    # Performance series from snapshots (programme floor → today)
+    floor_ymd = snapshot_floor_ymd()
     snaps = (
-        await ProfileSnapshot.find(ProfileSnapshot.profile_id == creator["id"])
+        await ProfileSnapshot.find(
+            ProfileSnapshot.profile_id == creator["id"],
+            ProfileSnapshot.snapshot_date >= floor_ymd,
+        )
         .sort(+ProfileSnapshot.snapshot_date)
         .to_list()
     )

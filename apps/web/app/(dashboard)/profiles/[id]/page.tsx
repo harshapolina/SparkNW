@@ -527,11 +527,11 @@ export default function ProfileDetailPage() {
             toDate={typeof insights.window_to === "string" ? insights.window_to : undefined}
           />
           <p className="text-xs text-muted">
-            Cards below use only posts dated in the programme window (15 Jul 2026 → today). Posts / 7d and Posts / 30d
-            are rolling windows inside that set. Instagram lifetime total:{" "}
-            <span className="tabular text-foreground/80">{formatNumber(p.posts_count)}</span> posts · Highlights:{" "}
-            <span className="tabular text-foreground/80">{formatNumber(p.highlight_reel_count || 0)}</span>{" "}
-            (profile-level, not window-scoped).
+            Every card below counts <span className="text-foreground/80">only posts dated 15 Jul 2026 → today</span>.
+            Posts / 7d and Posts / 30d are rolling windows inside that set — never Instagram lifetime.
+            Profile lifetime total (label only):{" "}
+            <span className="tabular text-foreground/80">{formatNumber(p.posts_count)}</span> · Highlights:{" "}
+            <span className="tabular text-foreground/80">{formatNumber(p.highlight_reel_count || 0)}</span>.
           </p>
           {num(insights.posts_stored) > 0 && num(insights.sampled_posts) === 0 ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">

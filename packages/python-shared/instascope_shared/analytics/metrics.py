@@ -174,12 +174,14 @@ def compute_post_metrics(
 ) -> dict[str, Any]:
     """Compute portfolio metrics.
 
-    By default only posts dated on/after SPARK programme start (15 Jul 2026)
-    through today (UTC) are included — never lifetime / pre-programme posts.
+    ALWAYS scopes to SPARK programme start (15 Jul 2026) → today (UTC).
+    The ``programme_window`` flag is retained for call-site clarity but cannot
+    be turned off — lifetime / pre-programme posts never enter card math.
 
     Safe against: empty sets, missing dates, naive/aware tz mix, zero followers,
     zero likes, negative/garbage numeric fields, non-dict rows.
     """
+    programme_window = True  # product invariant — Insights / SPARK are programme-only
     try:
         window_start, window_end = clamp_scoring_window()
     except Exception:
@@ -196,19 +198,9 @@ def compute_post_metrics(
 
     followers_n = _nonneg_int(followers)
 
-    if programme_window:
-        window_posts = filter_posts_to_programme_window(
-            raw_posts, since=window_start, until=window_end
-        )
-    else:
-        # Still normalize dates; undated rows stay out of time-based metrics
-        window_posts = []
-        for p in raw_posts:
-            dt = parse_posted_at(p.get("posted_at"), p)
-            enriched = dict(p)
-            if dt is not None:
-                enriched["posted_at"] = _naive_utc(dt)
-            window_posts.append(enriched)
+    window_posts = filter_posts_to_programme_window(
+        raw_posts, since=window_start, until=window_end
+    )
 
     if not window_posts:
         return _empty_metrics(

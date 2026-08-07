@@ -609,11 +609,11 @@ export default function AdminCreatorDetailPage() {
             }
           />
           <p className="text-xs text-zinc-500">
-            Cards below use only posts dated in the programme window (15 Jul 2026 → today). Posts / 7d and Posts / 30d
-            are rolling windows inside that set. Instagram lifetime total:{" "}
-            <span className="tabular text-zinc-300">{formatNumber(p.posts_count)}</span> posts · Highlights:{" "}
-            <span className="tabular text-zinc-300">{formatNumber(p.highlight_reel_count || 0)}</span> (profile-level,
-            not window-scoped).
+            Every card below counts <span className="text-zinc-300">only posts dated 15 Jul 2026 → today</span>.
+            Posts / 7d and Posts / 30d are rolling windows inside that set — never Instagram lifetime.
+            Profile lifetime total (label only):{" "}
+            <span className="tabular text-zinc-300">{formatNumber(p.posts_count)}</span> · Highlights:{" "}
+            <span className="tabular text-zinc-300">{formatNumber(p.highlight_reel_count || 0)}</span>.
           </p>
           {num(insights.posts_stored) > 0 && num(insights.sampled_posts) === 0 ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
@@ -722,8 +722,9 @@ export default function AdminCreatorDetailPage() {
             </div>
           </div>
           <p className="text-xs leading-relaxed text-zinc-500">
-            Scraped posts are every public post we pulled for this profile. Profile posts total is Instagram’s lifetime
-            count. Views are reel/video play counts only — photos/carousels usually have no public view field.
+            Insights and SPARK points use programme-window posts only (15 Jul 2026 onward). The header&apos;s
+            &quot;IG lifetime&quot; number is Instagram&apos;s profile total and is not used in these cards. Views are
+            reel/video play counts — photos/carousels usually have no public view field.
           </p>
         </div>
       )}

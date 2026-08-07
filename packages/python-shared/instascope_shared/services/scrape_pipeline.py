@@ -338,14 +338,18 @@ async def apply_scrape_result(
     raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
     hit_cohort_floor = bool(raw.get("hit_cohort_floor"))
 
-    # Hard filter: never persist posts older than SPARK_COHORT_START.
-    # Prevents lifetime timelines from sticking around when pagination missed the floor.
+    # Hard filter: ONLY persist posts dated inside the SPARK programme window
+    # (15 Jul 2026 → today). Undated / unrecoverable posts are dropped — they must
+    # never leak into Insights or the Posts tab as "lifetime" content.
     try:
-        from instascope_shared.cohort import cohort_start_dt
+        from instascope_shared.cohort import clamp_scoring_window, cohort_start_dt
 
         floor_dt = cohort_start_dt()
+        _, window_end = clamp_scoring_window()
+        end_dt = window_end.replace(tzinfo=None) if getattr(window_end, "tzinfo", None) else window_end
         kept: list[dict[str, Any]] = []
         dropped_old = 0
+        dropped_undated = 0
         for p in posts_data:
             posted_at = p.get("posted_at")
             dt = None
@@ -364,24 +368,58 @@ async def apply_scrape_result(
                 )
                 if inferred is not None:
                     dt = inferred.replace(tzinfo=None) if inferred.tzinfo else inferred
-            if dt is not None and dt < floor_dt:
+            if dt is None:
+                dropped_undated += 1
+                continue
+            if dt < floor_dt:
                 dropped_old += 1
                 hit_cohort_floor = True
                 continue
-            kept.append(p)
-        if dropped_old:
+            if dt > end_dt:
+                continue
+            row = dict(p)
+            # Persist a recoverable date so Insights never sees undated rows.
+            row["posted_at"] = dt.isoformat()
+            kept.append(row)
+        if dropped_old or dropped_undated:
             logger.info(
-                "dropped %s pre-cohort posts for @%s (kept=%s)",
-                dropped_old,
+                "programme filter @%s kept=%s dropped_old=%s dropped_undated=%s",
                 result.get("username") or profile.username,
                 len(kept),
+                dropped_old,
+                dropped_undated,
             )
         posts_data = kept
         if dropped_old and not posts_data:
             hit_cohort_floor = True
             raw = {**raw, "hit_cohort_floor": True}
+        elif dropped_old:
+            raw = {**raw, "hit_cohort_floor": True}
+            hit_cohort_floor = True
     except Exception:
-        logger.exception("programme-window post filter failed — keeping scrape payload")
+        logger.exception(
+            "programme-window post filter failed — applying hard 2026-07-15 floor"
+        )
+        floor_dt = datetime(2026, 7, 15)
+        kept = []
+        for p in posts_data:
+            posted_at = p.get("posted_at")
+            dt = None
+            if isinstance(posted_at, datetime):
+                dt = posted_at.replace(tzinfo=None) if posted_at.tzinfo else posted_at
+            elif isinstance(posted_at, str) and posted_at.strip():
+                try:
+                    parsed = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+                    dt = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+                except ValueError:
+                    dt = None
+            if dt is None:
+                continue
+            if dt < floor_dt:
+                hit_cohort_floor = True
+                continue
+            kept.append(p)
+        posts_data = kept
 
     # Login-wall / rate-limit scrapes often return full posts but followers=0.
     # Never wipe known card metrics with zeros when the timeline itself is good.
