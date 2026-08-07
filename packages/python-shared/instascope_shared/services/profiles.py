@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import HTTPException, status
@@ -75,15 +75,19 @@ def to_profile_response(p: Profile) -> ProfileResponse:
 
 
 def _post_to_metrics_dict(p: Post) -> dict:
+    """Shape a Post for compute_post_metrics (must include ids for date recovery)."""
     media = p.media_type.value if hasattr(p.media_type, "value") else str(p.media_type)
+    media_l = str(media or "").lower()
     return {
         "likes": p.likes,
         "comments": p.comments,
         "views": p.views,
         "caption": p.caption,
         "media_type": media,
-        "is_video": media.lower() in {"reel", "video", "clips", "graphvideo"},
+        "is_video": media_l in {"reel", "video", "clips", "graphvideo"},
         "shortcode": p.shortcode,
+        "ig_post_id": getattr(p, "ig_post_id", None) or None,
+        "id": getattr(p, "ig_post_id", None) or None,
         "posted_at": p.posted_at,
     }
 
@@ -93,15 +97,18 @@ async def to_profile_response_cohort(p: Profile) -> ProfileResponse:
     resp = to_profile_response(p)
     posts = await Post.find(Post.profile_id == str(p.id)).to_list()
     posts_data = [_post_to_metrics_dict(x) for x in posts]
-    metrics = compute_post_metrics(posts_data, followers=int(p.followers or 0), programme_window=True)
-    # Prefer live cohort metrics over lifetime scrape blob stored on the profile
+    metrics = compute_post_metrics(
+        posts_data, followers=int(p.followers or 0), programme_window=True
+    )
+    # Prefer live cohort metrics over lifetime scrape blob stored on the profile.
+    # Always overwrite averages — including zeros when the programme window is empty —
+    # so header stats never stay stale vs Insights cards.
     resp.insights = metrics
     resp.programme_posts = int(metrics.get("sampled_posts") or metrics.get("posts_in_window") or 0)
-    if int(metrics.get("sampled_posts") or 0) > 0:
-        resp.avg_likes = float(metrics.get("avg_likes") or 0)
-        resp.avg_views = float(metrics.get("avg_views") or 0)
-        resp.avg_comments = float(metrics.get("avg_comments") or 0)
-        resp.engagement_rate = float(metrics.get("engagement_rate") or 0)
+    resp.avg_likes = float(metrics.get("avg_likes") or 0)
+    resp.avg_views = float(metrics.get("avg_views") or 0)
+    resp.avg_comments = float(metrics.get("avg_comments") or 0)
+    resp.engagement_rate = float(metrics.get("engagement_rate") or 0)
     return resp
 
 
@@ -129,23 +136,29 @@ async def _live_programme_post_counts(profile_ids: list[str]) -> dict[str, int]:
 
 
 async def list_posts_in_programme_window(profile_id: str) -> list[Post]:
+    """Posts tab: only rows with recoverable posted_at inside programme window."""
     start, end = clamp_scoring_window()
     posts = await Post.find(Post.profile_id == profile_id).sort(-Post.posted_at).to_list()
-    start_n = start.replace(tzinfo=None)
-    end_n = end.replace(tzinfo=None)
+    start_n = start.replace(tzinfo=None) if getattr(start, "tzinfo", None) else start
+    end_n = end.replace(tzinfo=None) if getattr(end, "tzinfo", None) else end
     out: list[Post] = []
     for p in posts:
-        dt = p.posted_at
-        if dt is None:
-            dt = infer_posted_at(shortcode=p.shortcode, ig_post_id=p.ig_post_id)
-        if dt is None:
+        try:
+            dt = p.posted_at
+            if dt is None:
+                dt = infer_posted_at(shortcode=p.shortcode, ig_post_id=getattr(p, "ig_post_id", None))
+            if dt is None:
+                continue
+            if getattr(dt, "tzinfo", None) is not None:
+                dt_n = dt.astimezone(timezone.utc).replace(tzinfo=None)
+            else:
+                dt_n = dt
+            if start_n <= dt_n <= end_n:
+                if p.posted_at is None:
+                    p.posted_at = dt_n
+                out.append(p)
+        except Exception:
             continue
-        dt_n = dt.replace(tzinfo=None) if getattr(dt, "tzinfo", None) else dt
-        if start_n <= dt_n <= end_n:
-            if p.posted_at is None:
-                p.posted_at = dt.replace(tzinfo=None) if dt.tzinfo else dt
-            out.append(p)
-    # Prefer newest first when sort was null-heavy
     out.sort(key=lambda x: x.posted_at or datetime.min, reverse=True)
     return out
 

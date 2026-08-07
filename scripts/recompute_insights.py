@@ -22,19 +22,27 @@ async def main() -> None:
         updated = 0
         for profile in profiles:
             posts = await Post.find(Post.profile_id == str(profile.id)).to_list()
-            posts_data = [
-                {
-                    "shortcode": p.shortcode,
-                    "media_type": p.media_type.value if hasattr(p.media_type, "value") else str(p.media_type),
-                    "caption": p.caption,
-                    "likes": p.likes,
-                    "comments": p.comments,
-                    "views": p.views,
-                    "posted_at": p.posted_at.isoformat() if p.posted_at else None,
-                }
-                for p in posts
-            ]
-            metrics = compute_post_metrics(posts_data, followers=profile.followers)
+            posts_data = []
+            for p in posts:
+                media = p.media_type.value if hasattr(p.media_type, "value") else str(p.media_type)
+                media_l = str(media or "").lower()
+                posts_data.append(
+                    {
+                        "shortcode": p.shortcode,
+                        "ig_post_id": getattr(p, "ig_post_id", None),
+                        "id": getattr(p, "ig_post_id", None),
+                        "media_type": media,
+                        "is_video": media_l in {"reel", "video", "clips", "graphvideo"},
+                        "caption": p.caption,
+                        "likes": p.likes,
+                        "comments": p.comments,
+                        "views": p.views,
+                        "posted_at": p.posted_at.isoformat() if p.posted_at else None,
+                    }
+                )
+            metrics = compute_post_metrics(
+                posts_data, followers=int(profile.followers or 0), programme_window=True
+            )
             profile.avg_likes = float(metrics["avg_likes"])
             profile.avg_views = float(metrics["avg_views"])
             profile.avg_comments = float(metrics["avg_comments"])

@@ -100,6 +100,12 @@ type Insights = {
   min_likes?: number;
   posts_with_views?: number;
   posts_without_views?: number;
+  posts_stored?: number;
+  posts_missing_dates?: number;
+  posts_in_window?: number;
+  window_from?: string | null;
+  window_to?: string | null;
+  cohort_start?: string | null;
 };
 
 const tabs = ["overview", "student", "insights", "posts", "growth", "analytics", "history"] as const;
@@ -480,7 +486,30 @@ export default function ProfileDetailPage() {
 
       {tab === "insights" && (
         <div className="space-y-4">
-          <ProgrammeWindowNote />
+          <ProgrammeWindowNote
+            toDate={typeof insights.window_to === "string" ? insights.window_to : undefined}
+          />
+          <p className="text-xs text-muted">
+            Every card below uses only posts dated on/after 15 Jul 2026.{" "}
+            <span className="text-foreground/70">Profile posts total (IG)</span> and{" "}
+            <span className="text-foreground/70">Highlights</span> are Instagram profile fields, not
+            programme-window metrics.
+          </p>
+          {num(insights.posts_stored) > 0 && num(insights.sampled_posts) === 0 ? (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+              {num(insights.posts_stored)} post(s) are stored, but none fall inside the programme
+              window (15 Jul 2026 → today)
+              {num(insights.posts_missing_dates) > 0
+                ? ` — ${num(insights.posts_missing_dates)} still have no recoverable date.`
+                : " — this account may not have posted since the programme started."}
+            </div>
+          ) : null}
+          {num(insights.posts_stored) === 0 && num(insights.sampled_posts) === 0 ? (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
+              No post rows saved yet. The header post count is Instagram&apos;s lifetime total only.
+              Refresh / scrape so Insights can count posts from 15 Jul 2026 onward.
+            </div>
+          ) : null}
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {[
               ["Posts in programme", formatNumber(num(insights.sampled_posts))],
@@ -508,7 +537,7 @@ export default function ProfileDetailPage() {
               ["Avg caption length", `${num(insights.avg_caption_length)}`],
               ["Highlights", formatNumber(p.highlight_reel_count || 0)],
               ["Last post", insights.last_post_at ? new Date(insights.last_post_at).toLocaleDateString() : "—"],
-              ["Profile posts total", formatNumber(p.posts_count)],
+              ["Profile posts total (IG)", formatNumber(p.posts_count)],
             ].map(([label, value]) => (
               <Card key={String(label)} hover>
                 <div className="eyebrow">{label}</div>

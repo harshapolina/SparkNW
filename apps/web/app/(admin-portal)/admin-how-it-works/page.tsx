@@ -256,22 +256,26 @@ export default function AdminHowItWorksPage() {
           </div>
           <p className="text-sm leading-relaxed text-zinc-400">
             After a scrape saves posts, SPARK computes portfolio metrics from{" "}
-            <strong className="font-medium text-zinc-200">only the posts we scraped</strong> (the
-            sample set). We do not invent numbers — every average is a mean over that set.
+            <strong className="font-medium text-zinc-200">
+              only posts dated on/after {PROGRAMME_STARTED_LABEL}
+            </strong>{" "}
+            through today (the programme window). Pre-programme posts are never included in Insights
+            averages, totals, or ratios. We do not invent numbers — every average is a mean over that
+            filtered set.
           </p>
 
           <h3 className="pt-1 text-sm font-semibold text-zinc-200">Mean (simple average)</h3>
           <Formula>mean(values) = sum(values) ÷ count(values)</Formula>
-          <p className="text-sm text-zinc-400">If there are no posts, all averages are 0.</p>
+          <p className="text-sm text-zinc-400">If there are no programme-window posts, all averages are 0.</p>
 
           <h3 className="pt-2 text-sm font-semibold text-zinc-200">Avg likes</h3>
-          <Formula>avg_likes = mean(likes of every scraped post)</Formula>
+          <Formula>avg_likes = mean(likes of every programme-window post)</Formula>
           <Example title="Example">
-            Posts scraped: 100, 200, 50 likes → avg likes = (100 + 200 + 50) ÷ 3 = <strong>116.67</strong>
+            Posts in window: 100, 200, 50 likes → avg likes = (100 + 200 + 50) ÷ 3 = <strong>116.67</strong>
           </Example>
 
           <h3 className="pt-2 text-sm font-semibold text-zinc-200">Avg comments</h3>
-          <Formula>avg_comments = mean(comments of every scraped post)</Formula>
+          <Formula>avg_comments = mean(comments of every programme-window post)</Formula>
           <Example title="Example">
             Comments: 10, 20, 0 → avg comments = 30 ÷ 3 = <strong>10</strong>
           </Example>
@@ -293,7 +297,7 @@ export default function AdminHowItWorksPage() {
 
           <h3 className="pt-2 text-sm font-semibold text-zinc-200">Avg reel views</h3>
           <p className="text-sm text-zinc-400">
-            Same ≥10 rule, but only on reel / video posts.
+            Same ≥10 rule, but only on reel / video posts inside the programme window.
           </p>
           <Formula>avg_reel_views = mean(views of reels/videos where views ≥ 10)</Formula>
 
@@ -301,25 +305,28 @@ export default function AdminHowItWorksPage() {
           <DataTable
             headers={["Metric", "How it is calculated"]}
             rows={[
-              ["sampled_posts", "Count of posts in this scrape set"],
-              ["total_likes_sampled", "Sum of likes across scraped posts"],
-              ["total_comments_sampled", "Sum of comments across scraped posts"],
-              ["total_views_sampled", "Sum of views only where views ≥ 10"],
-              ["median_likes", "Middle value when likes are sorted"],
-              ["max_likes / min_likes", "Highest / lowest likes in the set"],
-              ["best / worst post", "Post with highest / lowest likes"],
-              ["posts_last_7d / 30d", "Scraped posts with posted_at in that window"],
-              ["posting_frequency_per_week", "dated_posts ÷ (span_days ÷ 7)"],
-              ["like_follower_ratio", "(avg_likes ÷ followers) × 100"],
-              ["comment_follower_ratio", "(avg_comments ÷ followers) × 100"],
-              ["comments_to_likes_ratio", "(total comments ÷ total likes) × 100"],
-              ["video_share_pct", "% of scraped posts that are video/reel"],
-              ["image / reel / carousel counts", "Count by media_type in the sample"],
+              ["sampled_posts", "Count of posts with posted_at ≥ programme start (15 Jul 2026)"],
+              ["total_likes_sampled", "Sum of likes across programme-window posts"],
+              ["total_comments_sampled", "Sum of comments across programme-window posts"],
+              ["total_views_sampled", "Sum of views only where views ≥ 10 (programme window)"],
+              ["median_likes", "Middle value when programme likes are sorted"],
+              ["max_likes / min_likes", "Highest / lowest likes in the programme window"],
+              ["best / worst post", "Programme post with highest / lowest likes"],
+              ["posts_last_7d / 30d", "Programme posts with posted_at in that lookback (floored at programme start)"],
+              ["posting_frequency_per_week", "programme_posts ÷ (days from programme start → last post ÷ 7)"],
+              ["like_follower_ratio", "(avg_likes ÷ followers) × 100 — 0 if followers = 0"],
+              ["comment_follower_ratio", "(avg_comments ÷ followers) × 100 — 0 if followers = 0"],
+              ["comments_to_likes_ratio", "(total comments ÷ total likes) × 100 — 0 if likes = 0"],
+              ["video_share_pct", "% of programme posts that are video/reel"],
+              ["image / reel / carousel counts", "Count by media_type in the programme window"],
+              ["posts_count (IG)", "Instagram lifetime total — NOT programme-scoped"],
+              ["highlight_reel_count", "Instagram profile field — NOT programme-scoped"],
             ]}
           />
           <p className="text-sm text-zinc-500">
-            Important: if bulk only sampled 48 of 2000 posts, averages are over those 48 — not the
-            full account — until the deep scrape finishes.
+            Posts without a recoverable date are excluded from the window (counted in{" "}
+            <code className="rounded bg-white/[0.06] px-1 text-[12px]">posts_missing_dates</code>
+            ). Profile-level IG totals (lifetime posts / highlights) are shown for context only.
           </p>
         </section>
 

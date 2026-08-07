@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 
 
 # Programme floor (inclusive). Scrapes stop here; scoring ignores older posts.
@@ -32,21 +32,37 @@ def utc_today() -> date:
 
 
 def clamp_scoring_window(
-    from_date: datetime | None = None,
-    to_date: datetime | None = None,
+    from_date: datetime | date | None = None,
+    to_date: datetime | date | None = None,
 ) -> tuple[datetime, datetime]:
-    """Return inclusive [start, end] for SPARK scoring.
+    """Return inclusive [start, end] for SPARK scoring / Insights.
 
-    Always floors at the cohort start and caps at end-of-today (UTC) unless
-    ``to_date`` is earlier. Missing ends default to cohort → today.
+    Always floors at the cohort start (15 Jul 2026 by default) and caps at
+    end-of-today (UTC) unless ``to_date`` is earlier. Missing ends default to
+    cohort → today. Never raises on bad inputs.
     """
     start_day = cohort_start_date()
     today = utc_today()
 
-    if from_date is not None:
-        start_day = max(start_day, from_date.date())
-    if to_date is not None:
-        end_day = min(today, to_date.date())
+    def _as_day(value: datetime | date | None) -> date | None:
+        if value is None:
+            return None
+        try:
+            if isinstance(value, datetime):
+                return value.date()
+            if isinstance(value, date):
+                return value
+        except Exception:
+            return None
+        return None
+
+    from_day = _as_day(from_date)
+    to_day = _as_day(to_date)
+
+    if from_day is not None:
+        start_day = max(start_day, from_day)
+    if to_day is not None:
+        end_day = min(today, to_day)
     else:
         end_day = today
 
