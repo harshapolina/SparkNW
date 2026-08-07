@@ -318,7 +318,8 @@ def _posts_complete(
 
     When cohort stop is on, do **not** treat a first-page sample as complete
     just because SCRAPE_MAX_POSTS / lifetime math looks satisfied — we must
-    reach the Jul 15 floor or exhaust the feed.
+    reach the Jul 15 floor or exhaust the feed *and* have essentially all
+    lifetime posts (account only posted inside the programme window).
 
     posts_count == 0 with no posts means a confirmed-empty timeline (callers
     must only set posts_count=0 when Instagram explicitly reported it).
@@ -331,14 +332,19 @@ def _posts_complete(
     if posts_count == 0:
         return len(posts) == 0
 
-    # Cohort mode: first-page (~12) is never "done" unless we hit Jul 15 or
-    # Instagram says the feed has no more pages.
+    # Cohort mode: first-page (~12) is never "done" unless we hit Jul 15.
+    # Feed exhaustion alone is only complete when collected ≈ lifetime total
+    # (no older posts exist). Stalled pagination on a 166-post account must
+    # NOT look finished after 9 posts.
     try:
         from instascope_scraper.http_profile import _cohort_floor_unix
 
         if _cohort_floor_unix() is not None:
             if feed_exhausted:
-                return True
+                got = len(posts)
+                if posts_count <= 12:
+                    return got >= posts_count
+                return got >= max(posts_count - 2, 1)
             return False
     except Exception:
         pass
@@ -388,6 +394,18 @@ def _useful_partial(result: ScrapeResult) -> bool:
     if _result_hit_cohort_floor(result):
         return True
     if _result_feed_exhausted(result):
+        # Cohort mode: stalled first-page exhaustion on a large account is NOT
+        # a useful complete scrape — saving it would wipe missing in-window posts.
+        try:
+            from instascope_scraper.http_profile import _cohort_floor_unix
+
+            if _cohort_floor_unix() is not None:
+                pc = int(result.posts_count or 0)
+                got = len(result.posts)
+                if pc > 12 and got < max(1, pc - 2):
+                    return False
+        except Exception:
+            pass
         return True
     # Confirmed empty public profile with a card is a finished scrape.
     if int(result.posts_count or 0) == 0 and len(result.posts) == 0 and int(result.followers or 0) > 0:

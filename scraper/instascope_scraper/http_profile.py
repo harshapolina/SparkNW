@@ -32,9 +32,9 @@ _DEFAULT_COHORT_START = "2026-07-15"
 def _cohort_floor_unix() -> int | None:
     """Unix timestamp for SPARK_COHORT_START (default 2026-07-15).
 
-    Timeline is newest-first: once a page yields a post older than this floor we
-    stop paging immediately. That is the intentional completion signal — we do
-    NOT scrape the full lifetime timeline.
+    Timeline is newest-first: once a page yields a *chronological* post older
+    than this floor (after any in-window items on that page) we stop paging.
+    A leading pinned older post alone must not abort pagination.
 
     Set SCRAPE_STOP_AT_COHORT=0 only for debugging a full-timeline scrape.
     """
@@ -118,6 +118,35 @@ def _node_taken_unix(node: dict[str, Any]) -> int | None:
         return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
     except ValueError:
         return None
+
+
+def _node_is_pinned(node: dict[str, Any]) -> bool:
+    """True when Instagram surfaces this media as a pinned grid item."""
+    if not isinstance(node, dict):
+        return False
+    if node.get("is_pinned") or node.get("pinned"):
+        return True
+    pinned_ids = node.get("timeline_pinned_user_ids")
+    if isinstance(pinned_ids, list) and pinned_ids:
+        return True
+    if isinstance(pinned_ids, (str, int)) and str(pinned_ids).strip():
+        return True
+    return False
+
+
+def _cohort_old_sets_floor(*, added_in_window: int, node: dict[str, Any]) -> bool:
+    """Whether a pre-programme post means we walked past SPARK_COHORT_START.
+
+    Newest-first feeds can still lead with a *pinned* older post. Skipping that
+    pin must NOT stop pagination — otherwise we keep ~one page of in-window
+    posts and miss the rest (e.g. 9 of 14). Only an old post *after* we have
+    already kept an in-window post from this page is a chronological floor hit.
+    """
+    if added_in_window <= 0:
+        return False
+    if _node_is_pinned(node):
+        return False
+    return True
 
 
 class InstagramUserNotFound(Exception):
@@ -748,6 +777,7 @@ async def fetch_all_media_nodes(
         nonlocal hit_cohort_floor
         added = 0
         skipped_old = 0
+        skipped_old_chrono = 0
         keyed = 0
         for node in nodes:
             key = _node_key(node)
@@ -757,9 +787,14 @@ async def fetch_all_media_nodes(
             if floor is not None:
                 ts = _node_taken_unix(node)
                 if ts is not None and ts < floor:
-                    # Newest-first feed: older than programme start → stop paging
+                    # Skip pre-programme media. Pinned older posts often lead the
+                    # feed; they must not abort pagination (that caused 9-of-14).
+                    # Only chronological (non-pinned) old posts are a floor signal.
                     skipped_old += 1
-                    hit_cohort_floor = True
+                    if not _node_is_pinned(node):
+                        skipped_old_chrono += 1
+                        if _cohort_old_sets_floor(added_in_window=added, node=node):
+                            hit_cohort_floor = True
                     continue
                 # Undated nodes are KEPT — shortcode/pk decode often recovers the
                 # date later. Skipping them + treating a page of undated seeds as
@@ -769,13 +804,16 @@ async def fetch_all_media_nodes(
             added += 1
             if len(out) >= limit:
                 break
-        # Only a page of *confirmed* pre-cohort posts means we hit the floor.
-        # Undated-only pages must not stop pagination.
-        if floor is not None and keyed > 0 and added == 0 and skipped_old > 0:
+        # Page of only *chronological* pre-cohort posts → done.
+        # Pins-only "new" rows (common when seeds already hold the recent grid)
+        # must NOT stop paging — next_max_id still has more in-window posts.
+        if floor is not None and keyed > 0 and added == 0 and skipped_old_chrono > 0:
             hit_cohort_floor = True
         return added
 
     _add(initial_nodes or [])
+    # Hit floor on the seed page only when we actually crossed into pre-programme
+    # media at the chronological tail — still return those in-window seeds.
     if len(out) >= limit or hit_cohort_floor:
         if hit_cohort_floor:
             logger.info(
@@ -1211,6 +1249,7 @@ async def fetch_timeline_via_username_feed(
                 break
             added = 0
             skipped_old = 0
+            skipped_old_chrono = 0
             keyed = 0
             for node in page_nodes:
                 key = _node_key(node)
@@ -1221,7 +1260,10 @@ async def fetch_timeline_via_username_feed(
                     ts = _node_taken_unix(node)
                     if ts is not None and ts < floor:
                         skipped_old += 1
-                        hit_cohort_floor = True
+                        if not _node_is_pinned(node):
+                            skipped_old_chrono += 1
+                            if _cohort_old_sets_floor(added_in_window=added, node=node):
+                                hit_cohort_floor = True
                         continue
                     # Keep undated — do not invent a cohort floor from missing dates.
                 seen.add(key)
@@ -1230,7 +1272,8 @@ async def fetch_timeline_via_username_feed(
                 if len(nodes) >= limit:
                     break
 
-            if floor is not None and keyed > 0 and added == 0 and skipped_old > 0:
+            # Pins-only new rows are not a cohort floor (see fetch_all_media_nodes).
+            if floor is not None and keyed > 0 and added == 0 and skipped_old_chrono > 0:
                 hit_cohort_floor = True
 
             logger.info(
@@ -1290,14 +1333,26 @@ async def fetch_timeline_via_username_feed(
         hit_cohort_floor,
         more,
     )
-    # Natural end of feed without a pre-Jul-15 post still completes the window.
+    # Feed ended without a pre-Jul-15 post. That is programme-complete only when
+    # Instagram's lifetime total ≈ what we collected (no older posts to find).
+    # Otherwise more=false after ~one page is a stalled pagination — do NOT mark
+    # cohort-complete or the pipeline will wipe the missing in-window posts.
     if (not hit_cohort_floor) and (not more) and len(nodes) > 0:
-        hit_cohort_floor = True
-        logger.info(
-            "username_feed @%s feed exhausted — treating as programme-complete collected=%s",
-            username,
-            len(nodes),
-        )
+        if expected_count <= 0 or len(nodes) >= max(1, expected_count - 2):
+            hit_cohort_floor = True
+            logger.info(
+                "username_feed @%s feed exhausted — treating as programme-complete collected=%s expected=%s",
+                username,
+                len(nodes),
+                expected_count,
+            )
+        else:
+            logger.warning(
+                "username_feed @%s feed ended early collected=%s expected=%s — NOT marking programme-complete",
+                username,
+                len(nodes),
+                expected_count,
+            )
     return user_obj, nodes[:limit], hit_cohort_floor
 
 
