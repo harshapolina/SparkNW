@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -24,7 +25,7 @@ from instascope_shared.models import (
     UserSettings,
 )
 
-_POST_INSERT_CHUNK = 200
+logger = logging.getLogger("instascope.scrape_pipeline")
 
 
 def _media_type(raw: str | None) -> MediaType:
@@ -127,6 +128,7 @@ def is_soft_scrape_failure(error: BaseException | str | None) -> bool:
     return (
         "incomplete timeline" in low
         or "refusing to save" in low
+        or "failed to save any" in low
         or "pagination" in low
         or "still short" in low
         or "rate-limited" in low
@@ -161,6 +163,11 @@ def humanize_scrape_error(err: BaseException | str) -> str:
         return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
     if "refusing to save" in low:
         return "Scrape was incomplete and was not saved over existing data. Please Refresh again."
+    if "failed to save any" in low:
+        return (
+            "Posts were scraped but could not be written (duplicate Instagram ids). "
+            "Refresh again — the save path now upserts by ig_post_id."
+        )
     if "does not exist" in low or "doesn't exist" in low or "not found" in low:
         if "does not exist" in low or "doesn't exist" in low:
             return raw if len(raw) <= 220 else raw[:217] + "..."
@@ -189,6 +196,94 @@ async def heal_soft_scrape_failure(profile: Profile) -> bool:
     profile.updated_at = datetime.utcnow()
     await profile.save()
     return True
+
+
+async def _upsert_posts(profile: Profile, post_docs: list[Post]) -> int:
+    """Persist posts by ``ig_post_id`` (global unique), reclaiming collisions.
+
+    Delete-then-insert fails when the same Instagram post id already exists under
+    another profile row (re-imports / duplicate roster). Upsert fixes that.
+    """
+    by_id: dict[str, Post] = {}
+    for doc in post_docs:
+        key = (doc.ig_post_id or "").strip()
+        if not key:
+            continue
+        by_id[key] = doc
+    docs = list(by_id.values())
+    if not docs:
+        return 0
+
+    keep_ids = list(by_id.keys())
+    # Drop stale rows for this profile that are no longer in the scrape set.
+    await Post.find(
+        {
+            "profile_id": str(profile.id),
+            "ig_post_id": {"$nin": keep_ids},
+        }
+    ).delete()
+
+    saved = 0
+    for doc in docs:
+        try:
+            existing = await Post.find_one(Post.ig_post_id == doc.ig_post_id)
+            if existing is None:
+                await doc.insert()
+                saved += 1
+                continue
+
+            existing.profile_id = str(profile.id)
+            existing.user_id = profile.user_id
+            existing.shortcode = doc.shortcode
+            existing.media_type = doc.media_type
+            existing.caption = doc.caption
+            existing.thumbnail_url = doc.thumbnail_url
+            existing.permalink = doc.permalink
+            existing.likes = int(doc.likes or 0)
+            existing.comments = int(doc.comments or 0)
+            existing.views = int(doc.views or 0)
+            if doc.posted_at is not None:
+                existing.posted_at = doc.posted_at
+            existing.scraped_at = doc.scraped_at or datetime.utcnow()
+            existing.updated_at = datetime.utcnow()
+            await existing.save()
+            saved += 1
+        except Exception as exc:
+            logger.warning(
+                "post upsert failed profile=%s ig_post_id=%s err=%s — retry delete+insert",
+                profile.id,
+                doc.ig_post_id,
+                exc,
+            )
+            try:
+                await Post.find(Post.ig_post_id == doc.ig_post_id).delete()
+                # Fresh document (avoid stale Beanie id state after failed insert)
+                fresh = Post(
+                    profile_id=str(profile.id),
+                    user_id=profile.user_id,
+                    ig_post_id=doc.ig_post_id,
+                    shortcode=doc.shortcode,
+                    media_type=doc.media_type,
+                    caption=doc.caption,
+                    thumbnail_url=doc.thumbnail_url,
+                    permalink=doc.permalink,
+                    likes=int(doc.likes or 0),
+                    comments=int(doc.comments or 0),
+                    views=int(doc.views or 0),
+                    posted_at=doc.posted_at,
+                    scraped_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+                await fresh.insert()
+                saved += 1
+            except Exception as exc2:
+                logger.exception(
+                    "post insert retry failed profile=%s ig_post_id=%s: %s",
+                    profile.id,
+                    doc.ig_post_id,
+                    exc2,
+                )
+    return saved
 
 
 async def apply_scrape_result(
@@ -361,20 +456,7 @@ async def apply_scrape_result(
 
     posts_saved = 0
     if post_docs:
-        # Replace only when we have a real new set to write
-        await Post.find(Post.profile_id == str(profile.id)).delete()
-        for i in range(0, len(post_docs), _POST_INSERT_CHUNK):
-            chunk = post_docs[i : i + _POST_INSERT_CHUNK]
-            try:
-                await Post.insert_many(chunk)
-                posts_saved += len(chunk)
-            except Exception:
-                for doc in chunk:
-                    try:
-                        await doc.insert()
-                        posts_saved += 1
-                    except Exception:
-                        continue
+        posts_saved = await _upsert_posts(profile, post_docs)
         if posts_saved <= 0:
             raise ValueError(
                 f"Failed to save any of {len(post_docs)} scraped posts to the database"
