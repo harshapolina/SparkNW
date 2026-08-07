@@ -127,6 +127,40 @@ export type AdminOverviewResponse = {
   failed_updates?: number;
   reels_posted: number;
   new_followers: number;
+  /** Lifetime unique counts — one profile counted once (re-scrapes do not inflate). */
+  overall?: {
+    total_profiles: number;
+    scraped_successfully: number;
+    failed: number;
+    unavailable: number;
+    paused: number;
+    pending: number;
+    private: number;
+    private_scraped: number;
+    private_pending: number;
+    total_followers: number;
+    total_views: number;
+    total_likes: number;
+    total_comments: number;
+    total_engagement: number;
+    total_points: number;
+    reels_posted: number;
+    average_engagement: number;
+    average_followers: number;
+    average_likes: number;
+    average_views: number;
+    at_risk_count: number;
+    coverage_pct: number;
+  };
+  /** Calendar-day scrape metrics (UTC). */
+  today?: {
+    updated: number;
+    failed: number;
+    private_updated: number;
+    follower_growth: number;
+    in_queue: number;
+    date: string;
+  };
   growth_series: { date: string; followers: number; views: number; likes: number }[];
   followers_over_time?: { date: string; value: number }[];
   content_types?: { name: string; value: number }[];
@@ -141,6 +175,11 @@ export type AdminOverviewResponse = {
     tracked: number;
     updated_today: number;
     failed: number;
+    scraped_successfully?: number;
+    unavailable?: number;
+    pending?: number;
+    private?: number;
+    in_queue?: number;
     last_sync: string | null;
     next_sync: string;
   };

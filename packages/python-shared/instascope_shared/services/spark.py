@@ -712,11 +712,49 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
     else:
         points_wow_pct = 0.0
 
-    updated_today = sum(
-        1 for p in profiles if p.last_success_at and p.last_success_at.strftime("%Y-%m-%d") == today
-    )
+    def _date_str(dt: datetime | None) -> str | None:
+        if not dt:
+            return None
+        return dt.strftime("%Y-%m-%d")
+
+    def _has_ig_card(p: Any) -> bool:
+        """Unique success signal: real IG card data (one profile counted once)."""
+        return bool(p.last_success_at) or int(p.followers or 0) > 0 or int(p.posts_count or 0) > 0
+
+    def _progress_active(p: Any) -> bool:
+        prog = getattr(p, "scrape_progress", None) or {}
+        return bool(prog.get("active"))
+
+    updated_today = sum(1 for p in profiles if _date_str(p.last_success_at) == today)
     failed = sum(1 for p in profiles if p.status == ProfileStatus.FAILED)
+    unavailable = sum(1 for p in profiles if p.status == ProfileStatus.UNAVAILABLE)
+    paused = sum(1 for p in profiles if p.status == ProfileStatus.PAUSED)
     private = sum(1 for p in profiles if p.is_private)
+    scraped_successfully = sum(1 for p in profiles if _has_ig_card(p))
+    # Pending = roster rows that never got a usable card and are not terminal statuses.
+    pending = sum(
+        1
+        for p in profiles
+        if not _has_ig_card(p)
+        and p.status
+        not in {ProfileStatus.FAILED, ProfileStatus.UNAVAILABLE, ProfileStatus.PAUSED}
+    )
+    private_scraped = sum(1 for p in profiles if p.is_private and _has_ig_card(p))
+    private_pending = sum(1 for p in profiles if p.is_private and not _has_ig_card(p))
+
+    failed_today = sum(
+        1
+        for p in profiles
+        if p.status == ProfileStatus.FAILED
+        and (
+            _date_str(p.last_scraped_at) == today
+            or _date_str(getattr(p, "updated_at", None)) == today
+        )
+    )
+    private_updated_today = sum(
+        1 for p in profiles if p.is_private and _date_str(p.last_success_at) == today
+    )
+    in_queue = sum(1 for p in profiles if _progress_active(p))
     inactive = sum(1 for r in board if r["posts_7d"] == 0)
 
     grit = {
@@ -771,7 +809,9 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
     needing = [
         {"label": "No post in 7+ days", "count": inactive},
         {"label": "Scraping failed", "count": failed},
+        {"label": "IG username missing", "count": unavailable},
         {"label": "Account is private", "count": private},
+        {"label": "Not scraped yet", "count": pending},
         {"label": "At-risk / inactive flags", "count": grit["at_risk"]},
     ]
 
@@ -950,10 +990,49 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
         "alerts": alerts,
         "insights": insights,
         "needing_attention": needing,
+        # Lifetime unique counts (1 profile = 1 count; re-scrapes do not inflate).
+        "overall": {
+            "total_profiles": len(profiles),
+            "scraped_successfully": scraped_successfully,
+            "failed": failed,
+            "unavailable": unavailable,
+            "paused": paused,
+            "pending": pending,
+            "private": private,
+            "private_scraped": private_scraped,
+            "private_pending": private_pending,
+            "total_followers": total_followers,
+            "total_views": total_views,
+            "total_likes": total_likes,
+            "total_comments": total_comments,
+            "total_engagement": total_likes + total_comments,
+            "total_points": total_points,
+            "reels_posted": reels,
+            "average_engagement": avg_eng,
+            "average_followers": avg_followers,
+            "average_likes": avg_likes,
+            "average_views": avg_views,
+            "at_risk_count": grit["at_risk"],
+            "coverage_pct": round(100 * scraped_successfully / len(profiles), 1) if profiles else 0.0,
+        },
+        # Calendar-day metrics (UTC date of last_success_at / last_scraped_at).
+        "today": {
+            "updated": updated_today,
+            "failed": failed_today,
+            "private_updated": private_updated_today,
+            "follower_growth": follower_growth_today,
+            "in_queue": in_queue,
+            "date": today,
+        },
         "scrape": {
             "tracked": len(profiles),
             "updated_today": updated_today,
             "failed": failed,
+            "scraped_successfully": scraped_successfully,
+            "unavailable": unavailable,
+            "pending": pending,
+            "private": private,
+            "in_queue": in_queue,
             "last_sync": last_sync_dt.isoformat() if last_sync_dt else None,
             "next_sync": "Daily scrape / on Refresh",
         },

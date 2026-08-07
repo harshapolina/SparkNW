@@ -495,7 +495,7 @@ export default function AdminHowItWorksPage() {
           <DataTable
             headers={["Feature", "What it does"]}
             rows={[
-              ["Dashboard", "Cohort overview — counts, recent activity, health"],
+              ["Dashboard", "Overall data (unique till-date scrapes) + Today's data (day-based)"],
               ["Leaderboard", "Full SPARK ranks, campus filters, date range, sort modes"],
               ["Scraping", "Profile list, live scrape progress, Refresh / Pause / Delete"],
               ["Analytics", "Trends from snapshots (followers, engagement over time)"],
@@ -508,6 +508,12 @@ export default function AdminHowItWorksPage() {
               ["Student portal", "Student sees own rank, dashboard, public board"],
             ]}
           />
+          <p className="text-sm text-zinc-400">
+            Dashboard <strong className="text-zinc-200">Overall → Scraped successfully</strong> counts
+            each profile once (has IG card / last success). Re-scraping the same handle does not
+            increase that number. <strong className="text-zinc-200">Today&apos;s data</strong> only
+            counts successes and failures for the current UTC calendar day.
+          </p>
           <p className="text-sm text-zinc-400">
             Shared rule: admin and student portals read the{" "}
             <strong className="text-zinc-200">same scraped MongoDB data</strong> — rankings are not

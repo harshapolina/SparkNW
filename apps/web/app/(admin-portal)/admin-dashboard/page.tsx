@@ -23,11 +23,13 @@ import {
   Bell,
   Eye,
   Heart,
+  Lock,
   MessageCircle,
   Sparkles,
   TrendingUp,
   Users,
   Film,
+  Clock,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AdminOverviewResponse, AdminRecentProfile } from "@/lib/spark/api-types";
@@ -44,11 +46,39 @@ type Notification = {
   profile_id?: string | null;
 };
 
+type KpiCard = {
+  label: string;
+  value: string;
+  sub: string;
+  icon: typeof Users;
+  color: string;
+};
+
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 function formatWow(pct: number): string {
   const sign = pct > 0 ? "+" : "";
   return `${sign}${pct.toFixed(1)}% WoW`;
+}
+
+function KpiGrid({ items }: { items: KpiCard[] }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {items.map((k) => {
+        const Icon = k.icon;
+        return (
+          <div key={k.label} className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4">
+            <div className="flex items-start justify-between">
+              <div className="text-[11px] uppercase tracking-[0.1em] text-zinc-500">{k.label}</div>
+              <Icon size={16} className={k.color} />
+            </div>
+            <div className="mt-3 text-2xl font-semibold tabular">{k.value}</div>
+            <div className="mt-1 text-[11px] text-zinc-500">{k.sub}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 export default function AdminDashboardPage() {
@@ -101,27 +131,196 @@ export default function AdminDashboardPage() {
     pct: Math.round((c.value / contentTotal) * 100),
     color: ["bg-[#ff3b30]", "bg-[#ff4d00]", "bg-emerald-500", "bg-violet-500"][i] || "bg-zinc-500",
   }));
-  const freshnessPct = admin.scrape.tracked
-    ? Math.min(100, Math.round((admin.scrape.updated_today / admin.scrape.tracked) * 100))
+
+  const overall = admin.overall;
+  const todayBlock = admin.today;
+  const totalProfiles = overall?.total_profiles ?? admin.total_participants;
+  const scrapedEver =
+    overall?.scraped_successfully ?? admin.scrape.scraped_successfully ?? admin.scrape.updated_today;
+  const coveragePct =
+    overall?.coverage_pct ??
+    (totalProfiles ? Math.min(100, Math.round((scrapedEver / totalProfiles) * 1000) / 10) : 0);
+  const freshnessPct = totalProfiles
+    ? Math.min(
+        100,
+        Math.round(
+          (((todayBlock?.updated ?? admin.scrape.updated_today) / totalProfiles) * 100)
+        )
+      )
     : 0;
 
-  const kpis = [
-    { label: "Total Profiles", value: formatNumber(admin.total_participants), sub: `${admin.scrape.updated_today} updated today`, icon: Users, color: "text-[#ff3b30]" },
-    { label: "Updated Today", value: formatNumber(admin.profiles_updated_today ?? admin.scrape.updated_today), sub: "Fresh scrapes", icon: Activity, color: "text-sky-400" },
-    { label: "Failed Updates", value: formatNumber(admin.failed_updates ?? admin.scrape.failed), sub: (admin.failed_updates ?? admin.scrape.failed) ? "Review alerts" : "All healthy", icon: AlertTriangle, color: "text-rose-400" },
-    { label: "Avg Engagement", value: `${admin.average_engagement}%`, sub: "Portfolio avg", icon: TrendingUp, color: "text-emerald-400" },
-    { label: "Avg Followers", value: formatNumber(admin.average_followers ?? 0), sub: "Across tracked profiles", icon: Users, color: "text-pink-400" },
-    { label: "Avg Likes", value: formatNumber(admin.average_likes ?? 0), sub: `Views ${formatNumber(admin.average_views ?? 0)}`, icon: Heart, color: "text-[#ff3b30]" },
-    { label: "Avg Views", value: formatNumber(admin.average_views ?? 0), sub: "From recent posts", icon: Eye, color: "text-violet-400" },
-    { label: "Follower Growth Today", value: formatNumber(admin.follower_growth_today ?? admin.new_followers), sub: "Estimated from scrapes", icon: TrendingUp, color: "text-lime-400" },
-    { label: "Total Points", value: formatNumber(admin.total_points_distributed), sub: formatWow(pointsWow), icon: Sparkles, color: "text-[#ff4d00]" },
-    { label: "Total Followers", value: formatNumber(admin.total_followers), sub: `${admin.ig_connected_pct}% IG connected`, icon: AtSign, color: "text-emerald-400" },
-    { label: "Total Views", value: formatNumber(admin.total_views), sub: "Sum of scraped post views", icon: Eye, color: "text-violet-400" },
-    { label: "Total Engagement", value: formatNumber(admin.total_engagement), sub: `${formatNumber(admin.total_likes)} likes · ${formatNumber(admin.total_comments)} comments`, icon: Heart, color: "text-[#ff3b30]" },
-    { label: "Total Likes", value: formatNumber(admin.total_likes), sub: "Across scraped posts", icon: Heart, color: "text-rose-300" },
-    { label: "Total Comments", value: formatNumber(admin.total_comments), sub: "Across scraped posts", icon: MessageCircle, color: "text-sky-300" },
-    { label: "Reels Posted", value: formatNumber(admin.reels_posted), sub: "In scraped set", icon: Film, color: "text-amber-400" },
-    { label: "At-Risk Creators", value: formatNumber(admin.at_risk_count), sub: "GRIT / inactive flags", icon: AlertTriangle, color: "text-[#ff3b30]" },
+  const overallKpis: KpiCard[] = [
+    {
+      label: "Total Profiles",
+      value: formatNumber(totalProfiles),
+      sub: "Unique roster accounts",
+      icon: Users,
+      color: "text-[#ff3b30]",
+    },
+    {
+      label: "Scraped Successfully",
+      value: formatNumber(scrapedEver),
+      sub: `${coveragePct}% of roster · till date · no duplicates`,
+      icon: BadgeCheck,
+      color: "text-emerald-400",
+    },
+    {
+      label: "Failed",
+      value: formatNumber(overall?.failed ?? admin.failed_updates ?? admin.scrape.failed),
+      sub: "Current failed status",
+      icon: AlertTriangle,
+      color: "text-rose-400",
+    },
+    {
+      label: "Unavailable",
+      value: formatNumber(overall?.unavailable ?? admin.scrape.unavailable ?? 0),
+      sub: "IG username missing",
+      icon: AlertTriangle,
+      color: "text-amber-400",
+    },
+    {
+      label: "Private Accounts",
+      value: formatNumber(overall?.private ?? admin.scrape.private ?? 0),
+      sub: `${formatNumber(overall?.private_scraped ?? 0)} scraped · ${formatNumber(overall?.private_pending ?? 0)} pending`,
+      icon: Lock,
+      color: "text-violet-400",
+    },
+    {
+      label: "Not Scraped Yet",
+      value: formatNumber(overall?.pending ?? admin.scrape.pending ?? 0),
+      sub: "No IG card data yet",
+      icon: Clock,
+      color: "text-zinc-400",
+    },
+    {
+      label: "Avg Engagement",
+      value: `${overall?.average_engagement ?? admin.average_engagement}%`,
+      sub: "Portfolio avg",
+      icon: TrendingUp,
+      color: "text-emerald-400",
+    },
+    {
+      label: "Avg Followers",
+      value: formatNumber(overall?.average_followers ?? admin.average_followers ?? 0),
+      sub: "Across tracked profiles",
+      icon: Users,
+      color: "text-pink-400",
+    },
+    {
+      label: "Avg Likes",
+      value: formatNumber(overall?.average_likes ?? admin.average_likes ?? 0),
+      sub: `Views ${formatNumber(overall?.average_views ?? admin.average_views ?? 0)}`,
+      icon: Heart,
+      color: "text-[#ff3b30]",
+    },
+    {
+      label: "Avg Views",
+      value: formatNumber(overall?.average_views ?? admin.average_views ?? 0),
+      sub: "From scraped posts",
+      icon: Eye,
+      color: "text-violet-400",
+    },
+    {
+      label: "Total Points",
+      value: formatNumber(overall?.total_points ?? admin.total_points_distributed),
+      sub: formatWow(pointsWow),
+      icon: Sparkles,
+      color: "text-[#ff4d00]",
+    },
+    {
+      label: "Total Followers",
+      value: formatNumber(overall?.total_followers ?? admin.total_followers),
+      sub: `${admin.ig_connected_pct}% IG connected`,
+      icon: AtSign,
+      color: "text-emerald-400",
+    },
+    {
+      label: "Total Views",
+      value: formatNumber(overall?.total_views ?? admin.total_views),
+      sub: "Sum of scraped post views",
+      icon: Eye,
+      color: "text-violet-400",
+    },
+    {
+      label: "Total Engagement",
+      value: formatNumber(overall?.total_engagement ?? admin.total_engagement),
+      sub: `${formatNumber(overall?.total_likes ?? admin.total_likes)} likes · ${formatNumber(overall?.total_comments ?? admin.total_comments)} comments`,
+      icon: Heart,
+      color: "text-[#ff3b30]",
+    },
+    {
+      label: "Total Likes",
+      value: formatNumber(overall?.total_likes ?? admin.total_likes),
+      sub: "Across scraped posts (unique profiles)",
+      icon: Heart,
+      color: "text-rose-300",
+    },
+    {
+      label: "Total Comments",
+      value: formatNumber(overall?.total_comments ?? admin.total_comments),
+      sub: "Across scraped posts",
+      icon: MessageCircle,
+      color: "text-sky-300",
+    },
+    {
+      label: "Reels Posted",
+      value: formatNumber(overall?.reels_posted ?? admin.reels_posted),
+      sub: "In scraped set",
+      icon: Film,
+      color: "text-amber-400",
+    },
+    {
+      label: "At-Risk Creators",
+      value: formatNumber(overall?.at_risk_count ?? admin.at_risk_count),
+      sub: "GRIT / inactive flags",
+      icon: AlertTriangle,
+      color: "text-[#ff3b30]",
+    },
+  ];
+
+  const todayKpis: KpiCard[] = [
+    {
+      label: "Updated Today",
+      value: formatNumber(todayBlock?.updated ?? admin.profiles_updated_today ?? admin.scrape.updated_today),
+      sub: `Fresh successful scrapes · ${todayBlock?.date ?? "today"}`,
+      icon: Activity,
+      color: "text-sky-400",
+    },
+    {
+      label: "Failed Today",
+      value: formatNumber(todayBlock?.failed ?? 0),
+      sub: (todayBlock?.failed ?? 0) ? "Review alerts" : "No failures today",
+      icon: AlertTriangle,
+      color: "text-rose-400",
+    },
+    {
+      label: "Private Updated Today",
+      value: formatNumber(todayBlock?.private_updated ?? 0),
+      sub: "Private accounts scraped today",
+      icon: Lock,
+      color: "text-violet-400",
+    },
+    {
+      label: "Follower Growth Today",
+      value: formatNumber(todayBlock?.follower_growth ?? admin.follower_growth_today ?? admin.new_followers),
+      sub: "Estimated from scrapes",
+      icon: TrendingUp,
+      color: "text-lime-400",
+    },
+    {
+      label: "In Queue Now",
+      value: formatNumber(todayBlock?.in_queue ?? admin.scrape.in_queue ?? 0),
+      sub: "Live scrape progress active",
+      icon: Clock,
+      color: "text-amber-300",
+    },
+    {
+      label: "Today Coverage",
+      value: `${freshnessPct}%`,
+      sub: `${formatNumber(todayBlock?.updated ?? admin.scrape.updated_today)} of ${formatNumber(totalProfiles)} refreshed today`,
+      icon: BadgeCheck,
+      color: "text-emerald-400",
+    },
   ];
 
   const gritTotal = Math.max(1, admin.grit.qualified + admin.grit.striking + admin.grit.at_risk);
@@ -194,21 +393,29 @@ export default function AdminDashboardPage() {
         )}
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {kpis.map((k) => {
-          const Icon = k.icon;
-          return (
-            <div key={k.label} className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4">
-              <div className="flex items-start justify-between">
-                <div className="text-[11px] uppercase tracking-[0.1em] text-zinc-500">{k.label}</div>
-                <Icon size={16} className={k.color} />
-              </div>
-              <div className="mt-3 text-2xl font-semibold tabular">{k.value}</div>
-              <div className="mt-1 text-[11px] text-zinc-500">{k.sub}</div>
-            </div>
-          );
-        })}
-      </div>
+      <section className="space-y-3">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[#ff3b30]">
+            Overall data
+          </div>
+          <p className="mt-1 text-sm text-zinc-500">
+            Lifetime unique counts — each account counted once (re-scrapes do not inflate totals).
+          </p>
+        </div>
+        <KpiGrid items={overallKpis} />
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-sky-400">
+            Today&apos;s data
+          </div>
+          <p className="mt-1 text-sm text-zinc-500">
+            Day-based scrape activity for {todayBlock?.date ?? "today"} (UTC).
+          </p>
+        </div>
+        <KpiGrid items={todayKpis} />
+      </section>
 
       {/* Alerts */}
       <div className="rounded-2xl border border-rose-500/20 bg-rose-500/[0.06] p-5">
@@ -328,17 +535,37 @@ export default function AdminDashboardPage() {
 
             <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
               <h2 className="text-sm font-semibold">Monitoring activity</h2>
-              <p className="mt-0.5 text-xs text-zinc-500">Latest scrapes and profile health</p>
-              <div className="mt-4">
-                <div className="mb-1.5 flex justify-between text-xs">
-                  <span className="text-zinc-500">Freshness today</span>
-                  <span className="font-medium tabular">{freshnessPct}%</span>
+              <p className="mt-0.5 text-xs text-zinc-500">Lifetime coverage vs today&apos;s refresh</p>
+              <div className="mt-4 space-y-4">
+                <div>
+                  <div className="mb-1.5 flex justify-between text-xs">
+                    <span className="text-zinc-500">Scraped till date</span>
+                    <span className="font-medium tabular text-emerald-400">{coveragePct}%</span>
+                  </div>
+                  <div className="h-2.5 overflow-hidden rounded-full bg-zinc-800">
+                    <div
+                      className="h-full rounded-full bg-emerald-500"
+                      style={{ width: `${Math.min(100, coveragePct)}%` }}
+                    />
+                  </div>
+                  <p className="mt-1 text-[11px] text-zinc-600">
+                    {formatNumber(scrapedEver)} of {formatNumber(totalProfiles)} unique accounts
+                  </p>
                 </div>
-                <div className="h-2.5 overflow-hidden rounded-full bg-zinc-800">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-[#ff3b30] via-[#ff4d00] to-emerald-500"
-                    style={{ width: `${freshnessPct}%` }}
-                  />
+                <div>
+                  <div className="mb-1.5 flex justify-between text-xs">
+                    <span className="text-zinc-500">Freshness today</span>
+                    <span className="font-medium tabular">{freshnessPct}%</span>
+                  </div>
+                  <div className="h-2.5 overflow-hidden rounded-full bg-zinc-800">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-[#ff3b30] via-[#ff4d00] to-emerald-500"
+                      style={{ width: `${freshnessPct}%` }}
+                    />
+                  </div>
+                  <p className="mt-1 text-[11px] text-zinc-600">
+                    {formatNumber(todayBlock?.updated ?? admin.scrape.updated_today)} refreshed today
+                  </p>
                 </div>
               </div>
               <div className="mt-4 space-y-2">
@@ -519,8 +746,13 @@ export default function AdminDashboardPage() {
               <h2 className="text-sm font-semibold">Scraping Health</h2>
               <dl className="mt-4 space-y-2 text-xs">
                 <div className="flex justify-between"><dt className="text-zinc-500">Tracked</dt><dd className="tabular">{admin.scrape.tracked}</dd></div>
+                <div className="flex justify-between"><dt className="text-zinc-500">Scraped till date</dt><dd className="tabular text-emerald-400">{admin.scrape.scraped_successfully ?? scrapedEver}</dd></div>
                 <div className="flex justify-between"><dt className="text-zinc-500">Updated Today</dt><dd className="tabular">{admin.scrape.updated_today}</dd></div>
                 <div className="flex justify-between"><dt className="text-zinc-500">Failed</dt><dd className="tabular text-rose-400">{admin.scrape.failed}</dd></div>
+                <div className="flex justify-between"><dt className="text-zinc-500">Unavailable</dt><dd className="tabular text-amber-400">{admin.scrape.unavailable ?? 0}</dd></div>
+                <div className="flex justify-between"><dt className="text-zinc-500">Private</dt><dd className="tabular">{admin.scrape.private ?? 0}</dd></div>
+                <div className="flex justify-between"><dt className="text-zinc-500">Pending</dt><dd className="tabular">{admin.scrape.pending ?? 0}</dd></div>
+                <div className="flex justify-between"><dt className="text-zinc-500">In queue</dt><dd className="tabular">{admin.scrape.in_queue ?? 0}</dd></div>
                 <div className="flex justify-between"><dt className="text-zinc-500">Last Sync</dt><dd>{admin.scrape.last_sync ? new Date(admin.scrape.last_sync).toLocaleString() : "—"}</dd></div>
                 <div className="flex justify-between"><dt className="text-zinc-500">Next Sync</dt><dd>{admin.scrape.next_sync}</dd></div>
               </dl>
