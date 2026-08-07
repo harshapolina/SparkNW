@@ -1715,7 +1715,8 @@ def _merge_card_metrics(base: ScrapeResult, card: ScrapeResult) -> ScrapeResult:
         base.followers = card.followers
     if card.following > 0:
         base.following = card.following
-    if card.posts_count > 0 and (base.posts_count or 0) <= 0:
+    # Lifetime media count from the card must win over a programme-window sample size.
+    if card.posts_count > 0 and card.posts_count >= int(base.posts_count or 0):
         base.posts_count = card.posts_count
     if card.full_name and not base.full_name:
         base.full_name = card.full_name
@@ -1742,8 +1743,11 @@ async def _fill_card_via_html_meta(
     *,
     proxy_url: str | None,
 ) -> ScrapeResult:
-    """Fill followers/following from HTML meta without Playwright."""
-    if _has_card_metrics(http_result):
+    """Fill followers/following/posts_count from HTML meta without Playwright."""
+    # Still fetch meta when lifetime posts_count is missing — followers alone
+    # is not enough (programme samples must not stand in for IG lifetime).
+    need_posts = int(http_result.posts_count or 0) <= 0
+    if _has_card_metrics(http_result) and not need_posts:
         return http_result
     try:
         from instascope_scraper.http_profile import InstagramUserNotFound, fetch_profile_meta_card
@@ -1759,12 +1763,13 @@ async def _fill_card_via_html_meta(
             og_image=meta.get("og_image"),
             og_title=meta.get("og_title"),
         )
-        if card and _has_card_metrics(card):
+        if card and (_has_card_metrics(card) or int(card.posts_count or 0) > 0):
             logger.info(
-                "meta_card @%s followers=%s following=%s",
+                "meta_card @%s followers=%s following=%s posts_count=%s",
                 username,
                 card.followers,
                 card.following,
+                card.posts_count,
             )
             return _merge_card_metrics(http_result, card)
         if http_result.is_private:
@@ -1789,6 +1794,49 @@ def _finalize_result(result: ScrapeResult, *, path: str) -> ScrapeResult:
     return result
 
 
+async def _ensure_lifetime_posts_count(
+    username: str,
+    result: ScrapeResult,
+    *,
+    proxy_url: str | None,
+) -> ScrapeResult:
+    """When we stopped at the programme floor, scraped N must not become 'IG lifetime'.
+
+    Fetch HTML meta Posts count when the stored posts_count is missing or equals
+    the programme sample size (common bug after username-feed pagination).
+    """
+    if not _result_hit_cohort_floor(result):
+        return result
+    scraped_n = len(result.posts or [])
+    pc = int(result.posts_count or 0)
+    # Already have a lifetime total larger than the programme sample.
+    if pc > scraped_n > 0:
+        return result
+    saved = pc
+    # Force meta fill when count is missing or suspiciously equal to the sample.
+    if scraped_n > 0 and (pc <= 0 or pc == scraped_n):
+        result.posts_count = 0
+    try:
+        filled = await _fill_card_via_html_meta(username, result, proxy_url=proxy_url)
+        meta_pc = int(filled.posts_count or 0)
+        if meta_pc > 0 and meta_pc != scraped_n:
+            logger.info(
+                "lifetime_posts_fix @%s sample=%s was=%s now=%s",
+                username,
+                scraped_n,
+                saved,
+                meta_pc,
+            )
+            return filled
+        if meta_pc <= 0 and saved > 0:
+            filled.posts_count = saved
+        return filled
+    except Exception:
+        logger.exception("lifetime_posts_fix @%s failed", username)
+        result.posts_count = saved
+    return result
+
+
 def _complete(result: ScrapeResult) -> bool:
     """Timeline complete for programme scrape (cohort floor or full/capped count)."""
     return _posts_complete(
@@ -1808,7 +1856,14 @@ async def _scrape_live(
 ) -> ScrapeResult:
     # 1) Fast path: public web_profile_info over HTTP — paginate until posts_count
     http_result: ScrapeResult | None = None
+    proxy_url = proxy_to_httpx_url(proxy)
     await _emit_progress(on_progress, phase="starting", scraped_posts=0, total_posts=0)
+
+    async def _done(result: ScrapeResult, path: str) -> ScrapeResult:
+        nonlocal proxy_url
+        result = await _ensure_lifetime_posts_count(username, result, proxy_url=proxy_url)
+        return _finalize_result(result, path=path)
+
     try:
         from instascope_scraper.http_profile import (
             InstagramUserNotFound,
@@ -1816,7 +1871,6 @@ async def _scrape_live(
             fetch_web_profile_http,
         )
 
-        proxy_url = proxy_to_httpx_url(proxy)
         await _emit_progress(on_progress, phase="http_profile", scraped_posts=0, total_posts=0)
 
         # Try each residential port until we get a profile card (avoids one hot IP).
@@ -1872,7 +1926,7 @@ async def _scrape_live(
                     scraped_posts=0,
                     total_posts=0,
                 )
-                return _finalize_result(http_result, path="http_empty")
+                return await _done(http_result, path="http_empty")
 
             if not bool(user.get("is_private")):
                 try:
@@ -1889,7 +1943,7 @@ async def _scrape_live(
                 http_result = _result_from_user(username, user)
 
             if http_result and http_result.is_private:
-                return _finalize_result(http_result, path="http_private")
+                return await _done(http_result, path="http_private")
 
             # Full programme timeline via HTTP → success immediately (no browser).
             if http_result and _complete(http_result):
@@ -1900,7 +1954,7 @@ async def _scrape_live(
                     http_result.posts_count,
                     _result_hit_cohort_floor(http_result),
                 )
-                return _finalize_result(http_result, path="http_full")
+                return await _done(http_result, path="http_full")
             if http_result:
                 logger.warning(
                     "http_partial @%s posts=%s/%s — escalating to browser",
@@ -1922,7 +1976,7 @@ async def _scrape_live(
                         "(set SCRAPE_BROWSER_ON_PARTIAL=1 to force)",
                         username,
                     )
-                    return _finalize_result(http_result, path="http_partial")
+                    return await _done(http_result, path="http_partial")
         else:
             # web_profile_info blocked (401 Please wait) — username feed often still works
             logger.warning("web_profile_info @%s unavailable — trying username feed", username)
@@ -1964,25 +2018,30 @@ async def _scrape_live(
                     await _emit_progress(
                         on_progress, phase="done", scraped_posts=0, total_posts=0
                     )
-                    return _finalize_result(http_result, path="username_feed_empty")
+                    return await _done(http_result, path="username_feed_empty")
 
                 if feed_nodes:
                     posts = _posts_from_nodes(feed_nodes)
                     if feed_user:
-                        # Normalize feed user shape for _result_from_user
+                        # Normalize feed user shape for _result_from_user.
+                        # Do NOT fall back to len(posts) — that is the programme sample,
+                        # not Instagram lifetime media_count.
                         if "edge_owner_to_timeline_media" not in feed_user:
                             from instascope_scraper.http_profile import _parse_media_count
 
+                            known = _parse_media_count(feed_user)
                             feed_user = {
                                 **feed_user,
                                 "edge_owner_to_timeline_media": {
-                                    "count": _parse_media_count(feed_user) or len(posts),
+                                    "count": known,
                                     "edges": [],
                                     "page_info": {"has_next_page": False},
                                 },
                             }
                         http_result = _result_from_user(username, feed_user, posts_override=posts)
                     else:
+                        # Never invent lifetime posts_count from the programme sample.
+                        # 0 = unknown until meta / web_profile fills the real IG total.
                         http_result = ScrapeResult(
                             username=username,
                             ig_user_id=None,
@@ -1993,7 +2052,7 @@ async def _scrape_live(
                             is_verified=False,
                             followers=0,
                             following=0,
-                            posts_count=len(posts),
+                            posts_count=0,
                             posts=posts,
                             raw={"source": "username_feed"},
                         )
@@ -2003,13 +2062,17 @@ async def _scrape_live(
                         _complete(http_result)
                         or (http_result.posts_count < 0 and len(http_result.posts) > 12)
                     ):
-                        # If posts_count unknown (<0 sentinel unused), trust feed exhaustion.
-                        # Never rewrite a real 0-post count up from empty len(posts).
-                        if http_result.posts_count < 0:
+                        # If posts_count unknown (<0 sentinel unused), trust feed exhaustion
+                        # ONLY when we did not stop at the programme floor (sample ≠ lifetime).
+                        if (
+                            http_result.posts_count < 0
+                            and not _result_hit_cohort_floor(http_result)
+                        ):
                             http_result.posts_count = len(http_result.posts)
                         if (
                             http_result.posts_count <= 0
                             and len(http_result.posts) > 12
+                            and not _result_hit_cohort_floor(http_result)
                         ):
                             http_result.posts_count = len(http_result.posts)
                         if _complete(http_result):
@@ -2025,14 +2088,14 @@ async def _scrape_live(
                                     http_result.followers,
                                     feed_floor,
                                 )
-                                return _finalize_result(http_result, path="username_feed_full")
+                                return await _done(http_result, path="username_feed_full")
                             http_result = await _fill_card_via_html_meta(
                                 username, http_result, proxy_url=proxy_url
                             )
                             if feed_floor:
                                 _mark_cohort_floor(http_result)
                             if _has_card_metrics(http_result):
-                                return _finalize_result(
+                                return await _done(
                                     http_result, path="username_feed_meta"
                                 )
                             # Keep posts; fall through to browser only if enabled.
@@ -2053,13 +2116,13 @@ async def _scrape_live(
                             len(http_result.posts),
                             http_result.posts_count,
                         )
-                        return _finalize_result(http_result, path="username_feed_partial")
+                        return await _done(http_result, path="username_feed_partial")
                     if http_result and _result_is_usable(http_result):
                         http_result = await _fill_card_via_html_meta(
                             username, http_result, proxy_url=proxy_url
                         )
                         if _has_card_metrics(http_result):
-                            return _finalize_result(
+                            return await _done(
                                 http_result, path="username_feed_partial_meta"
                             )
                     logger.warning(
@@ -2090,7 +2153,7 @@ async def _scrape_live(
             username, http_result, proxy_url=proxy_url
         )
     if http_result and http_result.is_private:
-        return _finalize_result(http_result, path="http_private")
+        return await _done(http_result, path="http_private")
     if http_result and _result_is_usable(http_result) and _has_card_metrics(http_result):
         if not _complete(http_result):
             logger.warning(
@@ -2100,8 +2163,8 @@ async def _scrape_live(
                 http_result.posts_count,
                 http_result.followers,
             )
-            return _finalize_result(http_result, path="http_usable")
-        return _finalize_result(http_result, path="http_full")
+            return await _done(http_result, path="http_usable")
+        return await _done(http_result, path="http_full")
 
     # API card blocked (common for private) — detect private from HTML before failing.
     proxy_url = proxy_to_httpx_url(proxy) if proxy is not None else None
@@ -2130,7 +2193,7 @@ async def _scrape_live(
                 username,
                 len(http_result.posts),
             )
-            return _finalize_result(http_result, path="http_posts_only")
+            return await _done(http_result, path="http_posts_only")
         raise ScrapeError(
             "Instagram rate-limited this server IP (no profile card/posts via HTTP). "
             "Wait a few minutes and Refresh, or set SCRAPE_PROXY_URL to a residential proxy. "
@@ -2172,7 +2235,7 @@ async def _scrape_live(
                     if floor_hit:
                         _mark_cohort_floor(result)
                     if _complete(result):
-                        return _finalize_result(result, path="http_after_browser")
+                        return await _done(result, path="http_after_browser")
             except Exception:
                 logger.exception("http_after_browser @%s failed", username)
             # Username feed rescue when web_profile still blocked
@@ -2189,7 +2252,7 @@ async def _scrape_live(
                     if feed_floor:
                         _mark_cohort_floor(result)
                     if _complete(result):
-                        return _finalize_result(result, path="username_feed_after_browser")
+                        return await _done(result, path="username_feed_after_browser")
                 except Exception:
                     logger.exception("username_feed_after_browser @%s failed", username)
         try:
@@ -2202,16 +2265,16 @@ async def _scrape_live(
                     len(result.posts),
                     result.posts_count,
                 )
-                return _finalize_result(result, path="browser_partial")
+                return await _done(result, path="browser_partial")
             if http_result and _result_is_usable(http_result):
-                return _finalize_result(http_result, path="http_partial_kept")
+                return await _done(http_result, path="http_partial_kept")
             raise
-        return _finalize_result(result, path="browser")
+        return await _done(result, path="browser")
     except Exception as exc:
         # Prefer a complete HTTP timeline; otherwise keep any usable card/posts
         # rather than failing with zeros after a browser/proxy hang.
         if http_result and _complete(http_result):
-            return _finalize_result(http_result, path="http_fallback_complete")
+            return await _done(http_result, path="http_fallback_complete")
         if http_result and _result_is_usable(http_result):
             logger.warning(
                 "browser failed @%s (%s) — saving usable HTTP result posts=%s followers=%s",
@@ -2220,7 +2283,7 @@ async def _scrape_live(
                 len(http_result.posts),
                 http_result.followers,
             )
-            return _finalize_result(http_result, path="http_partial_after_browser_fail")
+            return await _done(http_result, path="http_partial_after_browser_fail")
 
         # Always attempt HTTP rescue after browser/extract failures (not only proxy tunnels).
         # Datacenter IPs often fail browser login-wall while HTTP still returns a card.
@@ -2253,8 +2316,8 @@ async def _scrape_live(
                             _mark_cohort_floor(rescued)
                         if _result_is_usable(rescued):
                             if _complete(rescued):
-                                return _finalize_result(rescued, path="http_rescue_full")
-                            return _finalize_result(rescued, path="http_rescue_partial")
+                                return await _done(rescued, path="http_rescue_full")
+                            return await _done(rescued, path="http_rescue_partial")
                     feed_user, feed_nodes, feed_floor = await fetch_timeline_via_username_feed(
                         username,
                         expected_count=0,
@@ -2278,16 +2341,21 @@ async def _scrape_live(
                                 is_verified=False,
                                 followers=0,
                                 following=0,
-                                posts_count=len(posts),
+                                posts_count=0,
                                 posts=posts,
                                 raw={"source": "username_feed_rescue"},
                             )
                         if feed_floor:
                             _mark_cohort_floor(rescued)
-                        if rescued.posts_count <= 0:
+                        # Do not invent lifetime count from the programme sample.
+                        if (
+                            rescued.posts_count <= 0
+                            and not _result_hit_cohort_floor(rescued)
+                            and len(posts) > 0
+                        ):
                             rescued.posts_count = len(posts)
                         if _result_is_usable(rescued):
-                            return _finalize_result(rescued, path="username_feed_rescue")
+                            return await _done(rescued, path="username_feed_rescue")
                 except Exception:
                     logger.exception(
                         "http rescue @%s proxy=%s failed", username, bool(use_proxy)
@@ -2313,7 +2381,7 @@ async def _scrape_live(
                             if floor_hit:
                                 _mark_cohort_floor(result)
                             if _complete(result):
-                                return _finalize_result(result, path="http_after_tunnel_fail")
+                                return await _done(result, path="http_after_tunnel_fail")
                         feed_user, feed_nodes, feed_floor = await fetch_timeline_via_username_feed(
                             username, expected_count=0, proxy=use_proxy
                         )
@@ -2322,10 +2390,14 @@ async def _scrape_live(
                             result = _result_from_user(username, feed_user, posts_override=posts)
                             if feed_floor:
                                 _mark_cohort_floor(result)
-                            if result.posts_count <= 0:
+                            if (
+                                result.posts_count <= 0
+                                and not _result_hit_cohort_floor(result)
+                                and len(posts) > 0
+                            ):
                                 result.posts_count = len(posts)
                             if _complete(result):
-                                return _finalize_result(result, path="username_feed_after_tunnel")
+                                return await _done(result, path="username_feed_after_tunnel")
                     except Exception:
                         logger.exception("tunnel fallback @%s proxy=%s failed", username, bool(use_proxy))
                         continue
@@ -2426,7 +2498,7 @@ async def _scrape_live_browser(
                     **(http_result.raw or {}),
                     "browser_error": str(exc)[:400],
                 }
-                return _finalize_result(http_result, path="http_fallback_goto")
+                return await _done(http_result, path="http_fallback_goto")
             raise ScrapeError(str(exc)) from exc
 
         await asyncio.sleep(max(delay, 2.0))
@@ -2456,9 +2528,9 @@ async def _scrape_live_browser(
             if http_result:
                 http_result.is_private = True
                 await context.close()
-                return _finalize_result(http_result, path="browser_private")
+                return await _done(http_result, path="browser_private")
             await context.close()
-            return _finalize_result(
+            return await _done(
                 ScrapeResult(
                     username=username,
                     ig_user_id=None,
@@ -2558,7 +2630,7 @@ async def _scrape_live_browser(
                     len(http_result.posts),
                     http_result.followers,
                 )
-                return _finalize_result(http_result, path="http_kept_after_empty_browser")
+                return await _done(http_result, path="http_kept_after_empty_browser")
             if "login" in (title or "").lower():
                 raise ScrapeError(
                     "Instagram login wall blocked scraping. Set SCRAPE_PROXY_URL to a "
@@ -2674,7 +2746,7 @@ async def _scrape_live_browser(
             if not _complete(result):
                 _raise_if_incomplete(result)
 
-        return _finalize_result(result, path="browser_full")
+        return await _done(result, path="browser_full")
 
 
 async def scrape_profile(

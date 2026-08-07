@@ -8,10 +8,19 @@ from typing import Optional
 from fastapi import HTTPException, status
 
 from instascope_shared.analytics.metrics import compute_post_metrics
-from instascope_shared.cohort import clamp_scoring_window
+from instascope_shared.cohort import clamp_scoring_window, cohort_start_ymd
 from instascope_shared.domain.instagram import extract_username, profile_url_for
 from instascope_shared.instagram_time import infer_posted_at
-from instascope_shared.models import DEFAULT_ORG_ID, Job, JobStatus, JobType, Post, Profile, ProfileStatus
+from instascope_shared.models import (
+    DEFAULT_ORG_ID,
+    Job,
+    JobStatus,
+    JobType,
+    Post,
+    Profile,
+    ProfileSnapshot,
+    ProfileStatus,
+)
 from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse
 from instascope_shared.services.scrape_pipeline import heal_soft_scrape_failure
 from instascope_shared.services.student_roster import merge_student
@@ -32,6 +41,59 @@ def _programme_posts_from_insights(insights: dict | None) -> int | None:
         except (TypeError, ValueError):
             return 0
     return None
+
+
+def _apply_follower_baseline(
+    resp: ProfileResponse,
+    *,
+    baseline_followers: int | None,
+    baseline_date: str | None,
+) -> ProfileResponse:
+    """Attach gain since first programme-window scrape (no IG backfill)."""
+    if baseline_followers is None or not baseline_date:
+        resp.followers_baseline = None
+        resp.followers_baseline_date = None
+        resp.followers_gained = 0
+        resp.followers_gained_pct = 0.0
+        return resp
+    current = int(resp.followers or 0)
+    base = max(0, int(baseline_followers))
+    gained = current - base
+    if base > 0:
+        pct = round((gained / base) * 100, 2)
+    elif current > 0:
+        pct = 100.0
+    else:
+        pct = 0.0
+    resp.followers_baseline = base
+    resp.followers_baseline_date = baseline_date
+    resp.followers_gained = gained
+    resp.followers_gained_pct = pct
+    return resp
+
+
+async def _earliest_baselines(
+    profile_ids: list[str],
+) -> dict[str, tuple[str, int]]:
+    """Earliest snapshot on/after programme start → (snapshot_date, followers)."""
+    out: dict[str, tuple[str, int]] = {}
+    if not profile_ids:
+        return out
+    floor = cohort_start_ymd()
+    _, window_end = clamp_scoring_window()
+    end = window_end.strftime("%Y-%m-%d")
+    snaps = await ProfileSnapshot.find(
+        {
+            "profile_id": {"$in": profile_ids},
+            "snapshot_date": {"$gte": floor, "$lte": end},
+        }
+    ).to_list()
+    for s in snaps:
+        pid = str(s.profile_id)
+        cur = out.get(pid)
+        if cur is None or s.snapshot_date < cur[0]:
+            out[pid] = (s.snapshot_date, int(s.followers or 0))
+    return out
 
 
 def to_profile_response(p: Profile) -> ProfileResponse:
@@ -110,6 +172,10 @@ async def to_profile_response_cohort(p: Profile) -> ProfileResponse:
     resp.avg_views = float(metrics.get("avg_views") or 0)
     resp.avg_comments = float(metrics.get("avg_comments") or 0)
     resp.engagement_rate = float(metrics.get("engagement_rate") or 0)
+    baselines = await _earliest_baselines([str(p.id)])
+    base = baselines.get(str(p.id))
+    if base:
+        _apply_follower_baseline(resp, baseline_followers=base[1], baseline_date=base[0])
     return resp
 
 
@@ -272,12 +338,17 @@ async def list_profiles(
         except Exception:
             pass
 
-    live_counts = await _live_programme_post_counts([str(p.id) for p in page_items])
+    pids = [str(p.id) for p in page_items]
+    live_counts = await _live_programme_post_counts(pids)
+    baselines = await _earliest_baselines(pids)
     items: list[ProfileResponse] = []
     for p in page_items:
         resp = to_profile_response(p)
         # Always prefer live programme-window count (0 is meaningful).
         resp.programme_posts = int(live_counts.get(str(p.id), 0))
+        base = baselines.get(str(p.id))
+        if base:
+            _apply_follower_baseline(resp, baseline_followers=base[1], baseline_date=base[0])
         items.append(resp)
 
     return ProfileListResponse(

@@ -376,6 +376,18 @@ async def apply_scrape_result(
         following = int(profile.following)
     if posts_count <= 0 and len(posts_data) > 0:
         posts_count = max(int(profile.posts_count or 0), len(posts_data))
+    # Programme-window scrapes stop early — never shrink IG lifetime posts_count
+    # down to the number of posts we kept in the window.
+    if hit_cohort_floor:
+        prev_pc = int(profile.posts_count or 0)
+        scraped_n = len(posts_data)
+        if posts_count > 0 and scraped_n > 0 and posts_count == scraped_n and prev_pc > posts_count:
+            posts_count = prev_pc
+        elif prev_pc > posts_count:
+            posts_count = prev_pc
+        # Still unknown after cohort stop — keep previous lifetime if we had one.
+        elif posts_count <= 0 and prev_pc > 0:
+            posts_count = prev_pc
 
     # NEVER wipe a good profile with an incomplete / empty scrape.
     # When SCRAPE_MAX_POSTS is capped (API inline/bulk), completeness is vs that cap.

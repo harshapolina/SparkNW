@@ -60,6 +60,12 @@ export type Profile = {
   avg_comments: number;
   engagement_rate: number;
   growth_pct_today: number;
+  /** First scrape follower count in the programme window. */
+  followers_baseline?: number | null;
+  followers_baseline_date?: string | null;
+  /** current − baseline (from first scrape we have). */
+  followers_gained?: number;
+  followers_gained_pct?: number;
   is_private?: boolean;
   is_business?: boolean;
   category?: string | null;

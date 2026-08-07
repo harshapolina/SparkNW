@@ -16,7 +16,14 @@ import {
 } from "recharts";
 import { api, type Profile } from "@/lib/api";
 import { studentDetailFieldsExtra } from "@/lib/student-fields";
-import { cn, formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
+import {
+  cn,
+  formatBaselineDay,
+  formatNumber,
+  formatPct,
+  formatSignedNumber,
+  humanizeScrapeError,
+} from "@/lib/utils";
 import { ScrapeProgressCard } from "@/components/scrape-progress";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
 import { type ScrapeProgress } from "@/lib/scrape-progress";
@@ -348,6 +355,21 @@ export default function AdminCreatorDetailPage() {
               <div>
                 <span className="font-semibold tabular">{formatNumber(p.followers)}</span>{" "}
                 <span className="text-zinc-500">followers</span>
+                {p.followers_baseline_date ? (
+                  <div
+                    className={cn(
+                      "text-[11px] tabular",
+                      (p.followers_gained ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                    )}
+                    title={`Baseline ${formatNumber(p.followers_baseline)} on ${p.followers_baseline_date} (first scrape in programme window)`}
+                  >
+                    {formatSignedNumber(p.followers_gained ?? 0)} since{" "}
+                    {formatBaselineDay(p.followers_baseline_date)}
+                    <span className="text-zinc-600"> (first scrape)</span>
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-zinc-600">Scrape once to start tracking gain</div>
+                )}
               </div>
               <div>
                 <span className="font-semibold tabular">{formatNumber(p.following)}</span>{" "}
@@ -551,7 +573,28 @@ export default function AdminCreatorDetailPage() {
             <div className={cn("mt-2 text-2xl font-semibold tabular", p.growth_pct_today >= 0 ? "text-emerald-400" : "text-rose-400")}>
               {formatPct(p.growth_pct_today)}
             </div>
-            <p className="mt-2 text-xs text-zinc-500">Compared to previous scrape snapshot.</p>
+            <p className="mt-2 text-xs text-zinc-500">Today vs previous scrape.</p>
+            {p.followers_baseline_date ? (
+              <div className="mt-3 border-t border-white/[0.06] pt-3">
+                <div
+                  className={cn(
+                    "text-lg font-semibold tabular",
+                    (p.followers_gained ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                  )}
+                >
+                  {formatSignedNumber(p.followers_gained ?? 0)}
+                  <span className="ml-1 text-sm font-normal text-zinc-500">
+                    ({formatPct(p.followers_gained_pct ?? 0)})
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Since first scrape {formatBaselineDay(p.followers_baseline_date)} (baseline{" "}
+                  {formatNumber(p.followers_baseline)})
+                </p>
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-zinc-600">No scrape baseline yet — refresh to start tracking gain.</p>
+            )}
           </div>
         </div>
       )}

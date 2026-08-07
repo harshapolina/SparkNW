@@ -18,7 +18,13 @@ import { Card } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
 import { api, type Profile } from "@/lib/api";
 import { studentDetailFields } from "@/lib/student-fields";
-import { formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
+import {
+  formatBaselineDay,
+  formatNumber,
+  formatPct,
+  formatSignedNumber,
+  humanizeScrapeError,
+} from "@/lib/utils";
 import { ScrapeProgressCard } from "@/components/scrape-progress";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
 import { progressPercent, type ScrapeProgress } from "@/lib/scrape-progress";
@@ -292,7 +298,20 @@ export default function ProfileDetailPage() {
                 </p>
               )}
               <div className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-sm">
-                <div><span className="font-semibold tabular">{formatNumber(p.followers)}</span> <span className="text-muted">followers</span></div>
+                <div>
+                  <span className="font-semibold tabular">{formatNumber(p.followers)}</span>{" "}
+                  <span className="text-muted">followers</span>
+                  {p.followers_baseline_date ? (
+                    <div
+                      className={`text-[11px] tabular ${(p.followers_gained ?? 0) >= 0 ? "text-success" : "text-danger"}`}
+                      title={`Baseline ${formatNumber(p.followers_baseline)} on ${p.followers_baseline_date}`}
+                    >
+                      {formatSignedNumber(p.followers_gained ?? 0)} since{" "}
+                      {formatBaselineDay(p.followers_baseline_date)}
+                      <span className="text-muted"> (first scrape)</span>
+                    </div>
+                  ) : null}
+                </div>
                 <div><span className="font-semibold tabular">{formatNumber(p.following)}</span> <span className="text-muted">following</span></div>
                 <div><span className="font-semibold tabular">{formatNumber(p.posts_count)}</span> <span className="text-muted">posts</span></div>
                 <div><span className="font-semibold tabular">{(p.follower_following_ratio || 0).toFixed(2)}</span> <span className="text-muted">f/f ratio</span></div>
@@ -479,7 +498,25 @@ export default function ProfileDetailPage() {
             <div className={`stat-value mt-3 ${p.growth_pct_today >= 0 ? "text-success" : "text-danger"}`}>
               {formatPct(p.growth_pct_today)}
             </div>
-            <p className="mt-2 text-sm text-muted">Compared to previous scrape snapshot.</p>
+            <p className="mt-2 text-sm text-muted">Today vs previous scrape.</p>
+            {p.followers_baseline_date ? (
+              <div className="mt-3 border-t border-border pt-3">
+                <div
+                  className={`text-lg font-semibold tabular ${(p.followers_gained ?? 0) >= 0 ? "text-success" : "text-danger"}`}
+                >
+                  {formatSignedNumber(p.followers_gained ?? 0)}
+                  <span className="ml-1 text-sm font-normal text-muted">
+                    ({formatPct(p.followers_gained_pct ?? 0)})
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  Since first scrape {formatBaselineDay(p.followers_baseline_date)} (baseline{" "}
+                  {formatNumber(p.followers_baseline)})
+                </p>
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-muted">No scrape baseline yet — refresh to start tracking gain.</p>
+            )}
           </Card>
         </div>
       )}

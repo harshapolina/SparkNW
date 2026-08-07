@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, Download, Plus, RefreshCw, Search } from "lucide-react";
 import { api, type Profile } from "@/lib/api";
-import { cn, formatNumber, formatPct } from "@/lib/utils";
+import { cn, formatBaselineDay, formatNumber, formatPct, formatSignedNumber } from "@/lib/utils";
 import { SparkAvatar } from "@/components/spark/ui";
 import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
 import { progressPercent, type ScrapeStatusResponse } from "@/lib/scrape-progress";
@@ -486,7 +486,21 @@ function AdminScrapingPageInner() {
                     </td>
                     <td className="px-2 py-3 tabular text-zinc-300">{p.student?.student_id || "—"}</td>
                     <td className="px-2 py-3 text-zinc-400">{p.student?.university || "—"}</td>
-                    <td className="px-2 py-3 tabular">{formatNumber(p.followers)}</td>
+                    <td className="px-2 py-3 tabular">
+                      <div>{formatNumber(p.followers)}</div>
+                      {p.followers_baseline_date ? (
+                        <div
+                          className={cn(
+                            "text-[10px]",
+                            (p.followers_gained ?? 0) >= 0 ? "text-lime-400" : "text-rose-400"
+                          )}
+                          title={`Since first scrape ${p.followers_baseline_date} (baseline ${formatNumber(p.followers_baseline)})`}
+                        >
+                          {formatSignedNumber(p.followers_gained ?? 0)} since{" "}
+                          {formatBaselineDay(p.followers_baseline_date)}
+                        </div>
+                      ) : null}
+                    </td>
                     <td className="px-2 py-3 tabular">
                       <div className="font-medium text-zinc-100">
                         {formatNumber(typeof p.programme_posts === "number" ? p.programme_posts : 0)}

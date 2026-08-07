@@ -22,6 +22,27 @@ export function formatPct(n: number | undefined | null) {
   return `${sign}${n.toFixed(2)}%`;
 }
 
+/** Compact signed integer for follower gain (+1.2K / -50). */
+export function formatSignedNumber(n: number | undefined | null) {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const rounded = Math.round(n);
+  const body = new Intl.NumberFormat("en", {
+    notation: Math.abs(rounded) >= 1000 ? "compact" : "standard",
+    maximumFractionDigits: Math.abs(rounded) >= 1000 ? 1 : 0,
+  }).format(Math.abs(rounded));
+  if (rounded > 0) return `+${body}`;
+  if (rounded < 0) return `−${body}`;
+  return body;
+}
+
+/** YYYY-MM-DD → short label e.g. 7 Aug */
+export function formatBaselineDay(ymd: string | null | undefined) {
+  if (!ymd || ymd.length < 10) return null;
+  const d = new Date(`${ymd.slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return ymd;
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
 /** Absolute compact for SPARK leaderboards (always show pts-friendly integers). */
 export function formatSparkPts(n: number) {
   return new Intl.NumberFormat("en-IN").format(Math.round(n));

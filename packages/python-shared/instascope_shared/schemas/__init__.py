@@ -107,6 +107,11 @@ class ProfileResponse(BaseModel):
     avg_comments: float = 0.0
     engagement_rate: float = 0.0
     growth_pct_today: float = 0.0
+    # First successful scrape in the programme window (cannot backfill from IG).
+    followers_baseline: Optional[int] = None
+    followers_baseline_date: Optional[str] = None  # YYYY-MM-DD
+    followers_gained: int = 0  # current − baseline
+    followers_gained_pct: float = 0.0
     is_private: bool = False
     is_business: bool = False
     category: Optional[str] = None

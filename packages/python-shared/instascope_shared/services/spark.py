@@ -453,6 +453,15 @@ def _latest_snap_by_profile(snaps: list[ProfileSnapshot]) -> dict[str, ProfileSn
     return latest
 
 
+def _earliest_snap_by_profile(snaps: list[ProfileSnapshot]) -> dict[str, ProfileSnapshot]:
+    earliest: dict[str, ProfileSnapshot] = {}
+    for s in snaps:
+        cur = earliest.get(s.profile_id)
+        if not cur or s.snapshot_date < cur.snapshot_date:
+            earliest[s.profile_id] = s
+    return earliest
+
+
 async def build_leaderboard(
     org_id: str | None = None,
     *,
@@ -475,6 +484,7 @@ async def build_leaderboard(
 
     # Previous ranks: snapshot on/before window start (followers proxy).
     prev_cutoff = window_start.strftime("%Y-%m-%d")
+    end_cutoff = window_end.strftime("%Y-%m-%d")
 
     prev_snaps = (
         await ProfileSnapshot.find(
@@ -491,12 +501,24 @@ async def build_leaderboard(
     followers_at_end: dict[str, int] = {}
     followers_at_start: dict[str, int] = {pid: int(f or 0) for pid, f in prev_followers.items()}
     if profile_ids:
-        end_cutoff = window_end.strftime("%Y-%m-%d")
         end_snaps = await ProfileSnapshot.find(
             {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": end_cutoff}}
         ).to_list()
         for pid, snap in _latest_snap_by_profile(end_snaps).items():
             followers_at_end[pid] = int(snap.followers or 0)
+
+        # No Jul-15 snapshot → use first scrape inside the window as baseline
+        # (otherwise start=0 awards every growth milestone unfairly).
+        missing = [pid for pid in profile_ids if pid not in followers_at_start]
+        if missing:
+            window_snaps = await ProfileSnapshot.find(
+                {
+                    "profile_id": {"$in": missing},
+                    "snapshot_date": {"$gte": prev_cutoff, "$lte": end_cutoff},
+                }
+            ).to_list()
+            for pid, snap in _earliest_snap_by_profile(window_snaps).items():
+                followers_at_start[pid] = int(snap.followers or 0)
 
     rows: list[dict[str, Any]] = []
     for p in profiles:
