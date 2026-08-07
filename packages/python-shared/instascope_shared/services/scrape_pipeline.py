@@ -272,9 +272,10 @@ async def _upsert_posts(profile: Profile, post_docs: list[Post]) -> int:
             existing.caption = doc.caption
             existing.thumbnail_url = doc.thumbnail_url
             existing.permalink = doc.permalink
-            existing.likes = int(doc.likes or 0)
-            existing.comments = int(doc.comments or 0)
-            existing.views = int(doc.views or 0)
+            # Never regress engagement on a weaker partial scrape.
+            existing.likes = max(int(existing.likes or 0), int(doc.likes or 0))
+            existing.comments = max(int(existing.comments or 0), int(doc.comments or 0))
+            existing.views = max(int(existing.views or 0), int(doc.views or 0))
             if doc.posted_at is not None:
                 existing.posted_at = doc.posted_at
             existing.scraped_at = doc.scraped_at or datetime.utcnow()

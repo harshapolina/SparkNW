@@ -486,14 +486,44 @@ def _posts_from_nodes(nodes: list[dict[str, Any]]) -> list[ScrapedPost]:
 
 
 def _merge_posts(base: list[ScrapedPost], extra: list[ScrapedPost]) -> list[ScrapedPost]:
-    seen = {p.shortcode for p in base}
-    out = list(base)
+    """Union by shortcode, keeping the stronger engagement numbers.
+
+    Seeds from web_profile often have weak/zero play_count; feed rows for the
+    same reel carry the real count. Dropping duplicates used to lock in ~half
+    the true total reel views.
+    """
+    by_code: dict[str, ScrapedPost] = {}
+    order: list[str] = []
+
+    def _keep(p: ScrapedPost) -> None:
+        code = str(p.shortcode or "")
+        if not code:
+            return
+        prev = by_code.get(code)
+        if prev is None:
+            by_code[code] = p
+            order.append(code)
+            return
+        by_code[code] = ScrapedPost(
+            ig_post_id=prev.ig_post_id or p.ig_post_id,
+            shortcode=code,
+            media_type=p.media_type or prev.media_type,
+            caption=p.caption if p.caption not in (None, "") else prev.caption,
+            thumbnail_url=p.thumbnail_url or prev.thumbnail_url,
+            permalink=p.permalink or prev.permalink,
+            likes=max(int(prev.likes or 0), int(p.likes or 0)),
+            comments=max(int(prev.comments or 0), int(p.comments or 0)),
+            views=max(int(prev.views or 0), int(p.views or 0)),
+            posted_at=prev.posted_at or p.posted_at,
+            is_video=bool(prev.is_video or p.is_video),
+            accessibility_caption=p.accessibility_caption or prev.accessibility_caption,
+        )
+
+    for p in base:
+        _keep(p)
     for p in extra:
-        if p.shortcode in seen:
-            continue
-        seen.add(p.shortcode)
-        out.append(p)
-    return out
+        _keep(p)
+    return [by_code[c] for c in order]
 
 
 async def _emit_progress(on_progress, **payload: Any) -> None:
@@ -750,12 +780,13 @@ async def _enrich_views_via_http(
     import httpx
     from instascope_scraper.http_profile import _apply_csrf, _bootstrap_session, _client_headers
 
-    weak = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
+    # Always refresh reel play counts via media-info when possible. Feed/card
+    # seeds can look "good enough" yet still be far below the public UI count.
     delay = float(os.getenv("SCRAPE_ENRICH_DELAY_SECONDS") or "0.5")
     targets = [
         p
         for p in posts
-        if (p.media_type in {"reel", "video"} or p.is_video) and p.views < weak and p.ig_post_id
+        if (p.media_type in {"reel", "video"} or p.is_video) and p.ig_post_id
     ]
     if not targets:
         return posts
@@ -995,14 +1026,14 @@ async def _enrich_posts(page, posts: list[ScrapedPost], *, limit: int | None = N
     if limit is None:
         limit = _enrich_limit(len(posts))
     delay = float(os.getenv("SCRAPE_ENRICH_DELAY_SECONDS") or "0.9")
-    # Reels with "some" views can still be under-counted; re-check below this bar
+    # Reels always re-check play counts — card/feed seeds under-report vs public UI.
     weak_views = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
     enriched: list[ScrapedPost] = []
     visited = 0
 
     for post in posts:
         is_reelish = post.media_type in {"reel", "video"} or post.is_video
-        needs_views = is_reelish and post.views < weak_views
+        needs_views = bool(is_reelish)
         needs_eng = post.likes == 0 and post.comments == 0
         if visited >= limit:
             enriched.append(post)
@@ -1010,7 +1041,7 @@ async def _enrich_posts(page, posts: list[ScrapedPost], *, limit: int | None = N
         if not needs_views and not needs_eng:
             enriched.append(post)
             continue
-        if post.views >= weak_views and (post.likes or post.comments) and not needs_views:
+        if (not needs_views) and post.views >= weak_views and (post.likes or post.comments):
             enriched.append(post)
             continue
 
@@ -1727,11 +1758,12 @@ async def _paginate_feed_in_browser(
 
 
 def _posts_need_view_enrich(posts: list[ScrapedPost], *, weak: int = 1000) -> bool:
-    """True when any reel/video is missing a believable play count."""
+    """True when any reel still needs a play-count refresh."""
+    del weak  # kept for call-site compat; all reels are refreshed
     for p in posts:
         if p.media_type in {"reel", "video"} or p.is_video:
-            if p.views < weak:
-                return True
+            # Always refresh reel plays — weak seeds under-count vs public UI.
+            return True
     return False
 
 
@@ -2800,12 +2832,11 @@ async def _scrape_live_browser(
                 result.posts = dom_posts
 
         if result.posts and not result.is_private:
-            weak = int(os.getenv("SCRAPE_WEAK_VIEWS_THRESHOLD") or "1000")
             missing = [
                 p
                 for p in result.posts
                 if (p.likes == 0 and p.comments == 0)
-                or ((p.media_type in {"reel", "video"} or p.is_video) and p.views < weak)
+                or (p.media_type in {"reel", "video"} or p.is_video)
             ]
             missing.sort(
                 key=lambda p: 0 if (p.media_type in {"reel", "video"} or p.is_video) else 1

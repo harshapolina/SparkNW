@@ -81,6 +81,7 @@ services:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.worker
+    # Fires daily-scrape-all-profiles at 08:00 Asia/Kolkata (see celery_app beat_schedule)
     command: celery -A celery_app.celery_app beat --loglevel=INFO
     env_file:
       - .env
@@ -88,10 +89,17 @@ services:
       MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017}
       MONGODB_DB: ${MONGODB_DB:-instascope}
       REDIS_URL: redis://redis:6379/0
+      CELERY_TIMEZONE: ${CELERY_TIMEZONE:-Asia/Kolkata}
+      DAILY_SCRAPE_HOUR_IST: ${DAILY_SCRAPE_HOUR_IST:-8}
+      DAILY_SCRAPE_MINUTE_IST: ${DAILY_SCRAPE_MINUTE_IST:-0}
+      DAILY_SCRAPE_STAGGER_SECONDS: ${DAILY_SCRAPE_STAGGER_SECONDS:-12}
     depends_on:
       - redis
       - worker
     working_dir: /app/apps/worker
+    volumes:
+      - ./packages/python-shared:/app/packages/python-shared
+      - ./apps/worker:/app/apps/worker
 
   web:
     build:

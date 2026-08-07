@@ -39,6 +39,13 @@ class Settings(BaseSettings):
     scrape_proxy_ports: str | None = None
     scrape_proxy_scheme: str = "http"
     scrape_headless: bool = True
+    # Daily auto-scrape (Celery Beat). Default 08:00 Asia/Kolkata (IST).
+    celery_timezone: str = "Asia/Kolkata"
+    daily_scrape_hour_ist: int = 8
+    daily_scrape_minute_ist: int = 0
+    # Seconds between each profile enqueue so proxies are not hammered at once.
+    daily_scrape_stagger_seconds: float = 12.0
+    # Legacy alias — ignored when IST hour/minute are set (kept for old .env files).
     daily_scrape_hour_utc: int = 3
 
     follower_growth_notify_pct: float = 5.0

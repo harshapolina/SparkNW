@@ -36,8 +36,9 @@ Or create a new account on `/signup`.
 # API + Redis (Docker)
 docker compose up -d redis api
 
-# Optional daily workers
+# Workers + Beat (required for automatic daily scrapes at 08:00 IST)
 docker compose up -d worker beat
+# Beat enqueues every ACTIVE profile each morning; worker scrapes them with stagger.
 
 # Web (local)
 cd apps/web

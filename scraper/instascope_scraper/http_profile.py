@@ -134,6 +134,88 @@ def _node_is_pinned(node: dict[str, Any]) -> bool:
     return False
 
 
+def _node_engagement_int(node: dict[str, Any], *keys: str) -> int:
+    """Best non-negative int among flat keys on a media node."""
+    best = 0
+    for key in keys:
+        raw = node.get(key)
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n > best:
+            best = n
+    return best
+
+
+def _node_play_count(node: dict[str, Any]) -> int:
+    """Best play/view count on a feed/GraphQL media node."""
+    if not isinstance(node, dict):
+        return 0
+    best = _node_engagement_int(
+        node,
+        "play_count",
+        "ig_play_count",
+        "video_play_count",
+        "video_view_count",
+        "view_count",
+        "fb_play_count",
+    )
+    nested = node.get("clips_metadata")
+    if isinstance(nested, dict):
+        best = max(best, _node_play_count(nested))
+    return best
+
+
+def _upgrade_media_node(dst: dict[str, Any], src: dict[str, Any]) -> bool:
+    """Copy higher engagement fields from src onto dst. Returns True if changed.
+
+    web_profile card edges often omit or under-report play_count; the feed API
+    then returns the same shortcodes with real counts. Without upgrading
+    duplicates we keep the weak seed values and Insights under-count reel views.
+    """
+    if not isinstance(dst, dict) or not isinstance(src, dict):
+        return False
+    changed = False
+    src_plays = _node_play_count(src)
+    if src_plays > _node_play_count(dst):
+        dst["play_count"] = src_plays
+        dst["ig_play_count"] = src_plays
+        changed = True
+    for key in ("like_count", "comment_count", "likers"):
+        if key == "likers":
+            continue
+        sv = _node_engagement_int(src, key)
+        dv = _node_engagement_int(dst, key)
+        if sv > dv:
+            dst[key] = sv
+            changed = True
+    # GraphQL-shaped like/comment counts
+    for path, leaf in (
+        ("edge_liked_by", "count"),
+        ("edge_media_preview_like", "count"),
+        ("edge_media_to_comment", "count"),
+    ):
+        src_edge = src.get(path)
+        if not isinstance(src_edge, dict):
+            continue
+        try:
+            sv = int(src_edge.get(leaf) or 0)
+        except (TypeError, ValueError):
+            continue
+        dst_edge = dst.get(path) if isinstance(dst.get(path), dict) else {}
+        try:
+            dv = int(dst_edge.get(leaf) or 0)
+        except (TypeError, ValueError):
+            dv = 0
+        if sv > dv:
+            dst[path] = {**dst_edge, leaf: sv}
+            changed = True
+    return changed
+
+
 def _cohort_old_sets_floor(*, added_in_window: int, node: dict[str, Any]) -> bool:
     """Whether a pre-programme post means we walked past SPARK_COHORT_START.
 
@@ -771,6 +853,7 @@ async def fetch_all_media_nodes(
 
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
+    out_index: dict[str, int] = {}
     hit_cohort_floor = False
 
     def _add(nodes: list[dict[str, Any]]) -> int:
@@ -781,7 +864,14 @@ async def fetch_all_media_nodes(
         keyed = 0
         for node in nodes:
             key = _node_key(node)
-            if not key or key in seen:
+            if not key:
+                continue
+            if key in seen:
+                # Same shortcode from feed after a weak web_profile seed — keep
+                # the higher play_count / likes so Insights is not under-counted.
+                idx = out_index.get(key)
+                if idx is not None:
+                    _upgrade_media_node(out[idx], node)
                 continue
             keyed += 1
             if floor is not None:
@@ -800,6 +890,7 @@ async def fetch_all_media_nodes(
                 # date later. Skipping them + treating a page of undated seeds as
                 # "floor" previously stopped scrapes after the first ~12 posts.
             seen.add(key)
+            out_index[key] = len(out)
             out.append(node)
             added += 1
             if len(out) >= limit:
@@ -1168,6 +1259,7 @@ async def fetch_timeline_via_username_feed(
     user_obj: dict[str, Any] | None = None
     nodes: list[dict[str, Any]] = []
     seen: set[str] = set()
+    node_index: dict[str, int] = {}
     floor = _cohort_floor_unix()
     limit = _max_posts()
     if expected_count > 0 and floor is None:
@@ -1253,7 +1345,12 @@ async def fetch_timeline_via_username_feed(
             keyed = 0
             for node in page_nodes:
                 key = _node_key(node)
-                if not key or key in seen:
+                if not key:
+                    continue
+                if key in seen:
+                    idx = node_index.get(key)
+                    if idx is not None:
+                        _upgrade_media_node(nodes[idx], node)
                     continue
                 keyed += 1
                 if floor is not None:
@@ -1267,6 +1364,7 @@ async def fetch_timeline_via_username_feed(
                         continue
                     # Keep undated — do not invent a cohort floor from missing dates.
                 seen.add(key)
+                node_index[key] = len(nodes)
                 nodes.append(node)
                 added += 1
                 if len(nodes) >= limit:
