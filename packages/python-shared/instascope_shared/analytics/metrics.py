@@ -7,6 +7,7 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from instascope_shared.cohort import clamp_scoring_window, cohort_start_ymd
 from instascope_shared.domain.instagram import engagement_rate, mean
 
 
@@ -25,8 +26,59 @@ def _int(v: Any) -> int:
         return 0
 
 
-def compute_post_metrics(posts: list[dict[str, Any]], *, followers: int) -> dict[str, Any]:
-    """Compute exact portfolio metrics from the scraped post set only."""
+def parse_posted_at(raw: Any) -> datetime | None:
+    if not raw:
+        return None
+    if isinstance(raw, datetime):
+        dt = raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+    else:
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def filter_posts_to_programme_window(
+    posts: list[dict[str, Any]],
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Keep only posts with posted_at inside the SPARK programme window."""
+    start, end = clamp_scoring_window(since, until)
+    # compare naive UTC for stored Mongo datetimes that may lack tz
+    start_n = start.replace(tzinfo=None)
+    end_n = end.replace(tzinfo=None)
+    out: list[dict[str, Any]] = []
+    for p in posts:
+        dt = parse_posted_at(p.get("posted_at"))
+        if dt is None:
+            continue
+        dt_n = dt.replace(tzinfo=None)
+        if dt_n < start_n or dt_n > end_n:
+            continue
+        out.append(p)
+    return out
+
+
+def compute_post_metrics(
+    posts: list[dict[str, Any]],
+    *,
+    followers: int,
+    programme_window: bool = True,
+) -> dict[str, Any]:
+    """Compute portfolio metrics.
+
+    By default only posts dated on/after SPARK programme start (15 Jul 2026)
+    through today are included — not lifetime / all scraped posts.
+    """
+    window_start, window_end = clamp_scoring_window()
+    if programme_window:
+        posts = filter_posts_to_programme_window(posts, since=window_start, until=window_end)
+
     if not posts:
         return {
             "avg_likes": 0.0,
@@ -66,6 +118,9 @@ def compute_post_metrics(posts: list[dict[str, Any]], *, followers: int) -> dict
             "max_likes": 0,
             "max_views": 0,
             "min_likes": 0,
+            "window_from": window_start.strftime("%Y-%m-%d") if programme_window else None,
+            "window_to": window_end.strftime("%Y-%m-%d") if programme_window else None,
+            "cohort_start": cohort_start_ymd() if programme_window else None,
         }
 
     likes = [_int(p.get("likes")) for p in posts]
@@ -103,19 +158,9 @@ def compute_post_metrics(posts: list[dict[str, Any]], *, followers: int) -> dict
     last_30 = now - timedelta(days=30)
     dated: list[datetime] = []
     for p in posts:
-        raw = p.get("posted_at")
-        if not raw:
-            continue
-        if isinstance(raw, datetime):
-            dt = raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
-        else:
-            try:
-                dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-            except ValueError:
-                continue
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dated.append(dt.astimezone(timezone.utc))
+        dt = parse_posted_at(p.get("posted_at"))
+        if dt is not None:
+            dated.append(dt)
 
     posts_7 = sum(1 for d in dated if d >= last_7)
     posts_30 = sum(1 for d in dated if d >= last_30)
@@ -187,4 +232,7 @@ def compute_post_metrics(posts: list[dict[str, Any]], *, followers: int) -> dict
         "max_likes": max(likes) if likes else 0,
         "max_views": max_reel_views or (max(view_vals) if view_vals else 0),
         "min_likes": min(likes) if likes else 0,
+        "window_from": window_start.strftime("%Y-%m-%d") if programme_window else None,
+        "window_to": window_end.strftime("%Y-%m-%d") if programme_window else None,
+        "cohort_start": cohort_start_ymd() if programme_window else None,
     }

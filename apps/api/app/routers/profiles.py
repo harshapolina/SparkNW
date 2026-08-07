@@ -22,7 +22,7 @@ from instascope_shared.schemas import (
     SnapshotResponse,
 )
 from instascope_shared.services import profiles as profile_service
-from instascope_shared.services.profiles import to_profile_response
+from instascope_shared.services.profiles import list_posts_in_programme_window, to_profile_response, to_profile_response_cohort
 from fastapi import HTTPException
 
 from app.scrape_bulk import (
@@ -391,7 +391,7 @@ async def bulk_export(payload: BulkIdsRequest, user: User = Depends(get_current_
 @router.get("/{profile_id}", response_model=ProfileResponse)
 async def get_profile(profile_id: str, user: User = Depends(get_current_user)):
     profile = await profile_service.get_profile(str(user.id), profile_id)
-    return to_profile_response(profile)
+    return await to_profile_response_cohort(profile)
 
 
 @router.delete("/{profile_id}", response_model=MessageResponse)
@@ -453,7 +453,7 @@ async def resume_profile(profile_id: str, user: User = Depends(get_current_user)
 @router.get("/{profile_id}/posts", response_model=list[PostResponse])
 async def list_posts(profile_id: str, user: User = Depends(get_current_user)):
     await profile_service.get_profile(str(user.id), profile_id)
-    posts = await Post.find(Post.profile_id == profile_id).sort(-Post.posted_at).to_list()
+    posts = await list_posts_in_programme_window(profile_id)
     return [
         PostResponse(
             id=str(p.id),
@@ -476,8 +476,14 @@ async def list_posts(profile_id: str, user: User = Depends(get_current_user)):
 @router.get("/{profile_id}/history", response_model=list[SnapshotResponse])
 async def list_history(profile_id: str, user: User = Depends(get_current_user)):
     await profile_service.get_profile(str(user.id), profile_id)
+    from instascope_shared.cohort import snapshot_floor_ymd
+
+    since = snapshot_floor_ymd()
     snaps = (
-        await ProfileSnapshot.find(ProfileSnapshot.profile_id == profile_id)
+        await ProfileSnapshot.find(
+            ProfileSnapshot.profile_id == profile_id,
+            ProfileSnapshot.snapshot_date >= since,
+        )
         .sort(-ProfileSnapshot.snapshot_date)
         .to_list()
     )

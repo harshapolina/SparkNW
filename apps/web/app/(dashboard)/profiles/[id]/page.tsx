@@ -20,6 +20,7 @@ import { api, type Profile } from "@/lib/api";
 import { studentDetailFields } from "@/lib/student-fields";
 import { formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
 import { ScrapeProgressCard } from "@/components/scrape-progress";
+import { ProgrammeWindowNote } from "@/components/programme-window-note";
 import { progressPercent, type ScrapeProgress } from "@/lib/scrape-progress";
 import { waitForProfileScrape } from "@/lib/wait-for-scrape";
 
@@ -479,9 +480,10 @@ export default function ProfileDetailPage() {
 
       {tab === "insights" && (
         <div className="space-y-4">
+          <ProgrammeWindowNote />
           <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {[
-              ["Scraped posts", formatNumber(num(insights.sampled_posts))],
+              ["Posts in programme", formatNumber(num(insights.sampled_posts))],
               ["Posts / 7d", formatNumber(num(insights.posts_last_7d))],
               ["Posts / 30d", formatNumber(num(insights.posts_last_30d))],
               ["Posting / week", `${num(insights.posting_frequency_per_week)}`],
@@ -499,7 +501,7 @@ export default function ProfileDetailPage() {
               ["Reels", formatNumber(num(insights.reel_count))],
               ["Videos", formatNumber(num(insights.video_count))],
               ["Carousels", formatNumber(num(insights.carousel_count))],
-              ["Total likes (scraped)", formatNumber(num(insights.total_likes_sampled))],
+              ["Total likes (programme)", formatNumber(num(insights.total_likes_sampled))],
               ["Total comments", formatNumber(num(insights.total_comments_sampled))],
               ["Reel/video views total", formatNumber(num(insights.total_views_sampled))],
               ["Posts with views", `${num(insights.posts_with_views)} / ${num(insights.sampled_posts)}`],
@@ -579,8 +581,8 @@ export default function ProfileDetailPage() {
             <p className="text-sm text-muted">No insights yet — click Refresh to scrape exact post metrics.</p>
           )}
           <p className="text-xs text-muted leading-relaxed">
-            Scraped posts are every public post we pulled for this profile (paginated beyond Instagram’s first page).
-            Profile posts total is Instagram’s lifetime count. Metrics (avg likes, hashtags, etc.) use the scraped set.
+            Posts in programme are dated from 15 Jul 2026 onward. Profile posts total is Instagram’s lifetime count.
+            Metrics (avg likes, hashtags, etc.) use only the programme window.
             Views are reel/video play counts only — photos/carousels usually have no public view field.
             Private profiles and Instagram blocks can stop pagination early; use Refresh again or set SCRAPE_PROXY_URL.
           </p>

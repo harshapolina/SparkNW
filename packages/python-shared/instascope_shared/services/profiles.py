@@ -7,8 +7,10 @@ from typing import Optional
 
 from fastapi import HTTPException, status
 
+from instascope_shared.analytics.metrics import compute_post_metrics
+from instascope_shared.cohort import clamp_scoring_window
 from instascope_shared.domain.instagram import extract_username, profile_url_for
-from instascope_shared.models import DEFAULT_ORG_ID, Job, JobStatus, JobType, Profile, ProfileStatus
+from instascope_shared.models import DEFAULT_ORG_ID, Job, JobStatus, JobType, Post, Profile, ProfileStatus
 from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse
 from instascope_shared.services.scrape_pipeline import heal_soft_scrape_failure
 from instascope_shared.services.student_roster import merge_student
@@ -49,6 +51,51 @@ def to_profile_response(p: Profile) -> ProfileResponse:
         created_at=p.created_at,
         updated_at=p.updated_at,
     )
+
+
+def _post_to_metrics_dict(p: Post) -> dict:
+    media = p.media_type.value if hasattr(p.media_type, "value") else str(p.media_type)
+    return {
+        "likes": p.likes,
+        "comments": p.comments,
+        "views": p.views,
+        "caption": p.caption,
+        "media_type": media,
+        "is_video": media.lower() in {"reel", "video", "clips", "graphvideo"},
+        "shortcode": p.shortcode,
+        "posted_at": p.posted_at,
+    }
+
+
+async def to_profile_response_cohort(p: Profile) -> ProfileResponse:
+    """Profile payload with Insights / averages recomputed from programme-window posts only."""
+    resp = to_profile_response(p)
+    posts = await Post.find(Post.profile_id == str(p.id)).to_list()
+    posts_data = [_post_to_metrics_dict(x) for x in posts]
+    metrics = compute_post_metrics(posts_data, followers=int(p.followers or 0), programme_window=True)
+    # Prefer live cohort metrics over lifetime scrape blob stored on the profile
+    resp.insights = metrics
+    if int(metrics.get("sampled_posts") or 0) > 0:
+        resp.avg_likes = float(metrics.get("avg_likes") or 0)
+        resp.avg_views = float(metrics.get("avg_views") or 0)
+        resp.avg_comments = float(metrics.get("avg_comments") or 0)
+        resp.engagement_rate = float(metrics.get("engagement_rate") or 0)
+    return resp
+
+
+async def list_posts_in_programme_window(profile_id: str) -> list[Post]:
+    start, end = clamp_scoring_window()
+    posts = await Post.find(Post.profile_id == profile_id).sort(-Post.posted_at).to_list()
+    start_n = start.replace(tzinfo=None)
+    end_n = end.replace(tzinfo=None)
+    out: list[Post] = []
+    for p in posts:
+        if not p.posted_at:
+            continue
+        dt = p.posted_at.replace(tzinfo=None) if p.posted_at.tzinfo else p.posted_at
+        if start_n <= dt <= end_n:
+            out.append(p)
+    return out
 
 
 async def add_profile(user_id: str, payload: AddProfileRequest, *, upsert_student: bool = False) -> Profile:

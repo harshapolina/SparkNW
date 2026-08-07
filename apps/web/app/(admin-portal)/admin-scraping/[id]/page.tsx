@@ -18,6 +18,7 @@ import { api, type Profile } from "@/lib/api";
 import { studentDetailFieldsExtra } from "@/lib/student-fields";
 import { cn, formatNumber, formatPct, humanizeScrapeError } from "@/lib/utils";
 import { ScrapeProgressCard } from "@/components/scrape-progress";
+import { ProgrammeWindowNote } from "@/components/programme-window-note";
 import { type ScrapeProgress } from "@/lib/scrape-progress";
 import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
 
@@ -94,6 +95,9 @@ type Insights = {
   max_views?: number;
   min_likes?: number;
   posts_with_views?: number;
+  window_from?: string | null;
+  window_to?: string | null;
+  cohort_start?: string | null;
 };
 
 const tabs = ["overview", "student", "insights", "posts", "growth", "analytics", "history"] as const;
@@ -541,9 +545,21 @@ export default function AdminCreatorDetailPage() {
 
       {tab === "insights" && (
         <div className="space-y-4">
+          <ProgrammeWindowNote
+            toDate={
+              typeof insights.window_to === "string"
+                ? insights.window_to
+                : undefined
+            }
+          />
+          <p className="text-xs text-zinc-500">
+            Cards below use only posts dated in the programme window.{" "}
+            <span className="text-zinc-400">Profile posts total</span> is Instagram&apos;s lifetime count and is not
+            window-scoped.
+          </p>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
-              ["Scraped posts", formatNumber(num(insights.sampled_posts))],
+              ["Posts in programme", formatNumber(num(insights.sampled_posts))],
               ["Posts / 7d", formatNumber(num(insights.posts_last_7d))],
               ["Posts / 30d", formatNumber(num(insights.posts_last_30d))],
               ["Posting / week", `${num(insights.posting_frequency_per_week)}`],
@@ -562,12 +578,12 @@ export default function AdminCreatorDetailPage() {
               ["Reels", formatNumber(num(insights.reel_count))],
               ["Videos", formatNumber(num(insights.video_count))],
               ["Carousels", formatNumber(num(insights.carousel_count))],
-              ["Total likes (scraped)", formatNumber(num(insights.total_likes_sampled))],
+              ["Total likes (programme)", formatNumber(num(insights.total_likes_sampled))],
               ["Total comments", formatNumber(num(insights.total_comments_sampled))],
               ["Posts with views", `${num(insights.posts_with_views)} / ${num(insights.sampled_posts)}`],
               ["Avg caption length", `${num(insights.avg_caption_length)}`],
               ["Highlights", formatNumber(p.highlight_reel_count || 0)],
-              ["Profile posts total", formatNumber(p.posts_count)],
+              ["Profile posts total (IG)", formatNumber(p.posts_count)],
               ["Last post", insights.last_post_at ? new Date(insights.last_post_at).toLocaleDateString() : "—"],
             ].map(([label, value]) => (
               <div key={String(label)} className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4">
@@ -640,7 +656,9 @@ export default function AdminCreatorDetailPage() {
       )}
 
       {tab === "posts" && (
-        <div className="columns-1 gap-4 sm:columns-2 lg:columns-3">
+        <div className="space-y-3">
+          <ProgrammeWindowNote className="!text-xs" />
+          <div className="columns-1 gap-4 sm:columns-2 lg:columns-3">
           {(postsQ.data || []).map((post) => (
             <div key={post.id} className="mb-4 break-inside-avoid overflow-hidden rounded-2xl border border-white/[0.06] bg-[#121212]">
               <div className="flex h-20 items-center justify-center bg-black/40 text-sm capitalize text-zinc-500">
@@ -664,7 +682,10 @@ export default function AdminCreatorDetailPage() {
               </div>
             </div>
           ))}
-          {!postsQ.data?.length && <p className="text-sm text-zinc-500">No posts stored yet. Click Refresh.</p>}
+          {!postsQ.data?.length && (
+            <p className="text-sm text-zinc-500">No posts in the programme window yet. Click Refresh.</p>
+          )}
+          </div>
         </div>
       )}
 
