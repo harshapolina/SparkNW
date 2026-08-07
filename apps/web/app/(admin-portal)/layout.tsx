@@ -20,6 +20,7 @@ import {
 import { clearTokens, getStoredUser, type User } from "@/lib/api";
 import { BrandLogo } from "@/components/brand-logo";
 import { useRequireRole } from "@/lib/spark/auth-guard";
+import { adminScrapingListHref } from "@/lib/admin-scraping-list-state";
 import { cn } from "@/lib/utils";
 
 const nav = [
@@ -112,7 +113,7 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
         <header className="flex items-center justify-between gap-2 overflow-x-auto border-b border-white/[0.06] px-4 py-3 lg:hidden">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-[#ff3b30]">Spark</span>
           <div className="flex gap-3 text-xs text-zinc-400">
-            <Link href="/admin-scraping">Scraping</Link>
+            <Link href={adminScrapingListHref()}>Scraping</Link>
             <Link href="/admin-import">Import</Link>
             <Link href="/admin-leaderboard">Board</Link>
           </div>
