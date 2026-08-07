@@ -725,23 +725,44 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
         prog = getattr(p, "scrape_progress", None) or {}
         return bool(prog.get("active"))
 
-    updated_today = sum(1 for p in profiles if _date_str(p.last_success_at) == today)
-    failed = sum(1 for p in profiles if p.status == ProfileStatus.FAILED)
-    unavailable = sum(1 for p in profiles if p.status == ProfileStatus.UNAVAILABLE)
-    paused = sum(1 for p in profiles if p.status == ProfileStatus.PAUSED)
-    private = sum(1 for p in profiles if p.is_private)
-    scraped_successfully = sum(1 for p in profiles if _has_ig_card(p))
-    # Pending = roster rows that never got a usable card and are not terminal statuses.
-    pending = sum(
+    # Mutually exclusive status buckets (must sum to len(profiles)).
+    # Priority: unavailable → failed → paused → scraped (public|private) → pending.
+    scraped_public = 0
+    scraped_private = 0
+    failed = 0
+    unavailable = 0
+    paused = 0
+    pending = 0
+    private = 0
+    for p in profiles:
+        if p.is_private:
+            private += 1
+        if p.status == ProfileStatus.UNAVAILABLE:
+            unavailable += 1
+        elif p.status == ProfileStatus.FAILED:
+            failed += 1
+        elif p.status == ProfileStatus.PAUSED:
+            paused += 1
+        elif _has_ig_card(p):
+            if p.is_private:
+                scraped_private += 1
+            else:
+                scraped_public += 1
+        else:
+            pending += 1
+
+    scraped_successfully = scraped_public + scraped_private
+    private_scraped = scraped_private
+    private_pending = sum(
         1
         for p in profiles
-        if not _has_ig_card(p)
+        if p.is_private
+        and not _has_ig_card(p)
         and p.status
         not in {ProfileStatus.FAILED, ProfileStatus.UNAVAILABLE, ProfileStatus.PAUSED}
     )
-    private_scraped = sum(1 for p in profiles if p.is_private and _has_ig_card(p))
-    private_pending = sum(1 for p in profiles if p.is_private and not _has_ig_card(p))
 
+    updated_today = sum(1 for p in profiles if _date_str(p.last_success_at) == today)
     failed_today = sum(
         1
         for p in profiles
@@ -994,6 +1015,8 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
         "overall": {
             "total_profiles": len(profiles),
             "scraped_successfully": scraped_successfully,
+            "scraped_public": scraped_public,
+            "scraped_private": scraped_private,
             "failed": failed,
             "unavailable": unavailable,
             "paused": paused,
@@ -1001,6 +1024,8 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
             "private": private,
             "private_scraped": private_scraped,
             "private_pending": private_pending,
+            # Exclusive status math: scraped + failed + unavailable + paused + pending == total
+            "status_sum": scraped_successfully + failed + unavailable + paused + pending,
             "total_followers": total_followers,
             "total_views": total_views,
             "total_likes": total_likes,

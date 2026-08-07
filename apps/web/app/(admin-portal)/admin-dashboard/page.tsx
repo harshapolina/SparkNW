@@ -160,14 +160,14 @@ export default function AdminDashboardPage() {
     {
       label: "Scraped Successfully",
       value: formatNumber(scrapedEver),
-      sub: `${coveragePct}% of roster · till date · no duplicates`,
+      sub: `${formatNumber(overall?.scraped_public ?? scrapedEver - (overall?.scraped_private ?? overall?.private_scraped ?? 0))} public + ${formatNumber(overall?.scraped_private ?? overall?.private_scraped ?? 0)} private · ${coveragePct}% · no duplicates`,
       icon: BadgeCheck,
       color: "text-emerald-400",
     },
     {
       label: "Failed",
       value: formatNumber(overall?.failed ?? admin.failed_updates ?? admin.scrape.failed),
-      sub: "Current failed status",
+      sub: "Exclusive status bucket",
       icon: AlertTriangle,
       color: "text-rose-400",
     },
@@ -179,11 +179,18 @@ export default function AdminDashboardPage() {
       color: "text-amber-400",
     },
     {
-      label: "Private Accounts",
-      value: formatNumber(overall?.private ?? admin.scrape.private ?? 0),
-      sub: `${formatNumber(overall?.private_scraped ?? 0)} scraped · ${formatNumber(overall?.private_pending ?? 0)} pending`,
+      label: "Private (subset)",
+      value: formatNumber(overall?.private_scraped ?? overall?.scraped_private ?? admin.scrape.private ?? 0),
+      sub: "Already inside Scraped Successfully — do not add again",
       icon: Lock,
       color: "text-violet-400",
+    },
+    {
+      label: "Paused",
+      value: formatNumber(overall?.paused ?? 0),
+      sub: "Manually paused",
+      icon: Clock,
+      color: "text-zinc-400",
     },
     {
       label: "Not Scraped Yet",
@@ -399,7 +406,11 @@ export default function AdminDashboardPage() {
             Overall data
           </div>
           <p className="mt-1 text-sm text-zinc-500">
-            Lifetime unique counts — each account counted once (re-scrapes do not inflate totals).
+            Exclusive status math:{" "}
+            <span className="text-zinc-300">
+              Scraped + Failed + Unavailable + Paused + Not scraped = Total ({formatNumber(totalProfiles)})
+            </span>
+            . Private is a subset of Scraped — do not add it again.
           </p>
         </div>
         <KpiGrid items={overallKpis} />

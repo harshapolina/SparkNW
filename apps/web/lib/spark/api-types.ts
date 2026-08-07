@@ -131,6 +131,8 @@ export type AdminOverviewResponse = {
   overall?: {
     total_profiles: number;
     scraped_successfully: number;
+    scraped_public?: number;
+    scraped_private?: number;
     failed: number;
     unavailable: number;
     paused: number;
@@ -138,6 +140,8 @@ export type AdminOverviewResponse = {
     private: number;
     private_scraped: number;
     private_pending: number;
+    /** scraped + failed + unavailable + paused + pending (should equal total_profiles) */
+    status_sum?: number;
     total_followers: number;
     total_views: number;
     total_likes: number;
