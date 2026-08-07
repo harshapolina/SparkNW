@@ -47,6 +47,11 @@ export function humanizeScrapeError(raw?: string | null): string {
   ) {
     return raw.trim();
   }
+  if (low.includes("timed out") || low.includes("timeout")) {
+    return raw.includes("Refresh")
+      ? raw.trim()
+      : `${raw.trim()} Raise SCRAPE_JOB_TIMEOUT_SECONDS on the server if proxies are slow.`;
+  }
   if (raw.length > 180) return `${raw.slice(0, 177)}…`;
   return raw;
 }

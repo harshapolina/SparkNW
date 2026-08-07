@@ -142,7 +142,12 @@ def is_soft_scrape_failure(error: BaseException | str | None) -> bool:
 
 def humanize_scrape_error(err: BaseException | str) -> str:
     """User-facing scrape failure text."""
-    raw = str(err)
+    raw = str(err or "").strip()
+    if not raw:
+        return (
+            "Scrape failed before Instagram returned data. Click Refresh again; "
+            "if this keeps happening, check SCRAPE_PROXY_URL / rate limits."
+        )
     low = raw.lower()
     if "err_tunnel" in low or "tunnel_connection" in low:
         return "Proxy tunnel failed opening Instagram. Check Decodo credentials, then Refresh."
@@ -159,6 +164,14 @@ def humanize_scrape_error(err: BaseException | str) -> str:
         return (
             "Instagram rate-limited this server. Wait a few minutes, then Refresh. "
             "A residential SCRAPE_PROXY_URL avoids this."
+        )
+    if "timed out" in low or "timeout" in low:
+        return (
+            raw
+            if "try refresh" in low
+            else (
+                f"{raw} Raise SCRAPE_JOB_TIMEOUT_SECONDS (e.g. 1800) if proxies are slow."
+            )
         )
     if "incomplete timeline" in low:
         return "Partial timeline only — Instagram blocked full pagination. Data may still be usable after Refresh."
@@ -181,7 +194,6 @@ def humanize_scrape_error(err: BaseException | str) -> str:
     if len(raw) > 220:
         return raw[:217] + "..."
     return raw
-
 
 async def heal_soft_scrape_failure(profile: Profile) -> bool:
     """Clear soft/stale failed status when the profile already has real card data."""
@@ -623,7 +635,19 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
         if profile.status != ProfileStatus.PAUSED:
             profile.status = ProfileStatus.ACTIVE
         # Keep a soft note so Refresh messaging is honest; do not pretend we scraped zeros.
-        profile.last_error = humanize_scrape_error(error)
+        profile.last_error = humanize_scrape_error(error) or (
+            "Scrape failed — existing profile data was kept. Click Refresh to retry."
+        )
+        profile.scrape_progress = {
+            "active": False,
+            "phase": "failed",
+            "scraped_posts": int((getattr(profile, "scrape_progress", None) or {}).get("scraped_posts") or 0),
+            "total_posts": int(profile.posts_count or 0),
+            "posts_left": 0,
+            "percent": 100,
+            "source": (getattr(profile, "scrape_progress", None) or {}).get("source"),
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+        }
         profile.updated_at = datetime.utcnow()
         student = getattr(profile, "student", None)
         if isinstance(student, dict) and student:
@@ -631,7 +655,9 @@ async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavaila
         await profile.save()
         return
 
-    friendly = humanize_scrape_error(error)
+    friendly = humanize_scrape_error(error) or (
+        "Scrape failed before Instagram returned data. Click Refresh to retry."
+    )
     job.status = JobStatus.FAILED
     job.error_message = friendly
     job.finished_at = datetime.utcnow()

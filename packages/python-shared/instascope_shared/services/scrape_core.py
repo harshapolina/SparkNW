@@ -28,21 +28,29 @@ _PROGRESS_INTERVAL_S = 20.0
 def _job_timeout_seconds(*, max_posts: int = 0) -> float:
     """Wall-clock limit for one scrape job.
 
-    Uncapped large accounts (thousands of posts) need far more than 8 minutes.
-    Capped bulk passes finish faster.
+    Uncapped / cohort scrapes need far more than 8 minutes when Instagram or the
+    proxy is slow. A low ``SCRAPE_JOB_TIMEOUT_SECONDS`` (e.g. 480) used to kill
+    jobs still in ``http_profile`` and leave Failed + empty Insights.
     """
     raw = (os.getenv("SCRAPE_JOB_TIMEOUT_SECONDS") or "").strip()
+    configured: float | None = None
     if raw:
         try:
-            return max(60.0, float(raw))
+            configured = max(60.0, float(raw))
         except ValueError:
-            pass
-    if max_posts > 0:
-        # ~1s/post worst-case + buffer, capped.
-        return float(max(300, min(900, 120 + max_posts * 2)))
-    # Full timeline — allow up to 45 minutes for ~3k+ accounts.
-    return 2700.0
+            configured = None
 
+    if max_posts > 0:
+        # Capped bulk sample — finish faster.
+        auto = float(max(300, min(900, 120 + max_posts * 2)))
+        return configured if configured is not None else auto
+
+    # Single / deep / uncapped — allow long HTTP pagination + retries.
+    auto = 2700.0
+    if configured is None:
+        return auto
+    # Floor: never let a too-aggressive env abort mid-profile fetch.
+    return max(configured, 900.0)
 
 def progress_payload(
     *,
