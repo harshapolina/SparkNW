@@ -572,8 +572,10 @@ export default function AdminCreatorDetailPage() {
           ) : null}
           {num(insights.posts_stored) === 0 && num(insights.sampled_posts) === 0 ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-              No posts saved yet for Insights. Click Refresh / Scrape — the header &quot;posts&quot; count is Instagram&apos;s
-              lifetime total, not stored rows.
+              No post rows are saved in the database yet. The header &quot;{formatNumber(p.posts_count)} posts&quot; is
+              Instagram&apos;s lifetime total only — it is not scraped content. Click{" "}
+              <span className="font-semibold">Refresh / Scrape</span> and wait until it finishes; Insights then count
+              only posts from 15 Jul 2026 onward.
             </div>
           ) : null}
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

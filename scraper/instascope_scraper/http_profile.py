@@ -20,8 +20,48 @@ from urllib.parse import quote
 import httpx
 
 from instascope_scraper.caps import caps_env
+from instascope_scraper.instagram_time import infer_posted_at_iso
 
 logger = logging.getLogger("instascope.scraper.http_profile")
+
+
+def _cohort_floor_unix() -> int | None:
+    """If SPARK_COHORT_START is set, stop paginating once posts are older than this day.
+
+    Timeline is newest-first, so we only need posts on/after programme start for Insights.
+    Set SCRAPE_STOP_AT_COHORT=0 to disable.
+    """
+    if (os.getenv("SCRAPE_STOP_AT_COHORT") or "1").strip() in {"0", "false", "no"}:
+        return None
+    raw = (os.getenv("SPARK_COHORT_START") or "2026-07-15").strip()
+    try:
+        from datetime import datetime, timezone
+
+        day = datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return int(day.timestamp())
+    except ValueError:
+        return None
+
+
+def _node_taken_unix(node: dict[str, Any]) -> int | None:
+    taken = node.get("taken_at_timestamp") or node.get("taken_at")
+    if taken:
+        try:
+            return int(taken)
+        except (TypeError, ValueError):
+            pass
+    # Fall back to shortcode / pk decode
+    key = str(node.get("shortcode") or node.get("code") or "")
+    pk = str(node.get("id") or node.get("pk") or "")
+    iso = infer_posted_at_iso(shortcode=key or None, ig_post_id=pk or None)
+    if not iso:
+        return None
+    try:
+        from datetime import datetime
+
+        return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return None
 
 
 class InstagramUserNotFound(Exception):
@@ -631,13 +671,22 @@ async def fetch_all_media_nodes(
 
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
+    floor = _cohort_floor_unix()
+    hit_cohort_floor = False
 
     def _add(nodes: list[dict[str, Any]]) -> int:
+        nonlocal hit_cohort_floor
         added = 0
         for node in nodes:
             key = _node_key(node)
             if not key or key in seen:
                 continue
+            if floor is not None:
+                ts = _node_taken_unix(node)
+                if ts is not None and ts < floor:
+                    # Newest-first feed: older than programme start → stop paging
+                    hit_cohort_floor = True
+                    continue
             seen.add(key)
             out.append(node)
             added += 1
@@ -646,7 +695,13 @@ async def fetch_all_media_nodes(
         return added
 
     _add(initial_nodes or [])
-    if len(out) >= limit:
+    if len(out) >= limit or hit_cohort_floor:
+        if hit_cohort_floor:
+            logger.info(
+                "fetch_all_media @%s stopped at SPARK cohort floor collected=%s",
+                username,
+                len(out),
+            )
         return out[:limit]
 
     # Feed API wants media id/pk as max_id — NOT GraphQL end_cursor
@@ -660,7 +715,7 @@ async def fetch_all_media_nodes(
 
         # --- 1) Feed API (www, then mobile) — keep paging until full timeline ---
         for use_mobile in (False, True):
-            if not _still_short(len(out), limit=limit, expected_count=expected_count):
+            if hit_cohort_floor or not _still_short(len(out), limit=limit, expected_count=expected_count):
                 break
 
             max_id: str | None = None
@@ -672,7 +727,13 @@ async def fetch_all_media_nodes(
             # If that returns only duplicates, advance using last seed media id.
             tried_seed_jump = False
 
-            while more and _still_short(len(out), limit=limit, expected_count=expected_count) and stagnant < 10 and pages < max_pages:
+            while (
+                more
+                and not hit_cohort_floor
+                and _still_short(len(out), limit=limit, expected_count=expected_count)
+                and stagnant < 10
+                and pages < max_pages
+            ):
                 pages += 1
                 await asyncio.sleep(delay if pages > 1 else 0.15)
 

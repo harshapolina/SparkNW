@@ -226,8 +226,62 @@ async def apply_scrape_result(
         int(metrics.get("sampled_posts") or 0) == 0
         and isinstance(profile.insights, dict)
         and int((profile.insights or {}).get("sampled_posts") or 0) > 0
+        and not posts_data
     ):
         raise ValueError("Refusing to overwrite insights with empty metrics")
+
+    # Build post documents BEFORE wiping Mongo — never delete on a failed/empty save.
+    post_docs: list[Post] = []
+    for p in posts_data:
+        try:
+            ig_post_id = str(p.get("ig_post_id") or p.get("id") or p.get("shortcode") or "")
+            shortcode = str(p.get("shortcode") or ig_post_id or "")
+            if not ig_post_id and not shortcode:
+                continue
+            if not ig_post_id:
+                ig_post_id = shortcode
+            posted_at = p.get("posted_at")
+            if isinstance(posted_at, str):
+                try:
+                    posted_at = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
+                except ValueError:
+                    posted_at = None
+            if posted_at is None:
+                inferred = infer_posted_at(
+                    shortcode=shortcode or None,
+                    ig_post_id=ig_post_id or None,
+                )
+                if inferred is not None:
+                    posted_at = inferred.replace(tzinfo=None) if inferred.tzinfo else inferred
+            elif getattr(posted_at, "tzinfo", None) is not None:
+                posted_at = posted_at.replace(tzinfo=None)
+
+            post_docs.append(
+                Post(
+                    profile_id=str(profile.id),
+                    user_id=profile.user_id,
+                    ig_post_id=ig_post_id,
+                    shortcode=shortcode or ig_post_id,
+                    media_type=_media_type(p.get("media_type")),
+                    caption=p.get("caption"),
+                    thumbnail_url=p.get("thumbnail_url"),
+                    permalink=p.get("permalink") or f"https://instagram.com/p/{shortcode or ig_post_id}/",
+                    likes=int(p.get("likes") or 0),
+                    comments=int(p.get("comments") or 0),
+                    views=int(p.get("views") or 0),
+                    posted_at=posted_at,
+                    scraped_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                )
+            )
+        except Exception:
+            # One bad post must never flip a successful scrape to failed
+            continue
+
+    if posts_count > 0 and posts_data and not post_docs:
+        raise ValueError(
+            f"Scrape returned {len(posts_data)} posts but none were savable (missing ids)"
+        )
 
     avg_likes = float(metrics["avg_likes"])
     avg_views = float(metrics["avg_views"])
@@ -264,7 +318,7 @@ async def apply_scrape_result(
     done_progress: dict[str, Any] = {
         "active": False,
         "phase": "done",
-        "scraped_posts": len(posts_data),
+        "scraped_posts": len(post_docs) or len(posts_data),
         "total_posts": posts_count or len(posts_data),
         "posts_left": 0,
         "percent": 100,
@@ -279,66 +333,30 @@ async def apply_scrape_result(
         profile.student = student  # type: ignore[attr-defined]
     await profile.save()
 
-    # Replace posts with this scrape's real set (avoid leftover demo/stale rows)
-    await Post.find(Post.profile_id == str(profile.id)).delete()
-
-    post_docs: list[Post] = []
-    for p in posts_data:
-        try:
-            ig_post_id = str(p.get("ig_post_id") or p.get("id") or "")
-            if not ig_post_id:
-                continue
-            posted_at = p.get("posted_at")
-            if isinstance(posted_at, str):
-                try:
-                    posted_at = datetime.fromisoformat(posted_at.replace("Z", "+00:00"))
-                except ValueError:
-                    posted_at = None
-            if posted_at is None:
-                inferred = infer_posted_at(
-                    shortcode=str(p.get("shortcode") or "") or None,
-                    ig_post_id=str(p.get("ig_post_id") or p.get("id") or "") or None,
-                )
-                if inferred is not None:
-                    posted_at = inferred.replace(tzinfo=None) if inferred.tzinfo else inferred
-            elif getattr(posted_at, "tzinfo", None) is not None:
-                posted_at = posted_at.replace(tzinfo=None)
-
-            post_docs.append(
-                Post(
-                    profile_id=str(profile.id),
-                    user_id=profile.user_id,
-                    ig_post_id=ig_post_id,
-                    shortcode=str(p.get("shortcode") or ig_post_id),
-                    media_type=_media_type(p.get("media_type")),
-                    caption=p.get("caption"),
-                    thumbnail_url=p.get("thumbnail_url"),
-                    permalink=p.get("permalink") or f"https://instagram.com/p/{p.get('shortcode')}/",
-                    likes=int(p.get("likes") or 0),
-                    comments=int(p.get("comments") or 0),
-                    views=int(p.get("views") or 0),
-                    posted_at=posted_at,
-                    scraped_at=datetime.utcnow(),
-                    updated_at=datetime.utcnow(),
-                )
-            )
-        except Exception:
-            # One bad post must never flip a successful scrape to failed
-            continue
-
     posts_saved = 0
-    for i in range(0, len(post_docs), _POST_INSERT_CHUNK):
-        chunk = post_docs[i : i + _POST_INSERT_CHUNK]
-        try:
-            await Post.insert_many(chunk)
-            posts_saved += len(chunk)
-        except Exception:
-            for doc in chunk:
-                try:
-                    await doc.insert()
-                    posts_saved += 1
-                except Exception:
-                    continue
+    if post_docs:
+        # Replace only when we have a real new set to write
+        await Post.find(Post.profile_id == str(profile.id)).delete()
+        for i in range(0, len(post_docs), _POST_INSERT_CHUNK):
+            chunk = post_docs[i : i + _POST_INSERT_CHUNK]
+            try:
+                await Post.insert_many(chunk)
+                posts_saved += len(chunk)
+            except Exception:
+                for doc in chunk:
+                    try:
+                        await doc.insert()
+                        posts_saved += 1
+                    except Exception:
+                        continue
+        if posts_saved <= 0:
+            raise ValueError(
+                f"Failed to save any of {len(post_docs)} scraped posts to the database"
+            )
+    elif posts_count == 0:
+        # Confirmed empty IG account — clear any stale rows
+        await Post.find(Post.profile_id == str(profile.id)).delete()
+    # else: keep existing posts (card-only / incomplete path should have raised earlier)
 
     try:
         existing_snap = await ProfileSnapshot.find_one(
