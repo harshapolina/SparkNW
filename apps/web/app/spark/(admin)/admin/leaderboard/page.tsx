@@ -157,11 +157,13 @@ export default function AdminLeaderboardPage() {
             <select
               value={campus}
               onChange={(e) => setCampus(e.target.value)}
-              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-300"
+              className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-sm text-zinc-100 [color-scheme:dark]"
             >
-              <option value="all">All campuses</option>
+              <option value="all" className="bg-[#121212] text-zinc-100">
+                All campuses
+              </option>
               {campuses.map((c) => (
-                <option key={c} value={c}>
+                <option key={c} value={c} className="bg-[#121212] text-zinc-100">
                   {c}
                 </option>
               ))}
@@ -169,12 +171,20 @@ export default function AdminLeaderboardPage() {
             <select
               value={tier}
               onChange={(e) => setTier(e.target.value)}
-              className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-300"
+              className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-sm text-zinc-100 [color-scheme:dark]"
             >
-              <option value="all">All tiers</option>
-              <option value="GOLD">Gold</option>
-              <option value="SILVER">Silver</option>
-              <option value="BRONZE">Bronze</option>
+              <option value="all" className="bg-[#121212] text-zinc-100">
+                All tiers
+              </option>
+              <option value="GOLD" className="bg-[#121212] text-zinc-100">
+                Gold
+              </option>
+              <option value="SILVER" className="bg-[#121212] text-zinc-100">
+                Silver
+              </option>
+              <option value="BRONZE" className="bg-[#121212] text-zinc-100">
+                Bronze
+              </option>
             </select>
           </div>
         </div>

@@ -202,3 +202,17 @@ html.dark .table-premium td {
   box-shadow: 0 0 0 3px rgba(255, 77, 0, 0.28);
 }
 
+/* Dark native <select> menus (campus/tier filters) — readable options on Windows/Chrome */
+select[class*="color-scheme:dark"],
+select[class*="\[color-scheme\:dark\]"] {
+  color-scheme: dark;
+  background-color: #121212;
+  color: #f4f4f5;
+}
+
+select[class*="color-scheme:dark"] option,
+select[class*="\[color-scheme\:dark\]"] option {
+  background-color: #121212;
+  color: #f4f4f5;
+}
+
