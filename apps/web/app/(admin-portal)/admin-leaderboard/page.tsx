@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Download, Search } from "lucide-react";
@@ -11,6 +11,7 @@ import { cn, formatNumber } from "@/lib/utils";
 import { TierBadge } from "@/components/spark/tier-badge";
 import { Movement, SparkAvatar } from "@/components/spark/ui";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
+import { NumberedPagination } from "@/components/numbered-pagination";
 import { defaultCohortRange, utcTodayYmd } from "@/lib/spark/cohort";
 
 const sorts: { id: LeaderboardSort; label: string }[] = [
@@ -20,6 +21,8 @@ const sorts: { id: LeaderboardSort; label: string }[] = [
   { id: "views", label: "VIEWS" },
   { id: "engagement", label: "ENGAGEMENT" },
 ];
+
+const PAGE_SIZE = 20;
 
 function buildLeaderboardUrl(sort: LeaderboardSort, fromDate: string, toDate: string) {
   const params = new URLSearchParams({ sort });
@@ -35,6 +38,7 @@ export default function AdminLeaderboardPage() {
   const [campus, setCampus] = useState<string>("all");
   const [tier, setTier] = useState<string>("all");
   const [q, setQ] = useState("");
+  const [page, setPage] = useState(1);
 
   const boardQ = useQuery({
     queryKey: ["spark", "leaderboard", sort, range.from, range.to],
@@ -62,9 +66,16 @@ export default function AdminLeaderboardPage() {
     return list.map((c, i) => ({ ...c, rank: i + 1 }));
   }, [boardQ.data, campus, tier, q]);
 
+  const totalPages = Math.max(1, Math.ceil(ranked.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = ranked.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
   const admin = adminQ.data;
   const campuses = boardQ.data?.campuses || [];
   const appliedTo = boardQ.data?.to_date || range.to;
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   const exportCsv = () => {
     const header = ["Rank", "Name", "Handle", "Campus", "Team", "Tier", "Points", "Followers", "Views", "Engagement", "Trend"];
@@ -154,7 +165,10 @@ export default function AdminLeaderboardPage() {
               <button
                 key={s.id}
                 type="button"
-                onClick={() => setSort(s.id)}
+                onClick={() => {
+                  setSort(s.id);
+                  setPage(1);
+                }}
                 className={cn(
                   "shrink-0 rounded-full px-3.5 py-1.5 text-[11px] font-bold tracking-[0.08em] transition",
                   sort === s.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400 hover:text-zinc-200"
@@ -169,14 +183,20 @@ export default function AdminLeaderboardPage() {
               <Search size={14} className="text-zinc-500" />
               <input
                 value={q}
-                onChange={(e) => setQ(e.target.value)}
+                onChange={(e) => {
+                  setQ(e.target.value);
+                  setPage(1);
+                }}
                 placeholder="Search by name, team or campus..."
                 className="w-full bg-transparent text-sm outline-none placeholder:text-zinc-600"
               />
             </label>
             <select
               value={campus}
-              onChange={(e) => setCampus(e.target.value)}
+              onChange={(e) => {
+                setCampus(e.target.value);
+                setPage(1);
+              }}
               className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-sm text-zinc-100 [color-scheme:dark]"
             >
               <option value="all" className="bg-[#121212] text-zinc-100">
@@ -190,7 +210,10 @@ export default function AdminLeaderboardPage() {
             </select>
             <select
               value={tier}
-              onChange={(e) => setTier(e.target.value)}
+              onChange={(e) => {
+                setTier(e.target.value);
+                setPage(1);
+              }}
               className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-sm text-zinc-100 [color-scheme:dark]"
             >
               <option value="all" className="bg-[#121212] text-zinc-100">
@@ -238,7 +261,7 @@ export default function AdminLeaderboardPage() {
               </tr>
             </thead>
             <tbody>
-              {ranked.map((row) => (
+              {pageRows.map((row) => (
                 <tr key={row.id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
                   <td
                     className={cn(
@@ -304,7 +327,7 @@ export default function AdminLeaderboardPage() {
                   </td>
                 </tr>
               ))}
-              {!ranked.length && (
+              {!pageRows.length && (
                 <tr>
                   <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
                     No creators match these filters.
@@ -321,9 +344,18 @@ export default function AdminLeaderboardPage() {
           Orange column is the active sort.
         </p>
 
-        <div className="mt-4 text-xs text-zinc-500">
-          Showing all {formatNumber(ranked.length)} creators
-          {(campus !== "all" || tier !== "all" || q.trim()) && " (filtered)"}.
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
+          <span>
+            {ranked.length} creators
+            {(campus !== "all" || tier !== "all" || q.trim()) && " (filtered)"}
+            {ranked.length > 0 ? ` · page ${safePage} of ${totalPages}` : ""}
+          </span>
+          <NumberedPagination
+            page={safePage}
+            pageSize={PAGE_SIZE}
+            total={ranked.length}
+            onPageChange={setPage}
+          />
         </div>
       </div>
     </div>
