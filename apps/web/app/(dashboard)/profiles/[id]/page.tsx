@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { BadgeCheck, Pause, RefreshCw, Trash2, AlertCircle } from "lucide-react";
+import { BadgeCheck, ExternalLink, Pause, RefreshCw, Trash2, AlertCircle } from "lucide-react";
 import {
   Area,
   AreaChart,

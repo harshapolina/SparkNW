@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, Pause, RefreshCw, Trash2 } from "lucide-react";
+import { AlertCircle, ExternalLink, Pause, RefreshCw, Trash2 } from "lucide-react";
 import {
   Area,
   AreaChart,
