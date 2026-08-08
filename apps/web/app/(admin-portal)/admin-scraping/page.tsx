@@ -26,9 +26,9 @@ type ListResponse = { items: Profile[]; total: number; page: number; page_size: 
 const STATUS_FILTERS = [
   { id: "", label: "All" },
   { id: "active", label: "Active" },
+  { id: "private", label: "Private" },
   { id: "failed", label: "Failed" },
   { id: "paused", label: "Paused" },
-  { id: "private", label: "Private" },
   { id: "unavailable", label: "Unavailable" },
 ] as const;
 
@@ -355,12 +355,19 @@ function AdminScrapingPageInner() {
                 className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
               />
             </label>
-            <div className="flex max-w-full shrink-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5">
+            <div className="flex max-w-full shrink-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5" title="Active = public tracked accounts. Private = Instagram-private accounts (rechecked each morning).">
               {STATUS_FILTERS.map((f) => (
                 <button
                   key={f.id || "all"}
                   type="button"
                   onClick={() => replaceListParams({ status: f.id, page: 1 })}
+                  title={
+                    f.id === "active"
+                      ? "Public accounts currently tracked (excludes private)"
+                      : f.id === "private"
+                        ? "All Instagram-private accounts"
+                        : undefined
+                  }
                   className={cn(
                     "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium",
                     statusFilter === f.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400"
@@ -528,18 +535,35 @@ function AdminScrapingPageInner() {
                       <span
                         className={cn(
                           "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
-                          p.status === "active" && "bg-lime-500/15 text-lime-400",
-                          p.status === "failed" && "bg-rose-500/15 text-rose-400",
-                          p.status === "unavailable" && "bg-amber-500/15 text-amber-400",
-                          p.status === "paused" && "bg-amber-500/15 text-amber-400",
-                          p.scrape_progress?.active && "bg-sky-500/15 text-sky-300"
+                          p.scrape_progress?.active && "bg-sky-500/15 text-sky-300",
+                          !p.scrape_progress?.active &&
+                            p.is_private &&
+                            "bg-violet-500/15 text-violet-300",
+                          !p.scrape_progress?.active &&
+                            !p.is_private &&
+                            p.status === "active" &&
+                            "bg-lime-500/15 text-lime-400",
+                          !p.scrape_progress?.active &&
+                            !p.is_private &&
+                            p.status === "failed" &&
+                            "bg-rose-500/15 text-rose-400",
+                          !p.scrape_progress?.active &&
+                            !p.is_private &&
+                            p.status === "unavailable" &&
+                            "bg-amber-500/15 text-amber-400",
+                          !p.scrape_progress?.active &&
+                            !p.is_private &&
+                            p.status === "paused" &&
+                            "bg-amber-500/15 text-amber-400"
                         )}
                       >
                         {p.scrape_progress?.active
                           ? "scraping"
-                          : p.status === "unavailable"
-                            ? "missing"
-                            : p.status}
+                          : p.is_private
+                            ? "private"
+                            : p.status === "unavailable"
+                              ? "missing"
+                              : p.status}
                       </span>
                     </td>
                     <td className="px-2 py-3 text-[11px] text-zinc-500 whitespace-nowrap">

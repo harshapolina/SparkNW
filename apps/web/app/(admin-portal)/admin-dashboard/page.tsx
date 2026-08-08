@@ -344,17 +344,26 @@ export default function AdminDashboardPage() {
             Spark portfolio overview + admin — live Instagram scrapes.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-xs text-zinc-300">
+        <div className="flex flex-nowrap items-center gap-2 overflow-x-auto pb-0.5">
+          <div className="flex h-9 shrink-0 items-center rounded-xl border border-white/10 bg-[#121212] px-3 text-xs text-zinc-300 whitespace-nowrap">
             {admin.date_range}
           </div>
-          <Link href="/admin-analytics" className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-xs text-zinc-300 hover:border-[#ff4d00]/40">
+          <Link
+            href="/admin-analytics"
+            className="flex h-9 shrink-0 items-center rounded-xl border border-white/10 bg-[#121212] px-3 text-xs text-zinc-300 whitespace-nowrap hover:border-[#ff4d00]/40"
+          >
             Portfolio analytics
           </Link>
-          <Link href="/admin-settings" className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-xs text-zinc-300 hover:border-[#ff4d00]/40">
+          <Link
+            href="/admin-settings"
+            className="flex h-9 shrink-0 items-center rounded-xl border border-white/10 bg-[#121212] px-3 text-xs text-zinc-300 whitespace-nowrap hover:border-[#ff4d00]/40"
+          >
             Settings
           </Link>
-          <Link href="/admin-alerts" className="relative rounded-full border border-white/10 bg-[#121212] p-2.5">
+          <Link
+            href="/admin-alerts"
+            className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-[#121212]"
+          >
             <Bell size={16} className="text-zinc-400" />
             {(unread > 0 || liveAlerts.length > 0) && (
               <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[#ff3b30] px-1 text-[9px] font-bold">
@@ -362,7 +371,7 @@ export default function AdminDashboardPage() {
               </span>
             )}
           </Link>
-          <SparkAvatar initials="AD" accent />
+          <SparkAvatar initials="AD" accent size="md" />
         </div>
       </div>
 

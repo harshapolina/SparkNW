@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, ExternalLink, Pause, RefreshCw, Trash2 } from "lucide-react";
+import { AlertCircle, Pause, RefreshCw, Trash2 } from "lucide-react";
 import {
   Area,
   AreaChart,
@@ -26,6 +26,11 @@ import {
 } from "@/lib/utils";
 import { ScrapeProgressCard } from "@/components/scrape-progress";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
+import {
+  EditableInstagramLink,
+  normalizeIgDraft,
+  profileIgHref,
+} from "@/components/editable-instagram-link";
 import { type ScrapeProgress } from "@/lib/scrape-progress";
 import { formatScrapeProgress, waitForProfileScrape } from "@/lib/wait-for-scrape";
 import { adminScrapingListHref } from "@/lib/admin-scraping-list-state";
@@ -160,6 +165,9 @@ export default function AdminCreatorDetailPage() {
   const [scrapingNote, setScrapingNote] = useState("");
   const [liveProgress, setLiveProgress] = useState<ScrapeProgress | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const [igDraft, setIgDraft] = useState("");
+  const [igEditing, setIgEditing] = useState(false);
+  const [igError, setIgError] = useState("");
 
   useEffect(() => {
     return () => {
@@ -167,9 +175,48 @@ export default function AdminCreatorDetailPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!profileQ.data || igEditing) return;
+    setIgDraft(profileIgHref(profileQ.data.username, profileQ.data.profile_url));
+    setIgError("");
+  }, [profileQ.data, igEditing]);
+
+  const igHref = profileQ.data
+    ? profileIgHref(profileQ.data.username, profileQ.data.profile_url)
+    : "";
+  const igDirty =
+    Boolean(igDraft.trim()) &&
+    normalizeIgDraft(igDraft) !== normalizeIgDraft(igHref || igDraft);
+
+  const saveIgLink = useMutation({
+    mutationFn: async (url: string) => {
+      return api<Profile>(`/profiles/${profileId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ url }),
+      });
+    },
+    onSuccess: (updated) => {
+      setIgError("");
+      setIgEditing(false);
+      setIgDraft(profileIgHref(updated.username, updated.profile_url));
+      qc.setQueryData(["profile", profileId], updated);
+      void qc.invalidateQueries({ queryKey: ["profile", profileId] });
+      void qc.invalidateQueries({ queryKey: ["profiles"] });
+    },
+    onError: (err) => {
+      setIgError((err as Error).message || "Could not update Instagram link");
+    },
+  });
+
+  const ensureIgSaved = async () => {
+    if (!igDirty) return profileQ.data;
+    return saveIgLink.mutateAsync(igDraft.trim());
+  };
+
   const refresh = useMutation({
     mutationFn: async () => {
-      const before = profileQ.data;
+      const saved = await ensureIgSaved();
+      const before = saved || profileQ.data;
       abortRef.current?.abort();
       const ac = new AbortController();
       abortRef.current = ac;
@@ -181,9 +228,15 @@ export default function AdminCreatorDetailPage() {
         percent: 0,
         source: "single",
       });
-      setScrapingNote("Queued — scraping in background…");
+      setScrapingNote(
+        before?.username
+          ? `Queued — scraping @${before.username}…`
+          : "Queued — scraping in background…"
+      );
       await api(`/profiles/${profileId}/refresh`, { method: "POST" });
-      setScrapingNote("Scraping Instagram…");
+      setScrapingNote(
+        before?.username ? `Scraping @${before.username}…` : "Scraping Instagram…"
+      );
       const done = await waitForProfileScrape(profileId, {
         since: before?.last_scraped_at,
         prevFollowers: before?.followers,
@@ -247,7 +300,9 @@ export default function AdminCreatorDetailPage() {
     onError: (e: Error) => {
       setScrapingNote("");
       setLiveProgress(null);
-      setRefreshError(humanizeScrapeError(e.message) || e.message);
+      const msg = humanizeScrapeError(e.message) || e.message;
+      setRefreshError(msg);
+      if (igDirty) setIgError(msg);
     },
   });
   const pause = useMutation({
@@ -350,6 +405,33 @@ export default function AdminCreatorDetailPage() {
               </span>
             </div>
             {p.bio && <p className="mt-2 max-w-2xl text-sm text-zinc-400 line-clamp-3">{p.bio}</p>}
+            <EditableInstagramLink
+              value={igDraft}
+              onChange={(next) => {
+                setIgDraft(next);
+                setIgError("");
+              }}
+              href={igHref}
+              editing={igEditing}
+              onEditingChange={setIgEditing}
+              dirty={igDirty}
+              disabled={refresh.isPending}
+              saving={saveIgLink.isPending}
+              error={igError}
+              tone="dark"
+              onSave={async () => {
+                if (!igDirty) {
+                  setIgEditing(false);
+                  return;
+                }
+                await saveIgLink.mutateAsync(igDraft.trim());
+              }}
+              onCancel={() => {
+                setIgDraft(igHref);
+                setIgError("");
+                setIgEditing(false);
+              }}
+            />
             {p.student?.full_name && (
               <p className="mt-2 text-sm text-zinc-400">
                 <span className="font-medium text-zinc-200">{p.student.full_name}</span>
@@ -400,21 +482,20 @@ export default function AdminCreatorDetailPage() {
             </div>
             {p.website && (
               <a href={p.website} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-sm text-[#ff4d00] hover:underline">
-                {p.website} <ExternalLink size={12} />
+                {p.website}
               </a>
             )}
           </div>
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              disabled={refresh.isPending}
+              disabled={refresh.isPending || saveIgLink.isPending}
               onClick={() => refresh.mutate()}
               className="inline-flex items-center gap-2 rounded-xl bg-[#ff3b30] px-4 py-2 text-sm font-semibold disabled:opacity-60"
             >
               <RefreshCw size={14} className={refresh.isPending ? "animate-spin" : ""} />
               {refresh.isPending ? "Scraping…" : "Refresh / Scrape"}
-            </button>
-            <button
+            </button>            <button
               type="button"
               onClick={() => pause.mutate()}
               className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-4 py-2 text-sm"

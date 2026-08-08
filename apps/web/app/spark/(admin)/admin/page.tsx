@@ -101,14 +101,17 @@ export default function AdminDashboardPage() {
           <h1 className="text-2xl font-semibold tracking-tight">Welcome back, Admin</h1>
           <p className="mt-1 text-sm text-zinc-500">Live SPARK overview from InstaScope scrapes.</p>
         </div>
-        <div className="flex items-center gap-3">
-          <div className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-xs text-zinc-300">
+        <div className="flex flex-nowrap items-center gap-2">
+          <div className="flex h-9 shrink-0 items-center rounded-xl border border-white/10 bg-[#121212] px-3 text-xs text-zinc-300 whitespace-nowrap">
             {admin.date_range}
           </div>
-          <Link href="/notifications" className="relative rounded-full border border-white/10 bg-[#121212] p-2.5">
+          <Link
+            href="/notifications"
+            className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-[#121212]"
+          >
             <Bell size={16} className="text-zinc-400" />
           </Link>
-          <SparkAvatar initials="AD" accent />
+          <SparkAvatar initials="AD" accent size="md" />
         </div>
       </div>
 

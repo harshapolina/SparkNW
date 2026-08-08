@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Download, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, Search } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AdminOverviewResponse, LeaderboardResponse, SparkCreatorRow } from "@/lib/spark/api-types";
 import type { LeaderboardSort } from "@/lib/spark/types";
@@ -21,6 +21,19 @@ const sorts: { id: LeaderboardSort; label: string }[] = [
   { id: "engagement", label: "ENGAGEMENT" },
 ];
 
+/** Sliding window of page numbers so every page is reachable (not capped at 5). */
+function pageWindow(current: number, total: number, size = 7): number[] {
+  if (total <= size) return Array.from({ length: total }, (_, i) => i + 1);
+  const half = Math.floor(size / 2);
+  let start = Math.max(1, current - half);
+  let end = start + size - 1;
+  if (end > total) {
+    end = total;
+    start = Math.max(1, end - size + 1);
+  }
+  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
+}
+
 function buildLeaderboardUrl(sort: LeaderboardSort, fromDate: string, toDate: string) {
   const params = new URLSearchParams({ sort });
   params.set("from_date", fromDate);
@@ -34,7 +47,6 @@ export default function AdminLeaderboardPage() {
   const [sort, setSort] = useState<LeaderboardSort>("overall");
   const [campus, setCampus] = useState<string>("all");
   const [tier, setTier] = useState<string>("all");
-  const [teamOnly, setTeamOnly] = useState(false);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
   const perPage = 10;
@@ -51,7 +63,6 @@ export default function AdminLeaderboardPage() {
   const ranked = useMemo(() => {
     let list: SparkCreatorRow[] = [...(boardQ.data?.items || [])];
     if (campus !== "all") list = list.filter((c) => c.campus === campus);
-    if (teamOnly) list = list.filter((c) => Boolean(c.team));
     if (tier !== "all") list = list.filter((c) => c.tier === tier);
     if (q.trim()) {
       const s = q.toLowerCase();
@@ -64,13 +75,19 @@ export default function AdminLeaderboardPage() {
       );
     }
     return list.map((c, i) => ({ ...c, rank: i + 1 }));
-  }, [boardQ.data, campus, tier, teamOnly, q]);
+  }, [boardQ.data, campus, tier, q]);
 
   const totalPages = Math.max(1, Math.ceil(ranked.length / perPage));
-  const pageRows = ranked.slice((page - 1) * perPage, page * perPage);
+  const safePage = Math.min(page, totalPages);
+  const pageRows = ranked.slice((safePage - 1) * perPage, safePage * perPage);
   const admin = adminQ.data;
   const campuses = boardQ.data?.campuses || [];
   const appliedTo = boardQ.data?.to_date || range.to;
+  const pages = pageWindow(safePage, totalPages);
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   const exportCsv = () => {
     const header = ["Rank", "Name", "Handle", "Campus", "Team", "Tier", "Points", "Followers", "Views", "Engagement", "Trend"];
@@ -118,8 +135,8 @@ export default function AdminLeaderboardPage() {
           <h1 className="text-3xl font-semibold tracking-tight">Leaderboard</h1>
           <ProgrammeWindowNote className="mt-1" toDate={appliedTo} />
           <p className="mt-1 text-sm text-zinc-500">
-            Sort pills reorder by real scraped metrics. OVERALL uses SPARK points calculated from posts since the
-            programme started (15 Jul 2026). Scraping ignores earlier posts.
+            Sort pills reorder by real scraped metrics. OVERALL uses SPARK points from programme-start through today.
+            Scraping ignores earlier posts.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -151,11 +168,11 @@ export default function AdminLeaderboardPage() {
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4 md:p-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-4">
           <ProgrammeWindowNote variant="compact" toDate={appliedTo} />
-          <p className="text-[11px] text-zinc-500">Scoring window is fixed — no date range picker.</p>
+          <p className="text-[11px] text-zinc-500">Live window — end date is today and updates daily.</p>
         </div>
 
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-nowrap items-center gap-1.5 overflow-x-auto pb-0.5">
             {sorts.map((s) => (
               <button
                 key={s.id}
@@ -165,7 +182,7 @@ export default function AdminLeaderboardPage() {
                   setPage(1);
                 }}
                 className={cn(
-                  "rounded-full px-3.5 py-1.5 text-[11px] font-bold tracking-[0.08em] transition",
+                  "shrink-0 rounded-full px-3.5 py-1.5 text-[11px] font-bold tracking-[0.08em] transition",
                   sort === s.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400 hover:text-zinc-200"
                 )}
               >
@@ -214,21 +231,6 @@ export default function AdminLeaderboardPage() {
               <option value="SILVER">Silver</option>
               <option value="BRONZE">Bronze</option>
             </select>
-            <button
-              type="button"
-              onClick={() => {
-                setTeamOnly((v) => !v);
-                setPage(1);
-              }}
-              className={cn(
-                "rounded-xl border px-3 py-2 text-sm",
-                teamOnly
-                  ? "border-[#ff4d00]/50 bg-[#ff4d00]/15 text-[#ff4d00]"
-                  : "border-white/10 bg-black/40 text-zinc-300"
-              )}
-            >
-              By team
-            </button>
           </div>
         </div>
 
@@ -346,23 +348,67 @@ export default function AdminLeaderboardPage() {
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
           <span>
-            Showing {ranked.length ? (page - 1) * perPage + 1 : 0} to {Math.min(page * perPage, ranked.length)} of{" "}
-            {ranked.length} creators.
+            Showing {ranked.length ? (safePage - 1) * perPage + 1 : 0} to{" "}
+            {Math.min(safePage * perPage, ranked.length)} of {ranked.length} creators.
           </span>
-          <div className="flex items-center gap-1">
-            {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => i + 1).map((p) => (
+          <div className="flex flex-wrap items-center gap-1">
+            <button
+              type="button"
+              disabled={safePage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="inline-flex h-8 items-center gap-1 rounded-lg bg-zinc-900 px-2 text-zinc-400 disabled:opacity-40"
+              aria-label="Previous page"
+            >
+              <ChevronLeft size={14} />
+            </button>
+            {pages[0] > 1 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setPage(1)}
+                  className="h-8 w-8 rounded-lg bg-zinc-900 text-zinc-400"
+                >
+                  1
+                </button>
+                {pages[0] > 2 && <span className="px-1 text-zinc-600">…</span>}
+              </>
+            )}
+            {pages.map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => setPage(p)}
                 className={cn(
-                  "h-8 w-8 rounded-lg",
-                  page === p ? "bg-[#ff4d00] text-white" : "bg-zinc-900 text-zinc-400"
+                  "h-8 min-w-8 rounded-lg px-2",
+                  safePage === p ? "bg-[#ff4d00] text-white" : "bg-zinc-900 text-zinc-400"
                 )}
               >
                 {p}
               </button>
             ))}
+            {pages[pages.length - 1] < totalPages && (
+              <>
+                {pages[pages.length - 1] < totalPages - 1 && (
+                  <span className="px-1 text-zinc-600">…</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPage(totalPages)}
+                  className="h-8 min-w-8 rounded-lg bg-zinc-900 px-2 text-zinc-400"
+                >
+                  {totalPages}
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="inline-flex h-8 items-center gap-1 rounded-lg bg-zinc-900 px-2 text-zinc-400 disabled:opacity-40"
+              aria-label="Next page"
+            >
+              <ChevronRight size={14} />
+            </button>
           </div>
         </div>
       </div>

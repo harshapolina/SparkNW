@@ -1,7 +1,8 @@
-"""Daily fan-out: enqueue one scrape job per active public profile.
+"""Daily fan-out: enqueue one scrape job per active profile (public + private).
 
 Runs from Celery Beat at 08:00 IST (configurable). Workers then scrape each
-account for updated followers + programme-window posts/metrics.
+account. Private accounts are included so a private→public flip that day
+moves them into the Active (public) bucket after the scrape.
 """
 
 from __future__ import annotations
@@ -27,14 +28,10 @@ async def _fanout() -> dict:
         profiles = await Profile.find(Profile.status == ProfileStatus.ACTIVE).to_list()
 
         enqueued = 0
-        skipped_private = 0
+        enqueued_private = 0
         skipped_pending = 0
 
         for i, profile in enumerate(profiles):
-            if bool(getattr(profile, "is_private", False)):
-                skipped_private += 1
-                continue
-
             pid = str(profile.id)
             # Avoid stacking duplicate daily jobs if Beat fires twice or a prior
             # run is still queued.
@@ -55,6 +52,7 @@ async def _fanout() -> dict:
                 skipped_pending += 1
                 continue
 
+            was_private = bool(getattr(profile, "is_private", False))
             job = Job(
                 user_id=profile.user_id,
                 profile_id=pid,
@@ -70,16 +68,19 @@ async def _fanout() -> dict:
                 countdown=countdown,
             )
             enqueued += 1
+            if was_private:
+                enqueued_private += 1
             logger.info(
-                "daily scrape queued @%s job=%s countdown=%ss",
+                "daily scrape queued @%s job=%s countdown=%ss private=%s",
                 profile.username,
                 job.id,
                 countdown,
+                was_private,
             )
 
         summary = {
             "enqueued": enqueued,
-            "skipped_private": skipped_private,
+            "enqueued_private": enqueued_private,
             "skipped_pending": skipped_pending,
             "active_total": len(profiles),
             "stagger_seconds": stagger,
@@ -92,7 +93,7 @@ async def _fanout() -> dict:
 
 @celery_app.task(name="tasks.fanout_daily")
 def fanout_daily():
-    """Beat entrypoint — scrape every active account for fresh Insights data."""
+    """Beat entrypoint — scrape every active account (incl. private recheck)."""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

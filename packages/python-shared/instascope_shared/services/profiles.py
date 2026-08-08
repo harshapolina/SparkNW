@@ -21,7 +21,7 @@ from instascope_shared.models import (
     ProfileSnapshot,
     ProfileStatus,
 )
-from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse
+from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse, UpdateProfileRequest
 from instascope_shared.services.scrape_pipeline import heal_soft_scrape_failure
 from instascope_shared.services.student_roster import merge_student
 
@@ -277,6 +277,49 @@ async def add_profile(user_id: str, payload: AddProfileRequest, *, upsert_studen
     return profile
 
 
+async def update_profile_instagram(user_id: str, profile_id: str, payload: UpdateProfileRequest) -> Profile:
+    """Update tracked Instagram username/URL. Same profile id — Refresh then scrapes the new handle."""
+    profile = await get_profile(user_id, profile_id)
+    try:
+        username = extract_username(payload.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    if username == (profile.username or "").lower():
+        # Normalize profile_url even on no-op rename
+        desired_url = profile_url_for(username)
+        if profile.profile_url != desired_url:
+            profile.profile_url = desired_url
+            profile.updated_at = datetime.utcnow()
+            await profile.save()
+        return profile
+
+    clash = await Profile.find_one(Profile.user_id == user_id, Profile.username == username)
+    if clash and str(clash.id) != str(profile.id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"@{username} is already tracked on another profile",
+        )
+
+    profile.username = username
+    profile.profile_url = profile_url_for(username)
+
+    # Keep roster IG fields in sync so Student tab / login matching stay consistent.
+    student = dict(getattr(profile, "student", None) or {})
+    student["instagram_username"] = username
+    student["instagram_handle"] = f"@{username}"
+    student["instagram_url"] = profile.profile_url
+    profile.student = student
+
+    # Wrong-handle "missing" state should not stick after a correction.
+    if profile.status == ProfileStatus.UNAVAILABLE:
+        profile.status = ProfileStatus.ACTIVE
+    profile.last_error = None
+    profile.updated_at = datetime.utcnow()
+    await profile.save()
+    return profile
+
+
 async def list_profiles(
     user_id: str,
     *,
@@ -289,9 +332,14 @@ async def list_profiles(
 ) -> ProfileListResponse:
     filt: dict = {"user_id": user_id}
     if status_filter:
-        # "private" is a flag filter, not ProfileStatus.
-        if status_filter.strip().lower() == "private":
+        key = status_filter.strip().lower()
+        # Private is a flag, not ProfileStatus. Active = trackable public only
+        # (excludes private so the two filters never overlap).
+        if key == "private":
             filt["is_private"] = True
+        elif key == "active":
+            filt["status"] = "active"
+            filt["is_private"] = False
         else:
             filt["status"] = status_filter
     q_raw = (q or "").strip()

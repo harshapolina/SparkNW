@@ -573,7 +573,7 @@ async def apply_scrape_result(
     profile.avatar_url = result.get("avatar_url") or profile.avatar_url
     profile.is_verified = bool(result.get("is_verified", profile.is_verified))
     profile.ig_user_id = result.get("ig_user_id") or profile.ig_user_id
-    profile.is_private = bool(result.get("is_private", False))
+    profile.is_private = bool(is_private)
     profile.is_business = bool(result.get("is_business", False))
     profile.category = result.get("category") or profile.category
     profile.highlight_reel_count = int(result.get("highlight_reel_count") or 0)

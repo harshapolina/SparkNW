@@ -20,6 +20,7 @@ from instascope_shared.schemas import (
     ProfileListResponse,
     ProfileResponse,
     SnapshotResponse,
+    UpdateProfileRequest,
 )
 from instascope_shared.services import profiles as profile_service
 from instascope_shared.services.profiles import list_posts_in_programme_window, to_profile_response, to_profile_response_cohort
@@ -391,6 +392,17 @@ async def bulk_export(payload: BulkIdsRequest, user: User = Depends(get_current_
 @router.get("/{profile_id}", response_model=ProfileResponse)
 async def get_profile(profile_id: str, user: User = Depends(get_current_user)):
     profile = await profile_service.get_profile(str(user.id), profile_id)
+    return await to_profile_response_cohort(profile)
+
+
+@router.patch("/{profile_id}", response_model=ProfileResponse)
+async def update_profile(
+    profile_id: str,
+    payload: UpdateProfileRequest,
+    user: User = Depends(get_current_user),
+):
+    """Change Instagram handle/URL. Existing Refresh then scrapes the new account."""
+    profile = await profile_service.update_profile_instagram(str(user.id), profile_id, payload)
     return await to_profile_response_cohort(profile)
 
 

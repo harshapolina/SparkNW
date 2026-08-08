@@ -2,8 +2,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useRouter } from "next/navigation";
-import { useState } from "react";
-import { BadgeCheck, ExternalLink, Pause, RefreshCw, Trash2, AlertCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { BadgeCheck, Pause, RefreshCw, Trash2, AlertCircle } from "lucide-react";
 import {
   Area,
   AreaChart,
@@ -27,6 +27,11 @@ import {
 } from "@/lib/utils";
 import { ScrapeProgressCard } from "@/components/scrape-progress";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
+import {
+  EditableInstagramLink,
+  normalizeIgDraft,
+  profileIgHref,
+} from "@/components/editable-instagram-link";
 import { progressPercent, type ScrapeProgress } from "@/lib/scrape-progress";
 import { waitForProfileScrape } from "@/lib/wait-for-scrape";
 
@@ -173,10 +178,52 @@ export default function ProfileDetailPage() {
 
   const [refreshError, setRefreshError] = useState("");
   const [liveProgress, setLiveProgress] = useState<ScrapeProgress | null>(null);
+  const [igDraft, setIgDraft] = useState("");
+  const [igEditing, setIgEditing] = useState(false);
+  const [igError, setIgError] = useState("");
+
+  useEffect(() => {
+    if (!profileQ.data || igEditing) return;
+    setIgDraft(profileIgHref(profileQ.data.username, profileQ.data.profile_url));
+    setIgError("");
+  }, [profileQ.data, igEditing]);
+
+  const igHref = profileQ.data
+    ? profileIgHref(profileQ.data.username, profileQ.data.profile_url)
+    : "";
+  const igDirty =
+    Boolean(igDraft.trim()) &&
+    normalizeIgDraft(igDraft) !== normalizeIgDraft(igHref || igDraft);
+
+  const saveIgLink = useMutation({
+    mutationFn: async (url: string) => {
+      return api<Profile>(`/profiles/${profileId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ url }),
+      });
+    },
+    onSuccess: (updated) => {
+      setIgError("");
+      setIgEditing(false);
+      setIgDraft(profileIgHref(updated.username, updated.profile_url));
+      qc.setQueryData(["profile", profileId], updated);
+      void qc.invalidateQueries({ queryKey: ["profile", profileId] });
+      void qc.invalidateQueries({ queryKey: ["profiles"] });
+    },
+    onError: (err) => {
+      setIgError((err as Error).message || "Could not update Instagram link");
+    },
+  });
+
+  const ensureIgSaved = async () => {
+    if (!igDirty) return profileQ.data;
+    return saveIgLink.mutateAsync(igDraft.trim());
+  };
 
   const refresh = useMutation({
     mutationFn: async () => {
-      const before = profileQ.data;
+      const saved = await ensureIgSaved();
+      const before = saved || profileQ.data;
       setLiveProgress({
         active: true,
         phase: "queued",
@@ -223,7 +270,9 @@ export default function ProfileDetailPage() {
     },
     onError: (e: Error) => {
       setLiveProgress(null);
-      setRefreshError(humanizeScrapeError(e.message) || e.message);
+      const msg = humanizeScrapeError(e.message) || e.message;
+      setRefreshError(msg);
+      if (igDirty) setIgError(msg);
     },
   });
 
@@ -290,6 +339,33 @@ export default function ProfileDetailPage() {
                 <span className={statusBadgeClass(p.status)}>{p.status}</span>
               </div>
               {p.bio && <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted line-clamp-3">{p.bio}</p>}
+              <EditableInstagramLink
+                value={igDraft}
+                onChange={(next) => {
+                  setIgDraft(next);
+                  setIgError("");
+                }}
+                href={igHref}
+                editing={igEditing}
+                onEditingChange={setIgEditing}
+                dirty={igDirty}
+                disabled={refresh.isPending}
+                saving={saveIgLink.isPending}
+                error={igError}
+                tone="light"
+                onSave={async () => {
+                  if (!igDirty) {
+                    setIgEditing(false);
+                    return;
+                  }
+                  await saveIgLink.mutateAsync(igDraft.trim());
+                }}
+                onCancel={() => {
+                  setIgDraft(igHref);
+                  setIgError("");
+                  setIgEditing(false);
+                }}
+              />
               {p.student?.full_name && (
                 <p className="mt-2 text-sm text-muted">
                   <span className="font-medium text-fg">{p.student.full_name}</span>
@@ -321,18 +397,17 @@ export default function ProfileDetailPage() {
               </div>
               {p.website && (
                 <a href={p.website} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 text-sm text-accent hover:underline">
-                  {p.website} <ExternalLink size={12} />
+                  {p.website}
                 </a>
               )}
             </div>
           </div>
           <div className="flex flex-col items-end gap-2">
             <div className="flex flex-wrap gap-2">
-              <Button onClick={() => refresh.mutate()} disabled={refresh.isPending}>
+              <Button onClick={() => refresh.mutate()} disabled={refresh.isPending || saveIgLink.isPending}>
                 <RefreshCw size={15} className={refresh.isPending ? "animate-spin" : ""} />
                 {refresh.isPending ? "Scraping…" : "Refresh"}
-              </Button>
-              <Button variant="secondary" onClick={() => pause.mutate()}>
+              </Button>              <Button variant="secondary" onClick={() => pause.mutate()}>
                 <Pause size={15} /> Pause
               </Button>
               <Button variant="danger" onClick={() => del.mutate()}>

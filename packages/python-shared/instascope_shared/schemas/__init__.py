@@ -60,6 +60,12 @@ class AddProfileRequest(BaseModel):
     student: dict[str, Any] = Field(default_factory=dict)
 
 
+class UpdateProfileRequest(BaseModel):
+    """Change the tracked Instagram handle/URL for an existing profile."""
+
+    url: str = Field(min_length=1, description="Instagram profile URL or @username")
+
+
 class StudentInfo(BaseModel):
     """Registration-sheet fields shown on profile pages."""
 

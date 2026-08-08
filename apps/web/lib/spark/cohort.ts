@@ -39,14 +39,33 @@ function formatYmdShort(ymd: string): string {
   return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
-/** Short line for headers: "Programme started 15 Jul 2026 · scored to 7 Aug 2026" */
-export function programmeWindowLine(toYmd?: string | null): string {
-  const end = formatYmdShort(toYmd || utcTodayYmd());
-  return `Programme started ${PROGRAMME_STARTED_LABEL} · data & SPARK points calculated from ${PROGRAMME_STARTED_LABEL} to ${end}`;
+export function programmeWindowEndYmd(toYmd?: string | null): string {
+  return toYmd || utcTodayYmd();
 }
 
-/** Compact badge text */
+export function programmeWindowEndLabel(toYmd?: string | null): string {
+  return formatYmdShort(programmeWindowEndYmd(toYmd));
+}
+
+/** True when the end of the window is calendar-today (UTC). */
+export function isProgrammeWindowLive(toYmd?: string | null): boolean {
+  return programmeWindowEndYmd(toYmd) === utcTodayYmd();
+}
+
+/** Short line for headers */
+export function programmeWindowLine(toYmd?: string | null): string {
+  const end = programmeWindowEndLabel(toYmd);
+  const live = isProgrammeWindowLive(toYmd);
+  return live
+    ? `Programme started ${PROGRAMME_STARTED_LABEL} · scored through today (${end}) — end date updates daily`
+    : `Programme started ${PROGRAMME_STARTED_LABEL} · data & SPARK points calculated from ${PROGRAMME_STARTED_LABEL} to ${end}`;
+}
+
+/** Compact badge text (plain string fallback) */
 export function programmeWindowBadge(toYmd?: string | null): string {
-  const end = formatYmdShort(toYmd || utcTodayYmd());
+  const end = programmeWindowEndLabel(toYmd);
+  if (isProgrammeWindowLive(toYmd)) {
+    return `${PROGRAMME_STARTED_LABEL} → Today (${end})`;
+  }
   return `${PROGRAMME_STARTED_LABEL} → ${end}`;
 }
