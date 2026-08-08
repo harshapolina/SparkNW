@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Download, Search } from "lucide-react";
+import { Download, Search } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AdminOverviewResponse, LeaderboardResponse, SparkCreatorRow } from "@/lib/spark/api-types";
 import type { LeaderboardSort } from "@/lib/spark/types";
@@ -21,19 +21,6 @@ const sorts: { id: LeaderboardSort; label: string }[] = [
   { id: "engagement", label: "ENGAGEMENT" },
 ];
 
-/** Sliding window of page numbers so every page is reachable (not capped at 5). */
-function pageWindow(current: number, total: number, size = 7): number[] {
-  if (total <= size) return Array.from({ length: total }, (_, i) => i + 1);
-  const half = Math.floor(size / 2);
-  let start = Math.max(1, current - half);
-  let end = start + size - 1;
-  if (end > total) {
-    end = total;
-    start = Math.max(1, end - size + 1);
-  }
-  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
-}
-
 function buildLeaderboardUrl(sort: LeaderboardSort, fromDate: string, toDate: string) {
   const params = new URLSearchParams({ sort });
   params.set("from_date", fromDate);
@@ -48,8 +35,6 @@ export default function AdminLeaderboardPage() {
   const [campus, setCampus] = useState<string>("all");
   const [tier, setTier] = useState<string>("all");
   const [q, setQ] = useState("");
-  const [page, setPage] = useState(1);
-  const perPage = 10;
 
   const boardQ = useQuery({
     queryKey: ["spark", "leaderboard", sort, range.from, range.to],
@@ -77,17 +62,9 @@ export default function AdminLeaderboardPage() {
     return list.map((c, i) => ({ ...c, rank: i + 1 }));
   }, [boardQ.data, campus, tier, q]);
 
-  const totalPages = Math.max(1, Math.ceil(ranked.length / perPage));
-  const safePage = Math.min(page, totalPages);
-  const pageRows = ranked.slice((safePage - 1) * perPage, safePage * perPage);
   const admin = adminQ.data;
   const campuses = boardQ.data?.campuses || [];
   const appliedTo = boardQ.data?.to_date || range.to;
-  const pages = pageWindow(safePage, totalPages);
-
-  useEffect(() => {
-    if (page > totalPages) setPage(totalPages);
-  }, [page, totalPages]);
 
   const exportCsv = () => {
     const header = ["Rank", "Name", "Handle", "Campus", "Team", "Tier", "Points", "Followers", "Views", "Engagement", "Trend"];
@@ -177,10 +154,7 @@ export default function AdminLeaderboardPage() {
               <button
                 key={s.id}
                 type="button"
-                onClick={() => {
-                  setSort(s.id);
-                  setPage(1);
-                }}
+                onClick={() => setSort(s.id)}
                 className={cn(
                   "shrink-0 rounded-full px-3.5 py-1.5 text-[11px] font-bold tracking-[0.08em] transition",
                   sort === s.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400 hover:text-zinc-200"
@@ -195,20 +169,14 @@ export default function AdminLeaderboardPage() {
               <Search size={14} className="text-zinc-500" />
               <input
                 value={q}
-                onChange={(e) => {
-                  setQ(e.target.value);
-                  setPage(1);
-                }}
+                onChange={(e) => setQ(e.target.value)}
                 placeholder="Search by name, team or campus..."
                 className="w-full bg-transparent text-sm outline-none placeholder:text-zinc-600"
               />
             </label>
             <select
               value={campus}
-              onChange={(e) => {
-                setCampus(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => setCampus(e.target.value)}
               className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-300"
             >
               <option value="all">All campuses</option>
@@ -220,10 +188,7 @@ export default function AdminLeaderboardPage() {
             </select>
             <select
               value={tier}
-              onChange={(e) => {
-                setTier(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => setTier(e.target.value)}
               className="rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-zinc-300"
             >
               <option value="all">All tiers</option>
@@ -263,11 +228,11 @@ export default function AdminLeaderboardPage() {
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((row) => (
+              {ranked.map((row) => (
                 <tr key={row.id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
                   <td
                     className={cn(
-                      "px-3 py-3 text-lg font-semibold tabular",
+                      "px-3 py-3 font-semibold tabular",
                       row.rank === 1 && "text-[#cd7f32]",
                       row.rank === 2 && "text-zinc-300",
                       row.rank === 3 && "text-[#f5c542]",
@@ -278,13 +243,13 @@ export default function AdminLeaderboardPage() {
                   </td>
                   <td className="px-3 py-3">
                     <Link href={`/admin-scraping/${row.id}`} className="flex items-center gap-2.5 hover:opacity-90">
-                      <SparkAvatar initials={row.initials} size="sm" />
+                      <SparkAvatar initials={row.initials} size="sm" accent={row.rank <= 3} />
                       <div>
-                        <div className="font-medium">{row.name}</div>
-                        <div className="text-[11px] text-zinc-500">
-                          {row.handle}
+                        <div className="font-medium text-zinc-100">
+                          {row.name}
                           {row.team ? ` · ${row.team}` : ""}
                         </div>
+                        <div className="text-[11px] text-zinc-500">{row.handle}</div>
                       </div>
                     </Link>
                   </td>
@@ -294,7 +259,7 @@ export default function AdminLeaderboardPage() {
                   </td>
                   <td
                     className={cn(
-                      "px-3 py-3 tabular font-semibold",
+                      "px-3 py-3 tabular",
                       sort === "overall" || sort === "points" ? "text-[#ff4d00]" : "text-zinc-200"
                     )}
                   >
@@ -329,7 +294,7 @@ export default function AdminLeaderboardPage() {
                   </td>
                 </tr>
               ))}
-              {!pageRows.length && (
+              {!ranked.length && (
                 <tr>
                   <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
                     No creators match these filters.
@@ -346,70 +311,9 @@ export default function AdminLeaderboardPage() {
           Orange column is the active sort.
         </p>
 
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
-          <span>
-            Showing {ranked.length ? (safePage - 1) * perPage + 1 : 0} to{" "}
-            {Math.min(safePage * perPage, ranked.length)} of {ranked.length} creators.
-          </span>
-          <div className="flex flex-wrap items-center gap-1">
-            <button
-              type="button"
-              disabled={safePage <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              className="inline-flex h-8 items-center gap-1 rounded-lg bg-zinc-900 px-2 text-zinc-400 disabled:opacity-40"
-              aria-label="Previous page"
-            >
-              <ChevronLeft size={14} />
-            </button>
-            {pages[0] > 1 && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setPage(1)}
-                  className="h-8 w-8 rounded-lg bg-zinc-900 text-zinc-400"
-                >
-                  1
-                </button>
-                {pages[0] > 2 && <span className="px-1 text-zinc-600">…</span>}
-              </>
-            )}
-            {pages.map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => setPage(p)}
-                className={cn(
-                  "h-8 min-w-8 rounded-lg px-2",
-                  safePage === p ? "bg-[#ff4d00] text-white" : "bg-zinc-900 text-zinc-400"
-                )}
-              >
-                {p}
-              </button>
-            ))}
-            {pages[pages.length - 1] < totalPages && (
-              <>
-                {pages[pages.length - 1] < totalPages - 1 && (
-                  <span className="px-1 text-zinc-600">…</span>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setPage(totalPages)}
-                  className="h-8 min-w-8 rounded-lg bg-zinc-900 px-2 text-zinc-400"
-                >
-                  {totalPages}
-                </button>
-              </>
-            )}
-            <button
-              type="button"
-              disabled={safePage >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              className="inline-flex h-8 items-center gap-1 rounded-lg bg-zinc-900 px-2 text-zinc-400 disabled:opacity-40"
-              aria-label="Next page"
-            >
-              <ChevronRight size={14} />
-            </button>
-          </div>
+        <div className="mt-4 text-xs text-zinc-500">
+          Showing all {formatNumber(ranked.length)} creators
+          {(campus !== "all" || tier !== "all" || q.trim()) && " (filtered)"}.
         </div>
       </div>
     </div>
