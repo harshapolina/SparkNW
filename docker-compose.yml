@@ -1,6 +1,7 @@
 services:
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
@@ -9,6 +10,7 @@ services:
   # Optional local Mongo — omit if using Atlas (set MONGODB_URI in .env)
   mongo:
     image: mongo:7
+    restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
@@ -20,6 +22,7 @@ services:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.api
+    restart: unless-stopped
     env_file:
       - .env
     environment:
@@ -53,11 +56,13 @@ services:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.worker
+    restart: unless-stopped
     env_file:
       - .env
     environment:
       MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017}
       MONGODB_DB: ${MONGODB_DB:-instascope}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       LIVE_SCRAPE: ${LIVE_SCRAPE:-1}
       SCRAPE_STRICT: ${SCRAPE_STRICT:-1}
       SCRAPE_DELAY_SECONDS: ${SCRAPE_DELAY_SECONDS:-2}
@@ -66,6 +71,10 @@ services:
       SCRAPE_PAGE_DELAY_SECONDS: ${SCRAPE_PAGE_DELAY_SECONDS:-0.6}
       SCRAPE_ENRICH_MAX: ${SCRAPE_ENRICH_MAX:-0}
       SCRAPE_ENRICH_DELAY_SECONDS: ${SCRAPE_ENRICH_DELAY_SECONDS:-0.9}
+      CELERY_TIMEZONE: ${CELERY_TIMEZONE:-Asia/Kolkata}
+      DAILY_SCRAPE_HOUR_IST: ${DAILY_SCRAPE_HOUR_IST:-8}
+      DAILY_SCRAPE_MINUTE_IST: ${DAILY_SCRAPE_MINUTE_IST:-0}
+      DAILY_SCRAPE_STAGGER_SECONDS: ${DAILY_SCRAPE_STAGGER_SECONDS:-12}
       # IMPORTANT: do NOT set SCRAPE_PROXY_* here with ${VAR:-}.
       # Empty defaults override env_file and wipe Decodo credentials on the cloud.
       # Proxy settings come from .env (env_file) and/or MongoDB app_config.
@@ -81,6 +90,7 @@ services:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.worker
+    restart: unless-stopped
     # Fires daily-scrape-all-profiles at 08:00 Asia/Kolkata (see celery_app beat_schedule)
     command: celery -A celery_app.celery_app beat --loglevel=INFO
     env_file:
@@ -107,12 +117,15 @@ services:
       dockerfile: infra/docker/Dockerfile.web
       args:
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
+    restart: unless-stopped
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api/v1}
     ports:
       - "3000:3000"
     depends_on:
       - api
+    # Production (Hetzner): include with --profile full
+    # Local: use npm run dev, or: docker compose --profile full up -d web
     profiles:
       - full
 

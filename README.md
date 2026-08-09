@@ -30,7 +30,7 @@ Ranking uses the SPARK point system (overall = total points). Sub-sorts: followe
 
 Or create a new account on `/signup`.
 
-## Start commands
+## Start commands (local)
 
 ```bash
 # API + Redis (Docker)
@@ -44,6 +44,32 @@ docker compose up -d worker beat
 cd apps/web
 npm run dev
 ```
+
+## Production (Hetzner — 24/7)
+
+Live host: `62.238.57.52` · app dir: `/opt/instascope`
+
+**All of these must stay up on the server** (laptop can be off):
+
+| Service | Role |
+|---------|------|
+| `redis` | Celery broker |
+| `api` | FastAPI + manual Add/Refresh |
+| `worker` | Executes scrape jobs |
+| `beat` | Schedules daily scrape at **08:00 IST** |
+| `web` | Next.js UI (`:3000`) |
+
+```bash
+ssh root@62.238.57.52
+cd /opt/instascope
+bash scripts/deploy-hetzner.sh
+# or:
+# git pull origin main
+# docker compose --profile full up -d --build redis api worker beat web
+docker compose ps   # redis, api, worker, beat, web all Up
+```
+
+`restart: unless-stopped` keeps the stack running after reboot. Without **beat**, daily scrapes never fire.
 
 ## MongoDB
 

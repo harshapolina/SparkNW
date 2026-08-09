@@ -237,14 +237,17 @@ export default function AdminHowItWorksPage() {
 
           <h3 className="pt-2 text-sm font-semibold text-zinc-200">Daily auto-scrape (08:00 IST)</h3>
           <p className="text-sm text-zinc-400">
-            Celery Beat runs every day at <span className="text-zinc-200">08:00 Asia/Kolkata</span> and
-            queues a programme-window scrape for every{" "}
-            <span className="text-zinc-200">ACTIVE</span> account, including private ones. If a private
-            account is public that morning, the scrape clears the private flag and it moves into the{" "}
-            <span className="text-zinc-200">Active</span> filter. Workers pick jobs up with a short
-            stagger so proxies are not rate-limited. Keep{" "}
-            <span className="font-mono text-zinc-300">docker compose up -d worker beat</span> running —
-            without Beat, daily scrapes will not fire. Override with{" "}
+            On production (Hetzner), Celery Beat runs on the server every day at{" "}
+            <span className="text-zinc-200">08:00 Asia/Kolkata</span> and queues a programme-window
+            scrape for every <span className="text-zinc-200">ACTIVE</span> account, including private
+            ones. If a private account is public that morning, the scrape clears the private flag and
+            it moves into the <span className="text-zinc-200">Active</span> filter. Workers pick jobs
+            up with a short stagger so proxies are not rate-limited. Keep{" "}
+            <span className="font-mono text-zinc-300">
+              docker compose --profile full up -d redis api worker beat web
+            </span>{" "}
+            running on the server — without Beat, daily scrapes will not fire (laptop does not need to
+            be on). Override with{" "}
             <span className="font-mono text-zinc-300">DAILY_SCRAPE_HOUR_IST</span> /{" "}
             <span className="font-mono text-zinc-300">DAILY_SCRAPE_MINUTE_IST</span>.
           </p>
