@@ -307,3 +307,11 @@ class SettingsUpdateRequest(BaseModel):
     notify_engagement_spike: Optional[bool] = None
     engagement_spike_pct: Optional[float] = None
     timezone: Optional[str] = None
+
+
+class DailyScrapeSettingsResponse(BaseModel):
+    enabled: bool
+
+
+class DailyScrapeSettingsUpdateRequest(BaseModel):
+    enabled: bool

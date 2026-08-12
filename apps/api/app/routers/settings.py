@@ -2,9 +2,18 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends
 
-from app.deps import get_current_user
+from app.deps import get_current_user, require_admin
 from instascope_shared.models import User, UserSettings
-from instascope_shared.schemas import SettingsResponse, SettingsUpdateRequest
+from instascope_shared.schemas import (
+    DailyScrapeSettingsResponse,
+    DailyScrapeSettingsUpdateRequest,
+    SettingsResponse,
+    SettingsUpdateRequest,
+)
+from instascope_shared.services.app_config import (
+    is_daily_scrape_enabled,
+    set_daily_scrape_enabled,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -48,3 +57,19 @@ async def update_settings(payload: SettingsUpdateRequest, user: User = Depends(g
         engagement_spike_pct=s.engagement_spike_pct,
         timezone=s.timezone,
     )
+
+
+@router.get("/daily-scrape", response_model=DailyScrapeSettingsResponse)
+async def get_daily_scrape_settings(_: User = Depends(require_admin)):
+    """Admin: whether the scheduled morning scrape is allowed to run."""
+    return DailyScrapeSettingsResponse(enabled=await is_daily_scrape_enabled())
+
+
+@router.patch("/daily-scrape", response_model=DailyScrapeSettingsResponse)
+async def update_daily_scrape_settings(
+    payload: DailyScrapeSettingsUpdateRequest,
+    _: User = Depends(require_admin),
+):
+    """Admin: turn daily auto-scrape on/off. Stays until changed again."""
+    enabled = await set_daily_scrape_enabled(payload.enabled)
+    return DailyScrapeSettingsResponse(enabled=enabled)

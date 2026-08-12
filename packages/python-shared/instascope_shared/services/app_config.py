@@ -18,6 +18,7 @@ from pymongo import ASCENDING, IndexModel
 logger = logging.getLogger("instascope.app_config")
 
 PROXY_CONFIG_KEY = "scrape_proxy"
+DAILY_SCRAPE_CONFIG_KEY = "daily_scrape"
 
 
 class AppConfig(Document):
@@ -119,3 +120,42 @@ async def upsert_proxy_config(data: dict[str, Any]) -> AppConfig:
     await doc.save()
     await apply_proxy_config_to_env(force=True)
     return doc
+
+
+async def is_daily_scrape_enabled() -> bool:
+    """Whether Celery Beat daily fan-out should enqueue scrapes.
+
+    Defaults to True when unset so existing deployments keep scraping until
+    an admin turns the toggle off (e.g. Decodo bandwidth exhausted).
+    """
+    try:
+        doc = await AppConfig.find_one(AppConfig.key == DAILY_SCRAPE_CONFIG_KEY)
+    except Exception:
+        logger.exception("failed reading app_config daily_scrape")
+        return True
+    if not doc or not isinstance(doc.data, dict):
+        return True
+    enabled = doc.data.get("enabled")
+    if enabled is None:
+        return True
+    return bool(enabled)
+
+
+async def set_daily_scrape_enabled(enabled: bool) -> bool:
+    """Persist the admin daily-scrape toggle. Returns the stored value."""
+    data = {"enabled": bool(enabled)}
+    doc = await AppConfig.find_one(AppConfig.key == DAILY_SCRAPE_CONFIG_KEY)
+    if not doc:
+        doc = AppConfig(
+            key=DAILY_SCRAPE_CONFIG_KEY,
+            data=data,
+            updated_at=datetime.utcnow(),
+        )
+        await doc.insert()
+        return bool(enabled)
+    merged = dict(doc.data or {})
+    merged["enabled"] = bool(enabled)
+    doc.data = merged
+    doc.updated_at = datetime.utcnow()
+    await doc.save()
+    return bool(enabled)

@@ -23,6 +23,23 @@ logger = logging.getLogger("instascope.worker.fanout")
 async def _fanout() -> dict:
     await connect_db()
     try:
+        from instascope_shared.services.app_config import is_daily_scrape_enabled
+
+        # Admin toggle (MongoDB) — off pauses morning scrapes (e.g. proxy quota)
+        # without changing Beat schedule or manual Refresh.
+        if not await is_daily_scrape_enabled():
+            summary = {
+                "enqueued": 0,
+                "enqueued_private": 0,
+                "skipped_pending": 0,
+                "active_total": 0,
+                "stagger_seconds": 0,
+                "skipped": True,
+                "reason": "daily_scrape_disabled",
+            }
+            logger.info("daily fanout skipped — admin daily scrape toggle is off")
+            return summary
+
         settings = get_settings()
         stagger = max(0.0, float(settings.daily_scrape_stagger_seconds or 0))
         profiles = await Profile.find(Profile.status == ProfileStatus.ACTIVE).to_list()
