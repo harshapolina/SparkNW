@@ -331,13 +331,13 @@ class DailyYouTubeSyncSettingsUpdateRequest(BaseModel):
 
 class YouTubeConnectRequest(BaseModel):
     url: str = Field(min_length=1, description="Channel URL, @handle, or UC… id")
-    # 0 = all uploads on/after programme start (15 Jul); hard-capped server-side.
-    max_videos: int = Field(default=0, ge=0, le=2000)
+    # 0 = all uploads on/after programme start (15 Jul); no soft cap.
+    max_videos: int = Field(default=0, ge=0, le=50000)
     sync_videos: bool = True
 
 
 class YouTubeSyncRequest(BaseModel):
-    max_videos: int = Field(default=0, ge=0, le=2000)
+    max_videos: int = Field(default=0, ge=0, le=50000)
     fetch_videos: bool = True
 
 
@@ -375,17 +375,27 @@ class YouTubeVideoPublic(BaseModel):
     url: str = ""
     published_at: Optional[str] = None
     thumbnail_url: Optional[str] = None
+    thumbnails: dict[str, Any] = Field(default_factory=dict)
     channel_title: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     category_id: Optional[str] = None
     live_broadcast_content: Optional[str] = None
     default_language: Optional[str] = None
     default_audio_language: Optional[str] = None
+    topic_categories: list[str] = Field(default_factory=list)
+    recording_date: Optional[str] = None
+    live_streaming: dict[str, Any] = Field(default_factory=dict)
+    player_embed_html: Optional[str] = None
+    localizations: dict[str, Any] = Field(default_factory=dict)
+    content_rating: dict[str, Any] = Field(default_factory=dict)
+    region_restriction: dict[str, Any] = Field(default_factory=dict)
     view_count: int = 0
     like_count: Optional[int] = None
     comment_count: Optional[int] = None
     favorite_count: Optional[int] = None
     duration: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    is_short: bool = False
     dimension: Optional[str] = None
     definition: Optional[str] = None
     caption: Optional[str] = None
@@ -397,6 +407,7 @@ class YouTubeVideoPublic(BaseModel):
     embeddable: Optional[bool] = None
     public_stats_viewable: Optional[bool] = None
     made_for_kids: Optional[bool] = None
+    public_api: dict[str, Any] = Field(default_factory=dict)
 
 
 class YouTubeInsightsResponse(BaseModel):

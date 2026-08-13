@@ -12,6 +12,7 @@ Does not touch scrape_core / Playwright / Decodo.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -35,8 +36,60 @@ logger = logging.getLogger("instascope.youtube.sync")
 
 # 0 = all uploads on/after programme start (SPARK_COHORT_START / 15 Jul 2026).
 DEFAULT_MAX_VIDEOS = 0
-# Hard safety cap so a single channel cannot burn unbounded quota.
-HARD_MAX_VIDEOS = 2000
+# Safety only when a positive max_videos is passed; 0/None = unlimited until date floor.
+HARD_MAX_VIDEOS = 50_000
+# YouTube Shorts max length is 3 minutes; Data API has no dedicated isShort flag.
+SHORTS_MAX_SECONDS = 180
+
+_ISO8601_DURATION_RE = re.compile(
+    r"^P(?:(?P<days>\d+)D)?(?:T(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?)?$",
+    re.IGNORECASE,
+)
+
+
+def parse_iso8601_duration_seconds(value: str | None) -> int | None:
+    """Parse YouTube contentDetails.duration (e.g. PT1M5S) → seconds."""
+    if not value:
+        return None
+    m = _ISO8601_DURATION_RE.match(str(value).strip())
+    if not m:
+        return None
+    days = int(m.group("days") or 0)
+    hours = int(m.group("hours") or 0)
+    minutes = int(m.group("minutes") or 0)
+    seconds = int(m.group("seconds") or 0)
+    return days * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
+def classify_youtube_short(
+    *,
+    duration: str | None,
+    title: str | None = None,
+    description: str | None = None,
+    tags: list[str] | tuple[str, ...] | None = None,
+) -> tuple[bool, int | None]:
+    """Return (is_short, duration_seconds).
+
+    Heuristic (Data API has no official Shorts flag):
+    - #shorts / #short in title, description, or tags → Short
+    - duration ≤ 180s (current Shorts max) → Short
+    - else → long-form
+    """
+    secs = parse_iso8601_duration_seconds(duration)
+    blob = " ".join(
+        [
+            str(title or ""),
+            str(description or ""),
+            " ".join(str(t) for t in (tags or ())),
+        ]
+    ).lower()
+    if "#shorts" in blob or "#short" in blob or " #shorts" in blob:
+        return True, secs
+    if any(str(t).lower() in {"shorts", "short", "#shorts", "#short"} for t in (tags or ())):
+        return True, secs
+    if secs is not None and 0 < secs <= SHORTS_MAX_SECONDS:
+        return True, secs
+    return False, secs
 
 
 def _parse_yt_datetime(value: str | None) -> datetime | None:
@@ -50,9 +103,9 @@ def _parse_yt_datetime(value: str | None) -> datetime | None:
 
 
 def _effective_max_videos(max_videos: int | None) -> int | None:
-    """0 / None → no soft cap (still HARD_MAX_VIDEOS). Positive → min with hard cap."""
+    """0 / None → no cap (paginate until programme-start floor). Positive → capped."""
     if max_videos is None or int(max_videos) <= 0:
-        return HARD_MAX_VIDEOS
+        return None
     return min(int(max_videos), HARD_MAX_VIDEOS)
 
 
@@ -82,6 +135,16 @@ def _map_sync_error(exc: Exception) -> tuple[YouTubeSyncStatus, str]:
 
 
 def _apply_video_fields(existing: YouTubeVideo, info: YouTubeVideoInfo, *, profile: Profile, channel: YouTubeChannel) -> None:
+    from instascope_shared.services.youtube_client import _thumbnails_map
+
+    raw = dict(info.raw or {})
+    snippet = raw.get("snippet") or {}
+    content = raw.get("contentDetails") or {}
+    topic = raw.get("topicDetails") or {}
+    recording = raw.get("recordingDetails") or {}
+    live = raw.get("liveStreamingDetails") or {}
+    player = raw.get("player") or {}
+
     existing.profile_id = str(profile.id)
     existing.user_id = profile.user_id
     existing.channel_id = channel.channel_id
@@ -90,17 +153,34 @@ def _apply_video_fields(existing: YouTubeVideo, info: YouTubeVideoInfo, *, profi
     existing.url = f"https://www.youtube.com/watch?v={info.video_id}"
     existing.published_at = _parse_yt_datetime(info.published_at)
     existing.thumbnail_url = info.thumbnail_url
+    existing.thumbnails = _thumbnails_map(snippet.get("thumbnails"))
     existing.channel_title = info.channel_title
     existing.tags = list(info.tags or ())
     existing.category_id = info.category_id
     existing.live_broadcast_content = info.live_broadcast_content
     existing.default_language = info.default_language
     existing.default_audio_language = info.default_audio_language
+    existing.topic_categories = [str(x) for x in (topic.get("topicCategories") or []) if x]
+    existing.recording_date = recording.get("recordingDate")
+    existing.live_streaming = dict(live) if isinstance(live, dict) else {}
+    existing.player_embed_html = player.get("embedHtml")
+    existing.localizations = dict(raw.get("localizations") or {})
+    existing.content_rating = dict(content.get("contentRating") or {})
+    existing.region_restriction = dict(content.get("regionRestriction") or {})
+    existing.public_api = raw
     existing.view_count = info.view_count
     existing.like_count = info.like_count
     existing.comment_count = info.comment_count
     existing.favorite_count = info.favorite_count
     existing.duration = info.duration
+    is_short, duration_seconds = classify_youtube_short(
+        duration=info.duration,
+        title=info.title,
+        description=info.description,
+        tags=list(info.tags or ()),
+    )
+    existing.duration_seconds = duration_seconds
+    existing.is_short = is_short
     existing.dimension = info.dimension
     existing.definition = info.definition
     existing.caption = info.caption
@@ -182,6 +262,21 @@ async def _upsert_channel_from_info(
     existing.channel_name = info.title
     existing.description = info.description
     existing.thumbnail_url = info.thumbnail_url
+    raw = dict(info.raw or {})
+    snippet = raw.get("snippet") or {}
+    branding = raw.get("brandingSettings") or {}
+    image = branding.get("image") or {}
+    channel_brand = branding.get("channel") or {}
+    topic = raw.get("topicDetails") or {}
+    from instascope_shared.services.youtube_client import _thumbnails_map
+
+    existing.thumbnails = _thumbnails_map(snippet.get("thumbnails"))
+    existing.country = snippet.get("country") or channel_brand.get("country")
+    existing.published_at = _parse_yt_datetime(info.published_at or snippet.get("publishedAt"))
+    existing.keywords = channel_brand.get("keywords")
+    existing.banner_url = image.get("bannerExternalUrl")
+    existing.topic_categories = [str(x) for x in (topic.get("topicCategories") or []) if x]
+    existing.public_api = raw
     existing.subscriber_count = info.subscriber_count
     existing.hidden_subscriber_count = info.hidden_subscriber_count
     existing.view_count = info.view_count
@@ -412,6 +507,15 @@ async def _upsert_snapshot(
 
 
 def _video_public_dict(row: YouTubeVideo) -> dict[str, Any]:
+    is_short = bool(getattr(row, "is_short", False))
+    duration_seconds = getattr(row, "duration_seconds", None)
+    if duration_seconds is None and row.duration:
+        is_short, duration_seconds = classify_youtube_short(
+            duration=row.duration,
+            title=row.title,
+            description=row.description,
+            tags=list(row.tags or []),
+        )
     return {
         "video_id": row.video_id,
         "title": row.title,
@@ -419,17 +523,27 @@ def _video_public_dict(row: YouTubeVideo) -> dict[str, Any]:
         "url": row.url,
         "published_at": row.published_at.isoformat() + "Z" if row.published_at else None,
         "thumbnail_url": row.thumbnail_url,
+        "thumbnails": dict(getattr(row, "thumbnails", None) or {}),
         "channel_title": row.channel_title,
         "tags": list(row.tags or []),
         "category_id": row.category_id,
         "live_broadcast_content": row.live_broadcast_content,
         "default_language": row.default_language,
         "default_audio_language": row.default_audio_language,
+        "topic_categories": list(getattr(row, "topic_categories", None) or []),
+        "recording_date": getattr(row, "recording_date", None),
+        "live_streaming": dict(getattr(row, "live_streaming", None) or {}),
+        "player_embed_html": getattr(row, "player_embed_html", None),
+        "localizations": dict(getattr(row, "localizations", None) or {}),
+        "content_rating": dict(getattr(row, "content_rating", None) or {}),
+        "region_restriction": dict(getattr(row, "region_restriction", None) or {}),
         "view_count": int(row.view_count or 0),
         "like_count": row.like_count,
         "comment_count": row.comment_count,
         "favorite_count": row.favorite_count,
         "duration": row.duration,
+        "duration_seconds": duration_seconds,
+        "is_short": is_short,
         "dimension": row.dimension,
         "definition": row.definition,
         "caption": row.caption,
@@ -441,7 +555,22 @@ def _video_public_dict(row: YouTubeVideo) -> dict[str, Any]:
         "embeddable": row.embeddable,
         "public_stats_viewable": row.public_stats_viewable,
         "made_for_kids": row.made_for_kids,
+        "public_api": dict(getattr(row, "public_api", None) or {}),
     }
+
+
+def _video_is_short(row: YouTubeVideo) -> bool:
+    if getattr(row, "is_short", None) is True:
+        return True
+    if getattr(row, "is_short", None) is False and getattr(row, "duration_seconds", None) is not None:
+        return False
+    is_short, _ = classify_youtube_short(
+        duration=row.duration,
+        title=row.title,
+        description=row.description,
+        tags=list(row.tags or []),
+    )
+    return is_short
 
 
 async def get_youtube_insights(profile_id: str) -> dict[str, Any]:
@@ -459,9 +588,13 @@ async def get_youtube_insights(profile_id: str) -> dict[str, Any]:
             videos.append(row)
 
     video_dicts = [_video_public_dict(v) for v in videos]
+    shorts = [v for v in videos if _video_is_short(v)]
+    long_form = [v for v in videos if not _video_is_short(v)]
     views = sum(int(v.view_count or 0) for v in videos)
     likes = sum(int(v.like_count or 0) for v in videos if v.like_count is not None)
     comments = sum(int(v.comment_count or 0) for v in videos if v.comment_count is not None)
+    shorts_views = sum(int(v.view_count or 0) for v in shorts)
+    long_views = sum(int(v.view_count or 0) for v in long_form)
     best = max(videos, key=lambda v: int(v.view_count or 0), default=None)
 
     return {
@@ -477,6 +610,14 @@ async def get_youtube_insights(profile_id: str) -> dict[str, Any]:
             "channel_name": channel.channel_name,
             "description": channel.description,
             "thumbnail_url": channel.thumbnail_url,
+            "thumbnails": dict(getattr(channel, "thumbnails", None) or {}),
+            "country": getattr(channel, "country", None),
+            "published_at": channel.published_at.isoformat() + "Z"
+            if getattr(channel, "published_at", None)
+            else None,
+            "keywords": getattr(channel, "keywords", None),
+            "banner_url": getattr(channel, "banner_url", None),
+            "topic_categories": list(getattr(channel, "topic_categories", None) or []),
             "subscriber_count": channel.subscriber_count,
             "hidden_subscriber_count": channel.hidden_subscriber_count,
             "view_count": channel.view_count,
@@ -488,10 +629,15 @@ async def get_youtube_insights(profile_id: str) -> dict[str, Any]:
             "last_synced_at": channel.last_synced_at.isoformat() + "Z"
             if channel.last_synced_at
             else None,
+            "public_api": dict(getattr(channel, "public_api", None) or {}),
         },
         "totals": {
             "videos_in_window": len(videos),
+            "shorts_count": len(shorts),
+            "long_form_count": len(long_form),
             "views_in_window": views,
+            "shorts_views": shorts_views,
+            "long_form_views": long_views,
             "likes_in_window": likes,
             "comments_in_window": comments,
             "avg_views": round(views / len(videos), 1) if videos else 0,

@@ -62,9 +62,14 @@ Daily sync uses stored `channel_id` only.
 ## Video window
 
 Sync pulls **all public uploads on/after programme start** (`SPARK_COHORT_START`, default **2026-07-15**).
-Older uploads are not stored. `max_videos: 0` (default) means “all in window” (hard-capped at 2000).
+Older uploads are not stored. `max_videos: 0` (default) means every in-window upload (no soft cap).
+
+Each sync requests **all public Data API parts** for channels + videos and stores the full `public_api` payload
+(plus flattened fields). Private Analytics / comment threads are not included (API key / quota limits).
 
 Insights: `GET /api/v1/youtube/profiles/{id}/insights` — channel public fields + every stored video’s public Data API fields for that window (Admin → Scraping → profile → Insights → YouTube insights).
+
+Videos are classified as **Shorts** (duration ≤ 180s or `#shorts` in title/description/tags) vs **long-form**; counts and lists are segregated in Insights.
 
 ## Scoring
 

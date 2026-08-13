@@ -95,6 +95,8 @@ type YouTubeInsightsVideo = {
   comment_count?: number | null;
   favorite_count?: number | null;
   duration?: string | null;
+  duration_seconds?: number | null;
+  is_short?: boolean;
   dimension?: string | null;
   definition?: string | null;
   caption?: string | null;
@@ -106,6 +108,7 @@ type YouTubeInsightsVideo = {
   embeddable?: boolean | null;
   public_stats_viewable?: boolean | null;
   made_for_kids?: boolean | null;
+  public_api?: Record<string, unknown>;
 };
 
 type YouTubeInsights = {
@@ -119,6 +122,12 @@ type YouTubeInsights = {
     channel_name?: string | null;
     description?: string | null;
     thumbnail_url?: string | null;
+    thumbnails?: Record<string, string>;
+    country?: string | null;
+    published_at?: string | null;
+    keywords?: string | null;
+    banner_url?: string | null;
+    topic_categories?: string[];
     subscriber_count?: number | null;
     hidden_subscriber_count?: boolean;
     view_count: number;
@@ -126,10 +135,15 @@ type YouTubeInsights = {
     sync_status?: string;
     last_error?: string | null;
     last_synced_at?: string | null;
+    public_api?: Record<string, unknown>;
   } | null;
   totals: {
     videos_in_window?: number;
+    shorts_count?: number;
+    long_form_count?: number;
     views_in_window?: number;
+    shorts_views?: number;
+    long_form_views?: number;
     likes_in_window?: number;
     comments_in_window?: number;
     avg_views?: number;
@@ -658,7 +672,7 @@ export default function AdminCreatorDetailPage() {
           <div>
             <h2 className="text-sm font-semibold">YouTube (public data)</h2>
             <p className="mt-0.5 text-xs text-zinc-500">
-              Separate from Instagram scrape · channel ID stored permanently after connect
+              Separate from Instagram · pulls every public upload since 15 Jul 2026 + full public API fields
             </p>
           </div>
           {youtubeQ.data?.connected ? (
@@ -1132,6 +1146,28 @@ export default function AdminCreatorDetailPage() {
                             {youtubeInsightsQ.data.channel.description}
                           </p>
                         ) : null}
+                        {(youtubeInsightsQ.data.channel.topic_categories || []).length ? (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {youtubeInsightsQ.data.channel.topic_categories!.map((t) => (
+                              <span
+                                key={t}
+                                className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400"
+                              >
+                                {t.replace(/^https?:\/\/en\.wikipedia\.org\/wiki\//, "")}
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {youtubeInsightsQ.data.channel.keywords ? (
+                          <p className="mt-2 text-[11px] text-zinc-500">
+                            Keywords: {youtubeInsightsQ.data.channel.keywords}
+                          </p>
+                        ) : null}
+                        {youtubeInsightsQ.data.channel.country ? (
+                          <p className="mt-1 text-[11px] text-zinc-500">
+                            Country: {youtubeInsightsQ.data.channel.country}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                     <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1157,13 +1193,28 @@ export default function AdminCreatorDetailPage() {
                         </div>
                       ))}
                     </div>
+                    {youtubeInsightsQ.data.channel.public_api &&
+                    Object.keys(youtubeInsightsQ.data.channel.public_api).length > 0 ? (
+                      <details className="mt-4 rounded-xl border border-white/[0.06] bg-black/20 p-3">
+                        <summary className="cursor-pointer text-xs font-medium text-zinc-300">
+                          Full channel public API payload
+                        </summary>
+                        <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-relaxed text-zinc-500">
+                          {JSON.stringify(youtubeInsightsQ.data.channel.public_api, null, 2)}
+                        </pre>
+                      </details>
+                    ) : null}
                   </div>
                 ) : null}
 
                 <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   {[
                     ["Videos since 15 Jul", formatNumber(num(youtubeInsightsQ.data.totals.videos_in_window))],
+                    ["Shorts", formatNumber(num(youtubeInsightsQ.data.totals.shorts_count))],
+                    ["Long-form", formatNumber(num(youtubeInsightsQ.data.totals.long_form_count))],
                     ["Views (in window)", formatNumber(num(youtubeInsightsQ.data.totals.views_in_window))],
+                    ["Shorts views", formatNumber(num(youtubeInsightsQ.data.totals.shorts_views))],
+                    ["Long-form views", formatNumber(num(youtubeInsightsQ.data.totals.long_form_views))],
                     ["Likes (in window)", formatNumber(num(youtubeInsightsQ.data.totals.likes_in_window))],
                     ["Comments (in window)", formatNumber(num(youtubeInsightsQ.data.totals.comments_in_window))],
                     ["Avg views / video", formatNumber(num(youtubeInsightsQ.data.totals.avg_views))],
@@ -1178,6 +1229,10 @@ export default function AdminCreatorDetailPage() {
                     </div>
                   ))}
                 </div>
+                <p className="mb-4 text-[11px] text-zinc-500">
+                  Shorts vs long-form: duration ≤ 3 min or #shorts in title/description/tags → Short; otherwise long-form.
+                  Re-sync to classify older rows.
+                </p>
                 {youtubeInsightsQ.data.totals.best_video_title ? (
                   <p className="mb-4 text-xs text-zinc-500">
                     Top video in window:{" "}
@@ -1198,94 +1253,130 @@ export default function AdminCreatorDetailPage() {
                   </p>
                 ) : null}
 
-                <div className="space-y-3">
-                  <div className="text-sm font-semibold text-zinc-200">
-                    All public uploads since 15 Jul ({youtubeInsightsQ.data.videos.length})
-                  </div>
-                  {!youtubeInsightsQ.data.videos.length ? (
-                    <p className="text-sm text-zinc-500">
-                      No uploads in the programme window yet. Click Sync YouTube after they publish.
-                    </p>
-                  ) : (
-                    youtubeInsightsQ.data.videos.map((v) => (
-                      <div
-                        key={v.video_id}
-                        className="overflow-hidden rounded-2xl border border-white/[0.06] bg-[#121212]"
-                      >
-                        <div className="flex flex-col gap-4 p-4 sm:flex-row">
-                          {v.thumbnail_url ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img
-                              src={v.thumbnail_url}
-                              alt=""
-                              className="h-28 w-full shrink-0 rounded-xl object-cover sm:h-24 sm:w-40"
-                            />
-                          ) : (
-                            <div className="flex h-28 w-full shrink-0 items-center justify-center rounded-xl bg-black/40 text-xs text-zinc-600 sm:h-24 sm:w-40">
-                              No thumb
-                            </div>
-                          )}
-                          <div className="min-w-0 flex-1 space-y-2">
-                            <div className="flex flex-wrap items-start justify-between gap-2">
-                              <a
-                                href={v.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-sm font-semibold text-zinc-100 hover:text-[#ff4d00]"
-                              >
-                                {v.title || v.video_id}
-                              </a>
-                              <span className="text-[11px] tabular text-zinc-500">
-                                {v.published_at ? new Date(v.published_at).toLocaleString() : "—"}
-                              </span>
-                            </div>
-                            {v.description ? (
-                              <p className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-500 line-clamp-3">
-                                {v.description}
-                              </p>
-                            ) : null}
-                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs tabular text-zinc-400">
-                              <span>{formatNumber(v.view_count)} views</span>
-                              <span>{formatNumber(num(v.like_count))} likes</span>
-                              <span>{formatNumber(num(v.comment_count))} comments</span>
-                              {v.favorite_count != null ? (
-                                <span>{formatNumber(v.favorite_count)} favorites</span>
-                              ) : null}
-                              {v.duration ? <span>{v.duration}</span> : null}
-                              {v.definition ? <span>{v.definition}</span> : null}
-                              {v.dimension ? <span>{v.dimension}</span> : null}
-                              {v.privacy_status ? <span>{v.privacy_status}</span> : null}
-                              {v.license ? <span>{v.license}</span> : null}
-                              {v.caption != null ? <span>captions: {String(v.caption)}</span> : null}
-                              {v.made_for_kids != null ? (
-                                <span>made for kids: {v.made_for_kids ? "yes" : "no"}</span>
-                              ) : null}
-                              {v.embeddable != null ? (
-                                <span>embeddable: {v.embeddable ? "yes" : "no"}</span>
-                              ) : null}
-                              {v.category_id ? <span>category {v.category_id}</span> : null}
-                              {v.live_broadcast_content && v.live_broadcast_content !== "none" ? (
-                                <span>{v.live_broadcast_content}</span>
-                              ) : null}
-                            </div>
-                            {(v.tags || []).length ? (
-                              <div className="flex flex-wrap gap-1.5">
-                                {v.tags!.slice(0, 24).map((t) => (
-                                  <span
-                                    key={t}
-                                    className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400"
-                                  >
-                                    {t}
-                                  </span>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
+                {!youtubeInsightsQ.data.videos.length ? (
+                  <p className="text-sm text-zinc-500">
+                    No uploads in the programme window yet. Click Sync YouTube after they publish.
+                  </p>
+                ) : (
+                  (["shorts", "long"] as const).map((kind) => {
+                    const rows = youtubeInsightsQ.data!.videos.filter((v) =>
+                      kind === "shorts" ? Boolean(v.is_short) : !v.is_short
+                    );
+                    return (
+                      <div key={kind} className="mb-6 space-y-3">
+                        <div className="text-sm font-semibold text-zinc-200">
+                          {kind === "shorts" ? "Shorts" : "Long-form videos"} ({rows.length})
                         </div>
+                        {!rows.length ? (
+                          <p className="text-sm text-zinc-500">None in this window.</p>
+                        ) : (
+                          rows.map((v) => (
+                            <div
+                              key={v.video_id}
+                              className="overflow-hidden rounded-2xl border border-white/[0.06] bg-[#121212]"
+                            >
+                              <div className="flex flex-col gap-4 p-4 sm:flex-row">
+                                {v.thumbnail_url ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img
+                                    src={v.thumbnail_url}
+                                    alt=""
+                                    className="h-28 w-full shrink-0 rounded-xl object-cover sm:h-24 sm:w-40"
+                                  />
+                                ) : (
+                                  <div className="flex h-28 w-full shrink-0 items-center justify-center rounded-xl bg-black/40 text-xs text-zinc-600 sm:h-24 sm:w-40">
+                                    No thumb
+                                  </div>
+                                )}
+                                <div className="min-w-0 flex-1 space-y-2">
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
+                                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                      <span
+                                        className={cn(
+                                          "rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide",
+                                          v.is_short
+                                            ? "bg-rose-500/15 text-rose-300"
+                                            : "bg-sky-500/15 text-sky-300"
+                                        )}
+                                      >
+                                        {v.is_short ? "Short" : "Long-form"}
+                                      </span>
+                                      <a
+                                        href={v.url}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-sm font-semibold text-zinc-100 hover:text-[#ff4d00]"
+                                      >
+                                        {v.title || v.video_id}
+                                      </a>
+                                    </div>
+                                    <span className="text-[11px] tabular text-zinc-500">
+                                      {v.published_at ? new Date(v.published_at).toLocaleString() : "—"}
+                                    </span>
+                                  </div>
+                                  {v.description ? (
+                                    <p className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-500 line-clamp-3">
+                                      {v.description}
+                                    </p>
+                                  ) : null}
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs tabular text-zinc-400">
+                                    <span>{formatNumber(v.view_count)} views</span>
+                                    <span>{formatNumber(num(v.like_count))} likes</span>
+                                    <span>{formatNumber(num(v.comment_count))} comments</span>
+                                    {v.favorite_count != null ? (
+                                      <span>{formatNumber(v.favorite_count)} favorites</span>
+                                    ) : null}
+                                    {v.duration ? <span>{v.duration}</span> : null}
+                                    {v.duration_seconds != null ? (
+                                      <span>{v.duration_seconds}s</span>
+                                    ) : null}
+                                    {v.definition ? <span>{v.definition}</span> : null}
+                                    {v.dimension ? <span>{v.dimension}</span> : null}
+                                    {v.privacy_status ? <span>{v.privacy_status}</span> : null}
+                                    {v.license ? <span>{v.license}</span> : null}
+                                    {v.caption != null ? <span>captions: {String(v.caption)}</span> : null}
+                                    {v.made_for_kids != null ? (
+                                      <span>made for kids: {v.made_for_kids ? "yes" : "no"}</span>
+                                    ) : null}
+                                    {v.embeddable != null ? (
+                                      <span>embeddable: {v.embeddable ? "yes" : "no"}</span>
+                                    ) : null}
+                                    {v.category_id ? <span>category {v.category_id}</span> : null}
+                                    {v.live_broadcast_content && v.live_broadcast_content !== "none" ? (
+                                      <span>{v.live_broadcast_content}</span>
+                                    ) : null}
+                                  </div>
+                                  {(v.tags || []).length ? (
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {v.tags!.slice(0, 24).map((t) => (
+                                        <span
+                                          key={t}
+                                          className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400"
+                                        >
+                                          {t}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                  {v.public_api && Object.keys(v.public_api).length > 0 ? (
+                                    <details className="rounded-lg border border-white/[0.06] bg-black/20 p-2">
+                                      <summary className="cursor-pointer text-[11px] text-zinc-400">
+                                        Full public API payload for this video
+                                      </summary>
+                                      <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-relaxed text-zinc-500">
+                                        {JSON.stringify(v.public_api, null, 2)}
+                                      </pre>
+                                    </details>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
                       </div>
-                    ))
-                  )}
-                </div>
+                    );
+                  })
+                )}
               </>
             )}
           </div>

@@ -295,6 +295,14 @@ class YouTubeChannel(Document):
     channel_name: Optional[str] = None
     description: Optional[str] = None
     thumbnail_url: Optional[str] = None
+    thumbnails: dict = Field(default_factory=dict)
+    country: Optional[str] = None
+    published_at: Optional[datetime] = None
+    keywords: Optional[str] = None
+    banner_url: Optional[str] = None
+    topic_categories: list[str] = Field(default_factory=list)
+    # Full public channels.list item (all requested parts).
+    public_api: dict = Field(default_factory=dict)
 
     subscriber_count: Optional[int] = None
     hidden_subscriber_count: bool = False
@@ -333,12 +341,22 @@ class YouTubeVideo(Document):
     url: str = ""
     published_at: Optional[datetime] = None
     thumbnail_url: Optional[str] = None
+    thumbnails: dict = Field(default_factory=dict)
     channel_title: Optional[str] = None
     tags: list[str] = Field(default_factory=list)
     category_id: Optional[str] = None
     live_broadcast_content: Optional[str] = None
     default_language: Optional[str] = None
     default_audio_language: Optional[str] = None
+    topic_categories: list[str] = Field(default_factory=list)
+    recording_date: Optional[str] = None
+    live_streaming: dict = Field(default_factory=dict)
+    player_embed_html: Optional[str] = None
+    localizations: dict = Field(default_factory=dict)
+    content_rating: dict = Field(default_factory=dict)
+    region_restriction: dict = Field(default_factory=dict)
+    # Full public videos.list item (all requested parts).
+    public_api: dict = Field(default_factory=dict)
 
     view_count: int = 0
     like_count: Optional[int] = None
@@ -346,6 +364,8 @@ class YouTubeVideo(Document):
     favorite_count: Optional[int] = None
 
     duration: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    is_short: bool = False
     dimension: Optional[str] = None
     definition: Optional[str] = None
     caption: Optional[str] = None
@@ -368,6 +388,7 @@ class YouTubeVideo(Document):
             IndexModel([("video_id", ASCENDING)], unique=True),
             IndexModel([("channel_id", ASCENDING), ("published_at", DESCENDING)]),
             IndexModel([("profile_id", ASCENDING), ("published_at", DESCENDING)]),
+            IndexModel([("channel_id", ASCENDING), ("is_short", ASCENDING)]),
         ]
 
 

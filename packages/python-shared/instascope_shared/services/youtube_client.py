@@ -33,6 +33,13 @@ logger = logging.getLogger("instascope.youtube.client")
 YOUTUBE_API_BASE = "https://www.googleapis.com/youtube/v3"
 # YouTube allows up to 50 ids per channels.list / videos.list call.
 MAX_IDS_PER_REQUEST = 50
+# All public channel parts available with an API key (no OAuth / Analytics).
+CHANNEL_PUBLIC_PARTS = "snippet,statistics,contentDetails,brandingSettings,topicDetails,status"
+# All public video parts available with an API key.
+VIDEO_PUBLIC_PARTS = (
+    "snippet,statistics,contentDetails,status,topicDetails,"
+    "recordingDetails,liveStreamingDetails,player,localizations"
+)
 
 ChannelRefKind = Literal["channel_id", "handle", "username", "custom_path"]
 
@@ -212,17 +219,30 @@ def _as_optional_int(value: Any) -> int | None:
         return None
 
 
+def _thumbnails_map(thumbs: dict[str, Any] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not isinstance(thumbs, dict):
+        return out
+    for key, row in thumbs.items():
+        if isinstance(row, dict) and row.get("url"):
+            out[str(key)] = str(row["url"])
+    return out
+
+
+def _best_thumb(thumbs: dict[str, Any] | None) -> str | None:
+    mapped = _thumbnails_map(thumbs)
+    for key in ("maxres", "standard", "high", "medium", "default"):
+        if key in mapped:
+            return mapped[key]
+    return next(iter(mapped.values()), None)
+
+
 def _channel_from_item(item: dict[str, Any]) -> YouTubeChannelInfo:
     snippet = item.get("snippet") or {}
     stats = item.get("statistics") or {}
     content = item.get("contentDetails") or {}
     related = content.get("relatedPlaylists") or {}
-    thumbs = snippet.get("thumbnails") or {}
-    thumb = (
-        (thumbs.get("high") or {}).get("url")
-        or (thumbs.get("medium") or {}).get("url")
-        or (thumbs.get("default") or {}).get("url")
-    )
+    thumb = _best_thumb(snippet.get("thumbnails"))
     hidden = bool(stats.get("hiddenSubscriberCount"))
     subs = None if hidden else _as_optional_int(stats.get("subscriberCount"))
     return YouTubeChannelInfo(
@@ -246,12 +266,7 @@ def _video_from_item(item: dict[str, Any]) -> YouTubeVideoInfo:
     stats = item.get("statistics") or {}
     content = item.get("contentDetails") or {}
     status = item.get("status") or {}
-    thumbs = snippet.get("thumbnails") or {}
-    thumb = (
-        (thumbs.get("high") or {}).get("url")
-        or (thumbs.get("medium") or {}).get("url")
-        or (thumbs.get("default") or {}).get("url")
-    )
+    thumb = _best_thumb(snippet.get("thumbnails"))
     tags_raw = snippet.get("tags") or []
     tags = tuple(str(t) for t in tags_raw if t) if isinstance(tags_raw, list) else ()
     return YouTubeVideoInfo(
@@ -383,7 +398,7 @@ class YouTubeClient:
             data = await self._get(
                 "/channels",
                 {
-                    "part": "snippet,statistics,contentDetails",
+                    "part": CHANNEL_PUBLIC_PARTS,
                     "id": ",".join(batch),
                     "maxResults": MAX_IDS_PER_REQUEST,
                 },
@@ -406,7 +421,7 @@ class YouTubeClient:
         data = await self._get(
             "/channels",
             {
-                "part": "snippet,statistics,contentDetails",
+                "part": CHANNEL_PUBLIC_PARTS,
                 "forHandle": handle,
             },
         )
@@ -420,7 +435,7 @@ class YouTubeClient:
         data = await self._get(
             "/channels",
             {
-                "part": "snippet,statistics,contentDetails",
+                "part": CHANNEL_PUBLIC_PARTS,
                 "forUsername": username,
             },
         )
@@ -561,7 +576,7 @@ class YouTubeClient:
             data = await self._get(
                 "/videos",
                 {
-                    "part": "snippet,statistics,contentDetails,status",
+                    "part": VIDEO_PUBLIC_PARTS,
                     "id": ",".join(batch),
                     "maxResults": MAX_IDS_PER_REQUEST,
                 },

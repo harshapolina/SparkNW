@@ -300,6 +300,30 @@ async def test_iter_upload_stops_before_published_after():
 def test_effective_max_videos_zero_means_hard_cap():
     from instascope_shared.services.youtube_sync import HARD_MAX_VIDEOS, _effective_max_videos
 
-    assert _effective_max_videos(0) == HARD_MAX_VIDEOS
+    assert _effective_max_videos(0) is None
     assert _effective_max_videos(25) == 25
     assert _effective_max_videos(99999) == HARD_MAX_VIDEOS
+
+
+def test_classify_youtube_short_vs_long_form():
+    from instascope_shared.services.youtube_sync import (
+        classify_youtube_short,
+        parse_iso8601_duration_seconds,
+    )
+
+    assert parse_iso8601_duration_seconds("PT45S") == 45
+    assert parse_iso8601_duration_seconds("PT1M5S") == 65
+    assert parse_iso8601_duration_seconds("PT3M") == 180
+    assert parse_iso8601_duration_seconds("PT3M1S") == 181
+
+    is_short, secs = classify_youtube_short(duration="PT30S")
+    assert is_short is True and secs == 30
+
+    is_short, secs = classify_youtube_short(duration="PT10M")
+    assert is_short is False and secs == 600
+
+    is_short, _ = classify_youtube_short(duration="PT10M", title="My clip #Shorts")
+    assert is_short is True
+
+    is_short, _ = classify_youtube_short(duration="PT4M", tags=["shorts"])
+    assert is_short is True
