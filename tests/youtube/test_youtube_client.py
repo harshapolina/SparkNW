@@ -305,6 +305,19 @@ def test_effective_max_videos_zero_means_hard_cap():
     assert _effective_max_videos(99999) == HARD_MAX_VIDEOS
 
 
+def test_youtube_ref_from_student():
+    from instascope_shared.services.youtube_jobs import youtube_ref_from_student
+
+    assert youtube_ref_from_student({"youtube_link": "https://youtube.com/@Foo"}) == (
+        "https://youtube.com/@Foo"
+    )
+    assert youtube_ref_from_student({"youtube_username": "barCreator"}) == "@barCreator"
+    assert youtube_ref_from_student({"youtube_link": "No YouTube"}) is None
+    assert youtube_ref_from_student({"youtube_username": "n/a"}) is None
+    assert youtube_ref_from_student({}) is None
+    assert youtube_ref_from_student(None) is None
+
+
 def test_classify_youtube_short_vs_long_form():
     from instascope_shared.services.youtube_sync import (
         classify_youtube_short,

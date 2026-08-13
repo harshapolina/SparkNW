@@ -38,7 +38,10 @@ Celery Beat entry `daily-youtube-sync` at 08:00 IST by default (`DAILY_YOUTUBE_S
 **Own admin toggle** (independent of Instagram daily scrape):
 
 - `GET/PATCH /api/v1/settings/daily-youtube-sync` `{ "enabled": true|false }`  
-- Default when unset: **off** (quota-safe until you enable)
+- Default when unset: **on** (same idea as Instagram daily scrape)
+
+Bulk roster import auto-queues **connect + sync** when a row has YouTube Link / Username.
+Daily Beat at 08:00 IST refreshes connected channels and also connects any remaining roster YouTube links.
 
 ## Endpoints used
 
@@ -66,6 +69,10 @@ Older uploads are not stored. `max_videos: 0` (default) means every in-window up
 
 Each sync requests **all public Data API parts** for channels + videos and stores the full `public_api` payload
 (plus flattened fields). Private Analytics / comment threads are not included (API key / quota limits).
+
+Admin Scraping page shows a **YouTube sync queue** (live jobs + past syncs + connected channels).
+Turning **Daily YouTube sync** ON enqueues all connected channels immediately (and mornings via Beat).
+`GET /api/v1/youtube/sync-status` · `POST /api/v1/youtube/sync-all`
 
 Insights: `GET /api/v1/youtube/profiles/{id}/insights` — channel public fields + every stored video’s public Data API fields for that window (Admin → Scraping → profile → Insights → YouTube insights).
 

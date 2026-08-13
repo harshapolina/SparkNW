@@ -82,7 +82,7 @@ class StudentInfo(BaseModel):
     instagram_username: Optional[str] = None
     youtube_link: Optional[str] = None
     youtube_username: Optional[str] = None
-    youtube_status: str = "Coming soon"
+    youtube_status: str = "Pending connect"
     created_content_before: Optional[str] = None
     current_follower_count_raw: Optional[str] = None
     instagram_followers_declared: Optional[str] = None

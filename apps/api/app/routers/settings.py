@@ -104,5 +104,31 @@ async def update_daily_youtube_sync_settings(
     payload: DailyYouTubeSyncSettingsUpdateRequest,
     _: User = Depends(require_admin),
 ):
+    """Admin: turn daily YouTube sync on/off.
+
+    ON — immediately enqueue sync jobs for all connected channels (shows on Scraping
+    queue) and keep the morning Beat schedule enabled.
+    """
     enabled = await set_daily_youtube_sync_enabled(payload.enabled)
+    if enabled:
+        from app.worker_client import dispatch_fanout_youtube, dispatch_youtube_sync_job
+        from instascope_shared.services.youtube_jobs import enqueue_connected_youtube_syncs
+
+        # Prefer creating jobs in-API then dispatching each task (visible immediately).
+        try:
+            summary = await enqueue_connected_youtube_syncs()
+            dispatched = 0
+            for job in summary.get("jobs") or []:
+                tid = dispatch_youtube_sync_job(
+                    job["job_id"],
+                    job["profile_id"],
+                    countdown=int(job.get("countdown") or 0),
+                )
+                if tid:
+                    dispatched += 1
+            if dispatched == 0 and summary.get("enqueued", 0) > 0:
+                # Broker failed mid-way — still try Celery fanout as fallback
+                dispatch_fanout_youtube()
+        except Exception:
+            dispatch_fanout_youtube()
     return DailyYouTubeSyncSettingsResponse(enabled=enabled)

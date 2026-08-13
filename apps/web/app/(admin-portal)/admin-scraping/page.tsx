@@ -149,9 +149,62 @@ function AdminScrapingPageInner() {
       qc.setQueryData(["settings", "daily-youtube-sync"], data);
       setBulkNote(
         data.enabled
-          ? "Daily YouTube sync is ON — connected channels sync each morning (own toggle)."
-          : "Daily YouTube sync is OFF — Instagram daily scrape is unchanged."
+          ? "YouTube sync ON — connected channels queued now. Watch the YouTube queue below."
+          : "Daily YouTube sync is OFF — Instagram scrape is unchanged."
       );
+      void qc.invalidateQueries({ queryKey: ["youtube", "sync-status"] });
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  type YtSyncRow = {
+    job_id?: string;
+    profile_id: string;
+    username: string;
+    full_name?: string | null;
+    channel_id?: string | null;
+    channel_name?: string | null;
+    handle?: string | null;
+    status?: string;
+    sync_status?: string;
+    error_message?: string | null;
+    last_error?: string | null;
+    last_synced_at?: string | null;
+    created_at?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+    subscriber_count?: number | null;
+    video_count?: number | null;
+  };
+
+  type YtSyncStatus = {
+    running: YtSyncRow | null;
+    queue: YtSyncRow[];
+    active_count: number;
+    history: YtSyncRow[];
+    connected: YtSyncRow[];
+    connected_total: number;
+  };
+
+  const youtubeSyncQ = useQuery({
+    queryKey: ["youtube", "sync-status"],
+    queryFn: () => api<YtSyncStatus>("/youtube/sync-status"),
+    refetchInterval: (q) => ((q.state.data?.active_count || 0) > 0 ? 3000 : 15000),
+  });
+
+  const youtubeSyncAll = useMutation({
+    mutationFn: () =>
+      api<{ enqueued: number; skipped_pending: number; connected_total: number; dispatched: number }>(
+        "/youtube/sync-all",
+        { method: "POST" }
+      ),
+    onSuccess: (data) => {
+      setBulkNote(
+        `YouTube sync queued ${data.enqueued} channel(s)` +
+          (data.skipped_pending ? ` (${data.skipped_pending} already in queue)` : "") +
+          ` · ${data.connected_total} connected`
+      );
+      void qc.invalidateQueries({ queryKey: ["youtube", "sync-status"] });
     },
     onError: (e: Error) => setError(e.message),
   });
@@ -345,26 +398,28 @@ function AdminScrapingPageInner() {
             <div className="min-w-0">
               <div className="text-xs font-semibold text-zinc-200">Daily YouTube sync</div>
               <div className="text-[11px] text-zinc-500">
-                {dailyYoutubeQ.data?.enabled
-                  ? "On — connected channels at 08:00 IST"
-                  : "Off — independent of Instagram scrape"}
+                {dailyYoutubeQ.data?.enabled !== false
+                  ? "On — bulk import auto-connects + daily 08:00 IST updates"
+                  : "Off — no morning YouTube sync"}
               </div>
             </div>
             <button
               type="button"
               role="switch"
-              aria-checked={!!dailyYoutubeQ.data?.enabled}
+              aria-checked={dailyYoutubeQ.data?.enabled !== false}
               disabled={dailyYoutubeQ.isLoading || dailyYoutubeToggle.isPending}
-              onClick={() => dailyYoutubeToggle.mutate(!dailyYoutubeQ.data?.enabled)}
+              onClick={() =>
+                dailyYoutubeToggle.mutate(!(dailyYoutubeQ.data?.enabled !== false))
+              }
               className={cn(
                 "relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50",
-                dailyYoutubeQ.data?.enabled ? "bg-[#ff3b30]" : "bg-zinc-700"
+                dailyYoutubeQ.data?.enabled === false ? "bg-zinc-700" : "bg-[#ff3b30]"
               )}
             >
               <span
                 className={cn(
                   "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
-                  dailyYoutubeQ.data?.enabled ? "translate-x-5" : "translate-x-0"
+                  dailyYoutubeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
                 )}
               />
             </button>
@@ -379,6 +434,154 @@ function AdminScrapingPageInner() {
       </div>
 
       <ScrapeActivityBanner status={scrapeStatusQ.data} />
+
+      <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-zinc-100">YouTube sync queue</div>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              Live jobs + past syncs. Bulk import auto-connects YouTube from sheet links; daily 08:00 IST refreshes updates.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={youtubeSyncAll.isPending}
+            onClick={() => youtubeSyncAll.mutate()}
+            className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-xs font-medium text-zinc-200 hover:border-[#ff3b30]/40 disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={youtubeSyncAll.isPending ? "animate-spin" : undefined} />
+            {youtubeSyncAll.isPending ? "Queuing…" : "Sync all connected"}
+          </button>
+        </div>
+
+        {(youtubeSyncQ.data?.active_count || 0) > 0 ? (
+          <div className="mt-4 space-y-2 rounded-xl border border-violet-500/25 bg-violet-500/10 px-4 py-3 text-violet-100">
+            <div className="text-sm font-semibold">
+              Syncing now
+              {youtubeSyncQ.data?.running
+                ? ` — @${youtubeSyncQ.data.running.username}`
+                : ` (${youtubeSyncQ.data?.active_count} in queue)`}
+            </div>
+            <ul className="space-y-1.5 text-xs text-violet-100/90">
+              {(youtubeSyncQ.data?.queue || []).map((row) => (
+                <li key={row.job_id || row.profile_id} className="flex flex-wrap items-center gap-2">
+                  <Link
+                    href={`/admin-scraping/${row.profile_id}`}
+                    className="font-medium text-white hover:underline"
+                  >
+                    @{row.username}
+                  </Link>
+                  <span className="rounded-full bg-black/30 px-2 py-0.5 uppercase tracking-wide text-[10px]">
+                    {row.status}
+                  </span>
+                  {row.channel_name ? (
+                    <span className="text-violet-200/70">{row.channel_name}</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <p className="mt-3 text-xs text-zinc-500">
+            No YouTube jobs in queue
+            {youtubeSyncQ.data?.connected_total
+              ? ` · ${youtubeSyncQ.data.connected_total} channel(s) connected`
+              : " · connect channels on a profile first"}
+            .
+          </p>
+        )}
+
+        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+          <div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-zinc-500">
+              Past YouTube syncs
+            </div>
+            {(youtubeSyncQ.data?.history || []).length ? (
+              <ul className="max-h-64 space-y-2 overflow-auto text-xs">
+                {youtubeSyncQ.data!.history.map((row) => (
+                  <li
+                    key={row.job_id || `${row.profile_id}-${row.finished_at}`}
+                    className="rounded-xl border border-white/[0.06] bg-black/30 px-3 py-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Link
+                        href={`/admin-scraping/${row.profile_id}`}
+                        className="font-medium text-zinc-200 hover:text-[#ff4d00]"
+                      >
+                        @{row.username}
+                      </Link>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                          row.status === "success"
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : "bg-rose-500/15 text-rose-300"
+                        )}
+                      >
+                        {row.status}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-zinc-500">
+                      {row.finished_at
+                        ? new Date(row.finished_at).toLocaleString()
+                        : row.created_at
+                          ? new Date(row.created_at).toLocaleString()
+                          : "—"}
+                      {row.channel_name ? ` · ${row.channel_name}` : ""}
+                    </div>
+                    {row.error_message ? (
+                      <p className="mt-1 text-rose-300/90 line-clamp-2">{row.error_message}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-zinc-500">No past YouTube sync jobs yet.</p>
+            )}
+          </div>
+
+          <div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-zinc-500">
+              Connected channels
+            </div>
+            {(youtubeSyncQ.data?.connected || []).length ? (
+              <ul className="max-h-64 space-y-2 overflow-auto text-xs">
+                {youtubeSyncQ.data!.connected.map((row) => (
+                  <li
+                    key={row.profile_id}
+                    className="rounded-xl border border-white/[0.06] bg-black/30 px-3 py-2"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <Link
+                        href={`/admin-scraping/${row.profile_id}`}
+                        className="font-medium text-zinc-200 hover:text-[#ff4d00]"
+                      >
+                        @{row.username}
+                      </Link>
+                      <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
+                        {row.sync_status || "—"}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-zinc-500">
+                      {row.channel_name || row.handle || row.channel_id || "—"}
+                      {row.last_synced_at
+                        ? ` · last ${new Date(row.last_synced_at).toLocaleString()}`
+                        : " · never synced"}
+                    </div>
+                    {row.last_error ? (
+                      <p className="mt-1 text-rose-300/90 line-clamp-2">{row.last_error}</p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-zinc-500">
+                No channels connected yet. Open a creator → Overview → Connect YouTube.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
 
       <form onSubmit={onAdd} className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
         <div className="text-sm font-semibold">Add & scrape one creator</div>

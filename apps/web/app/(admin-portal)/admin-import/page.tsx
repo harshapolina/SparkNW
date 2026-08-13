@@ -206,8 +206,9 @@ export default function AdminImportPage() {
       setResult(
         `Imported ${r.imported} · updated ${r.updated || 0} · duplicates ${r.duplicates || 0} · skipped ${r.skipped} · failed ${r.failed}${rejectNote}` +
           (r.scraping
-            ? ". Scraping started — watch live progress below (account, posts scraped/total, %)."
-            : ".")
+            ? ". Instagram scrape started — watch live progress below."
+            : ".") +
+          " YouTube links/@handles auto-connect + sync (Scraping → YouTube queue)."
       );
       setError("");
       setProgress(null);
@@ -215,6 +216,7 @@ export default function AdminImportPage() {
       qc.invalidateQueries({ queryKey: ["profiles"] });
       qc.invalidateQueries({ queryKey: ["spark"] });
       qc.invalidateQueries({ queryKey: ["scrape-status"] });
+      qc.invalidateQueries({ queryKey: ["youtube", "sync-status"] });
     },
     onError: (e: Error) => {
       setError(e.message);
@@ -238,6 +240,8 @@ export default function AdminImportPage() {
         <p className="mt-1 text-sm text-zinc-500">
           Import the SPARK registration sheet. Each row needs an Instagram handle; include{" "}
           <span className="text-zinc-300">Student ID</span> so students can log in after scrape.
+          YouTube Link / Username columns are connected and synced automatically; Instagram scrapes when you import.
+          Daily YouTube updates run at 08:00 IST like Instagram (when the YouTube toggle is on).
         </p>
       </div>
 

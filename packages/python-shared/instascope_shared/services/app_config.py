@@ -166,16 +166,20 @@ async def is_daily_youtube_sync_enabled() -> bool:
     """Whether Celery Beat should fan out YouTube syncs.
 
     Independent of Instagram daily-scrape toggle.
-    Defaults to False when unset so quota is not spent until an admin enables it.
+    Defaults to True when unset (same idea as Instagram daily scrape) so mornings
+    refresh connected channels automatically after deploy.
     """
     try:
         doc = await AppConfig.find_one(AppConfig.key == DAILY_YOUTUBE_SYNC_CONFIG_KEY)
     except Exception:
         logger.exception("failed reading app_config daily_youtube_sync")
-        return False
+        return True
     if not doc or not isinstance(doc.data, dict):
-        return False
-    return bool(doc.data.get("enabled"))
+        return True
+    enabled = doc.data.get("enabled")
+    if enabled is None:
+        return True
+    return bool(enabled)
 
 
 async def set_daily_youtube_sync_enabled(enabled: bool) -> bool:

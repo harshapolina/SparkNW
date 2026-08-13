@@ -20,6 +20,7 @@ celery_app = Celery(
         "tasks.fanout_daily",
         "tasks.retry_failed",
         "tasks.sync_youtube",
+        "tasks.connect_youtube",
         "tasks.fanout_youtube",
     ],
 )

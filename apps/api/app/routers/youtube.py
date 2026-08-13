@@ -29,6 +29,7 @@ from instascope_shared.services.youtube_sync import (
     get_youtube_insights,
     sync_youtube_channel,
 )
+from instascope_shared.services.youtube_jobs import get_youtube_sync_status
 
 router = APIRouter(prefix="/youtube", tags=["youtube"])
 
@@ -89,6 +90,41 @@ async def resolve_youtube_channel(
         raise _http_for_youtube(exc) from exc
 
 
+@router.get("/sync-status")
+async def youtube_sync_status(_: User = Depends(require_admin)):
+    """Live YouTube sync queue + recent job history for the Scraping page."""
+    return await get_youtube_sync_status()
+
+
+@router.post("/sync-all")
+async def youtube_sync_all(_: User = Depends(require_admin)):
+    """Admin: enqueue YouTube sync for every connected channel now."""
+    from app.worker_client import dispatch_fanout_youtube, dispatch_youtube_sync_job
+    from instascope_shared.services.youtube_jobs import enqueue_connected_youtube_syncs
+
+    summary = await enqueue_connected_youtube_syncs()
+    dispatched = 0
+    for job in summary.get("jobs") or []:
+        tid = dispatch_youtube_sync_job(
+            job["job_id"],
+            job["profile_id"],
+            countdown=int(job.get("countdown") or 0),
+        )
+        if tid:
+            dispatched += 1
+    if dispatched == 0 and int(summary.get("enqueued") or 0) > 0:
+        task_id = dispatch_fanout_youtube()
+        return {
+            **{k: v for k, v in summary.items() if k != "jobs"},
+            "dispatched": 0,
+            "fanout_task_id": task_id,
+        }
+    return {
+        **{k: v for k, v in summary.items() if k != "jobs"},
+        "dispatched": dispatched,
+    }
+
+
 @router.get("/profiles/{profile_id}", response_model=YouTubeChannelResponse)
 async def get_profile_youtube(profile_id: str, _: User = Depends(require_admin)):
     doc = await YouTubeChannel.find_one(YouTubeChannel.profile_id == profile_id)
@@ -111,9 +147,23 @@ async def connect_profile_youtube(
     _: User = Depends(require_admin),
 ):
     """Resolve + store channel ID permanently, then sync public data for ONE profile."""
+    from datetime import datetime
+
+    from instascope_shared.models import Job, JobStatus, JobType
+
     profile = await Profile.get(profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+    job = Job(
+        user_id=profile.user_id,
+        profile_id=profile_id,
+        job_type=JobType.SYNC_YOUTUBE,
+        status=JobStatus.RUNNING,
+        priority=3,
+        started_at=datetime.utcnow(),
+        meta={"source": "connect", "url": payload.url[:200]},
+    )
+    await job.insert()
     try:
         await connect_youtube_channel(
             profile,
@@ -121,7 +171,15 @@ async def connect_profile_youtube(
             max_videos=payload.max_videos,
             sync_videos=payload.sync_videos,
         )
+        job.status = JobStatus.SUCCESS
+        job.finished_at = datetime.utcnow()
+        job.error_message = None
+        await job.save()
     except Exception as exc:  # noqa: BLE001
+        job.status = JobStatus.FAILED
+        job.error_message = str(exc)[:280]
+        job.finished_at = datetime.utcnow()
+        await job.save()
         raise _http_for_youtube(exc) from exc
     doc = await YouTubeChannel.find_one(YouTubeChannel.profile_id == profile_id)
     if not doc:
@@ -136,12 +194,39 @@ async def sync_profile_youtube(
     _: User = Depends(require_admin),
 ):
     """Re-sync one already-connected channel (uses stored channel_id — no search.list)."""
+    from datetime import datetime
+
+    from instascope_shared.models import Job, JobStatus, JobType
+
+    profile = await Profile.get(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
     body = payload or YouTubeSyncRequest()
+    job = Job(
+        user_id=profile.user_id,
+        profile_id=profile_id,
+        job_type=JobType.SYNC_YOUTUBE,
+        status=JobStatus.RUNNING,
+        priority=3,
+        started_at=datetime.utcnow(),
+        meta={"source": "manual_sync"},
+    )
+    await job.insert()
     try:
-        return await sync_youtube_channel(
+        result = await sync_youtube_channel(
             profile_id,
             max_videos=body.max_videos,
             fetch_videos=body.fetch_videos,
         )
+        job.status = JobStatus.SUCCESS
+        job.finished_at = datetime.utcnow()
+        job.error_message = None
+        job.meta = {**(job.meta or {}), "youtube": result}
+        await job.save()
+        return result
     except Exception as exc:  # noqa: BLE001
+        job.status = JobStatus.FAILED
+        job.error_message = str(exc)[:280]
+        job.finished_at = datetime.utcnow()
+        await job.save()
         raise _http_for_youtube(exc) from exc

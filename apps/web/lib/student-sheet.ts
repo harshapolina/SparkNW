@@ -141,7 +141,7 @@ export function mapSheetRow(headers: string[], values: unknown[]): { student: Sh
   const headerMap = new Map<string, number>();
   headers.forEach((h, i) => headerMap.set(normHeader(h), i));
 
-  const student: SheetStudent = { youtube_status: "Coming soon" };
+  const student: SheetStudent = { youtube_status: "Pending connect" };
 
   for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
     for (const alias of aliases) {

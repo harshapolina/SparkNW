@@ -259,6 +259,42 @@ async def bulk_import(payload: BulkImportRequest, user: User = Depends(get_curre
         queued = await enqueue_bulk_profile_ids(ids, force=True)
         scraping = queued > 0
 
+    # Auto-connect + sync YouTube when roster rows include a link/@handle.
+    from app.worker_client import dispatch_youtube_connect_job
+    from instascope_shared.services.youtube_jobs import (
+        enqueue_youtube_connects,
+        youtube_ref_from_student,
+    )
+
+    yt_items: list[tuple[str, str, str]] = []
+    for row, item in zip(work, items, strict=False):
+        if item.status not in {"imported", "duplicate"} or not item.profile_id:
+            continue
+        ref = youtube_ref_from_student(dict(row.student or {}))
+        if not ref:
+            continue
+        profile = await Profile.get(item.profile_id)
+        if not profile:
+            continue
+        yt_items.append((item.profile_id, str(profile.user_id), ref))
+
+    youtube_queued = 0
+    if yt_items:
+        yt_summary = await enqueue_youtube_connects(yt_items, source="bulk_import")
+        for job in yt_summary.get("jobs") or []:
+            if dispatch_youtube_connect_job(
+                job["job_id"],
+                job["profile_id"],
+                job["url"],
+                countdown=int(job.get("countdown") or 0),
+            ):
+                youtube_queued += 1
+        by_pid = {j["profile_id"] for j in (yt_summary.get("jobs") or [])}
+        for item in items:
+            if item.profile_id and item.profile_id in by_pid:
+                extra = "YouTube connect+sync queued"
+                item.message = f"{item.message}; {extra}" if item.message else extra
+
     return BulkImportResponse(
         imported=imported,
         skipped=skipped,
