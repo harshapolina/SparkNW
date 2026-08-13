@@ -74,8 +74,22 @@ async def update_daily_scrape_settings(
     payload: DailyScrapeSettingsUpdateRequest,
     _: User = Depends(require_admin),
 ):
-    """Admin: turn daily auto-scrape on/off. Stays until changed again."""
+    """Admin: turn auto Instagram scraping on/off. Stays until changed again.
+
+    OFF — pause morning fan-out and drain/skip bulk auto queue (no env flip).
+    ON — resume bulk unfinished profiles immediately; mornings run as scheduled.
+    Manual Refresh stays available either way.
+    """
     enabled = await set_daily_scrape_enabled(payload.enabled)
+    if not enabled:
+        from app.scrape_bulk import pause_bulk_auto_scraping
+
+        await pause_bulk_auto_scraping()
+    else:
+        from app.scrape_bulk import ensure_bulk_worker, requeue_unfinished_bulk_profiles
+
+        ensure_bulk_worker()
+        await requeue_unfinished_bulk_profiles()
     return DailyScrapeSettingsResponse(enabled=enabled)
 
 

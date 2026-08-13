@@ -223,7 +223,57 @@ async def clear_stale_scrape_progress() -> int:
     return cleared
 
 
+async def pause_bulk_auto_scraping(*, reason: str | None = None) -> int:
+    """Drain bulk/deep queues and mark in-flight rows interrupted.
+
+    Used when the admin Daily auto-scrape toggle is turned OFF so API restarts
+    and leftover queue jobs do not keep burning proxy quota. Manual Refresh
+    (single scrape) is unaffected.
+    """
+    msg = reason or (
+        "Daily auto-scrape is OFF — bulk queue paused. Turn the toggle ON to resume."
+    )
+    drained = 0
+    async with _lock:
+        while True:
+            try:
+                pid = _get_sample_queue().get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            _sample_pending.discard(pid)
+            await _mark_profile_interrupted(pid, msg, source="bulk")
+            drained += 1
+        while True:
+            try:
+                pid = _get_deep_queue().get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            _deep_pending.discard(pid)
+            await _mark_profile_interrupted(pid, msg, source="deep")
+            drained += 1
+        leftover = list(_sample_pending | _deep_pending)
+        _sample_pending.clear()
+        _deep_pending.clear()
+        for pid in leftover:
+            await _mark_profile_interrupted(pid, msg, source="bulk")
+            drained += 1
+    try:
+        r = await _get_redis()
+        if r is not None:
+            await r.delete(_REDIS_KEY, _REDIS_PENDING, _REDIS_DEEP_KEY, _REDIS_DEEP_PENDING)
+    except Exception:
+        log.exception("pause_bulk_auto_scraping redis clear failed")
+    if drained:
+        log.warning("paused bulk auto-scrape — drained %s queued/pending job(s)", drained)
+    return drained
+
+
 async def resume_incomplete_bulk_scrapes() -> int:
+    from instascope_shared.services.app_config import is_daily_scrape_enabled
+
+    if not await is_daily_scrape_enabled():
+        log.info("resume_incomplete_bulk_scrapes skipped — daily auto-scrape OFF")
+        return 0
     try:
         profiles = await Profile.find(
             {
@@ -319,7 +369,13 @@ async def requeue_unfinished_bulk_profiles() -> int:
     Covers the common post-import state: hundreds of profiles stuck at
     phase=interrupted with 0 followers / 0 posts after worker restarts.
     Skips UNAVAILABLE (missing IG) and profiles that already scraped successfully.
+    Gated by the admin Daily auto-scrape toggle (no LIVE_SCRAPE env flip needed).
     """
+    from instascope_shared.services.app_config import is_daily_scrape_enabled
+
+    if not await is_daily_scrape_enabled():
+        log.info("requeue_unfinished_bulk_profiles skipped — daily auto-scrape OFF")
+        return 0
     raw = (os.getenv("SCRAPE_REQUEUE_UNFINISHED") or "1").strip().lower()
     if raw in {"0", "false", "no"}:
         return 0
@@ -560,6 +616,20 @@ async def _worker_loop() -> None:
         generation: int | None = None
         source = "deep" if mode == "deep" else "bulk"
         try:
+            from instascope_shared.services.app_config import is_daily_scrape_enabled
+
+            if not await is_daily_scrape_enabled():
+                log.info(
+                    "%s scrape skipped profile_id=%s — daily auto-scrape OFF",
+                    mode,
+                    profile_id,
+                )
+                await _mark_profile_interrupted(
+                    profile_id,
+                    "Daily auto-scrape is OFF — bulk queue paused. Turn the toggle ON to resume.",
+                    source=source,
+                )
+                continue
             profile = await Profile.get(profile_id)
             if not profile:
                 log.warning("%s scrape skipped missing profile_id=%s", mode, profile_id)

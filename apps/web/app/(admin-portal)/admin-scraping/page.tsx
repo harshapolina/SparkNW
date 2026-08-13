@@ -127,8 +127,8 @@ function AdminScrapingPageInner() {
       qc.setQueryData(["settings", "daily-scrape"], data);
       setBulkNote(
         data.enabled
-          ? "Daily auto-scrape is ON — morning scrapes will run as scheduled."
-          : "Daily auto-scrape is OFF — morning scrapes paused until you turn it back on. Manual Refresh still works."
+          ? "Auto-scrape ON — unfinished bulk resumes now; mornings run as scheduled."
+          : "Auto-scrape OFF — mornings + bulk auto queue paused. Manual Refresh still works."
       );
     },
     onError: (e: Error) => setError(e.message),
@@ -313,11 +313,11 @@ function AdminScrapingPageInner() {
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-[#121212] px-4 py-2.5">
             <div className="min-w-0">
-              <div className="text-xs font-semibold text-zinc-200">Daily auto-scrape</div>
+              <div className="text-xs font-semibold text-zinc-200">Auto-scrape</div>
               <div className="text-[11px] text-zinc-500">
                 {dailyScrapeQ.data?.enabled === false
-                  ? "Off — mornings skipped (stays off until you turn on)"
-                  : "On — runs every morning as scheduled"}
+                  ? "Off — no morning/bulk auto (stays until you turn on)"
+                  : "On — mornings + unfinished bulk scrape without .env flips"}
               </div>
             </div>
             <button

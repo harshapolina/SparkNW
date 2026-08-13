@@ -30,8 +30,9 @@ async def lifespan(_app: FastAPI):
         logging.getLogger("instascope.api").info("proxy config ready=%s", ok)
     except Exception:
         logging.getLogger("instascope.api").exception("proxy config load failed")
-    # Recover BULK queue only after restart. Single-path scrapes are not resumed
-    # (user can click Refresh). Clear truly stale markers so the UI stops looping.
+    # Recover BULK queue only after restart when Daily auto-scrape is ON.
+    # Toggle OFF → no auto requeue (leave LIVE_SCRAPE alone; use admin UI).
+    # Single-path Refresh is never gated here.
     try:
         from app.scrape_bulk import (
             clear_stale_scrape_progress,
@@ -39,23 +40,29 @@ async def lifespan(_app: FastAPI):
             requeue_unfinished_bulk_profiles,
             resume_incomplete_bulk_scrapes,
         )
+        from instascope_shared.services.app_config import is_daily_scrape_enabled
 
         ensure_bulk_worker()
-        resumed = await resume_incomplete_bulk_scrapes()
-        if resumed:
-            logging.getLogger("instascope.api").warning(
-                "startup resumed %s incomplete BULK scrape(s)", resumed
-            )
         cleared = await clear_stale_scrape_progress()
         if cleared:
             logging.getLogger("instascope.api").warning(
                 "startup cleared %s stale scrape progress marker(s)", cleared
             )
-        requeued = await requeue_unfinished_bulk_profiles()
-        if requeued:
-            logging.getLogger("instascope.api").warning(
-                "startup re-queued %s unfinished BULK profile(s)", requeued
+        if not await is_daily_scrape_enabled():
+            logging.getLogger("instascope.api").info(
+                "startup bulk resume/requeue skipped — daily auto-scrape OFF"
             )
+        else:
+            resumed = await resume_incomplete_bulk_scrapes()
+            if resumed:
+                logging.getLogger("instascope.api").warning(
+                    "startup resumed %s incomplete BULK scrape(s)", resumed
+                )
+            requeued = await requeue_unfinished_bulk_profiles()
+            if requeued:
+                logging.getLogger("instascope.api").warning(
+                    "startup re-queued %s unfinished BULK profile(s)", requeued
+                )
     except Exception:
         logging.getLogger("instascope.api").exception("startup scrape cleanup failed")
     yield
