@@ -12,6 +12,7 @@ from instascope_shared.models import Profile, User, YouTubeChannel
 from instascope_shared.schemas import (
     YouTubeChannelResponse,
     YouTubeConnectRequest,
+    YouTubeInsightsResponse,
     YouTubeResolveResponse,
     YouTubeSyncRequest,
 )
@@ -23,7 +24,11 @@ from instascope_shared.services.youtube_errors import (
     YouTubeNotFoundError,
     YouTubeQuotaExceededError,
 )
-from instascope_shared.services.youtube_sync import connect_youtube_channel, sync_youtube_channel
+from instascope_shared.services.youtube_sync import (
+    connect_youtube_channel,
+    get_youtube_insights,
+    sync_youtube_channel,
+)
 
 router = APIRouter(prefix="/youtube", tags=["youtube"])
 
@@ -90,6 +95,13 @@ async def get_profile_youtube(profile_id: str, _: User = Depends(require_admin))
     if not doc:
         raise HTTPException(status_code=404, detail="No YouTube channel linked to this profile")
     return _channel_response(doc)
+
+
+@router.get("/profiles/{profile_id}/insights", response_model=YouTubeInsightsResponse)
+async def get_profile_youtube_insights(profile_id: str, _: User = Depends(require_admin)):
+    """Channel + all public video fields for uploads on/after programme start (15 Jul)."""
+    data = await get_youtube_insights(profile_id)
+    return YouTubeInsightsResponse(**data)
 
 
 @router.post("/profiles/{profile_id}/connect", response_model=YouTubeChannelResponse)

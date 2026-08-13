@@ -3,7 +3,8 @@
 Flow:
 1. connect_youtube_channel(profile, url_or_handle) — resolve once, store UC… id
 2. sync_youtube_channel(profile_id | channel) — channels.list by id, uploads playlist,
-   videos.list (batched), upsert videos, write daily YouTubeSnapshot
+   videos.list (batched), upsert videos published on/after programme start (15 Jul),
+   write daily YouTubeSnapshot
 
 Does not touch scrape_core / Playwright / Decodo.
 """
@@ -12,8 +13,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
+from instascope_shared.cohort import cohort_start_date, cohort_start_dt, cohort_start_ymd
 from instascope_shared.models import (
     Profile,
     YouTubeChannel,
@@ -21,7 +23,7 @@ from instascope_shared.models import (
     YouTubeSyncStatus,
     YouTubeVideo,
 )
-from instascope_shared.services.youtube_client import YouTubeClient, YouTubeChannelInfo
+from instascope_shared.services.youtube_client import YouTubeClient, YouTubeChannelInfo, YouTubeVideoInfo
 from instascope_shared.services.youtube_errors import (
     YouTubeError,
     YouTubeNotFoundError,
@@ -31,8 +33,10 @@ from instascope_shared.services.youtube_errors import (
 
 logger = logging.getLogger("instascope.youtube.sync")
 
-# First connect / deep sync: how many newest uploads to pull (quota-aware).
-DEFAULT_MAX_VIDEOS = 50
+# 0 = all uploads on/after programme start (SPARK_COHORT_START / 15 Jul 2026).
+DEFAULT_MAX_VIDEOS = 0
+# Hard safety cap so a single channel cannot burn unbounded quota.
+HARD_MAX_VIDEOS = 2000
 
 
 def _parse_yt_datetime(value: str | None) -> datetime | None:
@@ -43,6 +47,13 @@ def _parse_yt_datetime(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
     except Exception:
         return None
+
+
+def _effective_max_videos(max_videos: int | None) -> int | None:
+    """0 / None → no soft cap (still HARD_MAX_VIDEOS). Positive → min with hard cap."""
+    if max_videos is None or int(max_videos) <= 0:
+        return HARD_MAX_VIDEOS
+    return min(int(max_videos), HARD_MAX_VIDEOS)
 
 
 def _channel_url(info: YouTubeChannelInfo) -> str:
@@ -68,6 +79,40 @@ def _map_sync_error(exc: Exception) -> tuple[YouTubeSyncStatus, str]:
     if isinstance(exc, YouTubeError):
         return YouTubeSyncStatus.FAILED, msg
     return YouTubeSyncStatus.FAILED, msg
+
+
+def _apply_video_fields(existing: YouTubeVideo, info: YouTubeVideoInfo, *, profile: Profile, channel: YouTubeChannel) -> None:
+    existing.profile_id = str(profile.id)
+    existing.user_id = profile.user_id
+    existing.channel_id = channel.channel_id
+    existing.title = info.title
+    existing.description = info.description or ""
+    existing.url = f"https://www.youtube.com/watch?v={info.video_id}"
+    existing.published_at = _parse_yt_datetime(info.published_at)
+    existing.thumbnail_url = info.thumbnail_url
+    existing.channel_title = info.channel_title
+    existing.tags = list(info.tags or ())
+    existing.category_id = info.category_id
+    existing.live_broadcast_content = info.live_broadcast_content
+    existing.default_language = info.default_language
+    existing.default_audio_language = info.default_audio_language
+    existing.view_count = info.view_count
+    existing.like_count = info.like_count
+    existing.comment_count = info.comment_count
+    existing.favorite_count = info.favorite_count
+    existing.duration = info.duration
+    existing.dimension = info.dimension
+    existing.definition = info.definition
+    existing.caption = info.caption
+    existing.licensed_content = info.licensed_content
+    existing.projection = info.projection
+    existing.privacy_status = info.privacy_status
+    existing.upload_status = info.upload_status
+    existing.license = info.license
+    existing.embeddable = info.embeddable
+    existing.public_stats_viewable = info.public_stats_viewable
+    existing.made_for_kids = info.made_for_kids
+    existing.updated_at = datetime.utcnow()
 
 
 async def connect_youtube_channel(
@@ -158,10 +203,11 @@ async def sync_youtube_channel(
     max_videos: int = DEFAULT_MAX_VIDEOS,
     fetch_videos: bool = True,
 ) -> dict[str, Any]:
-    """Refresh public channel metrics + videos + daily snapshot for one profile.
+    """Refresh public channel metrics + programme-window videos + daily snapshot.
 
-    Uses stored channel_id only (no search.list). Failures are recorded on the
-    YouTubeChannel document; callers for bulk fan-out should catch and continue.
+    Uses stored channel_id only (no search.list). Videos are limited to uploads
+    on/after SPARK_COHORT_START (default 15 Jul 2026). Failures are recorded on
+    the YouTubeChannel document; bulk fan-out callers should catch and continue.
     """
     profile = await Profile.get(profile_id)
     if not profile:
@@ -216,6 +262,7 @@ async def sync_youtube_channel(
             "total_views": channel.view_count,
             "video_count": channel.video_count,
             "videos_upserted": videos_upserted,
+            "videos_since": cohort_start_ymd(),
             "snapshot_date": snap.snapshot_date,
             "sync_status": channel.sync_status.value,
         }
@@ -248,21 +295,30 @@ async def _sync_videos(
     channel: YouTubeChannel,
     max_videos: int,
 ) -> int:
+    floor = cohort_start_dt()
+    floor_ymd = cohort_start_ymd()
+    cap = _effective_max_videos(max_videos)
     video_ids: list[str] = []
     async for vid in yt.iter_upload_video_ids(
         channel.uploads_playlist_id or "",
-        max_videos=max_videos,
+        max_videos=cap,
+        published_after=floor_ymd,
     ):
         video_ids.append(vid)
     if not video_ids:
+        # Drop any pre-programme rows left from older syncs.
+        await _purge_videos_before_floor(channel.channel_id, floor)
         return 0
 
     infos = await yt.list_videos(video_ids)
     now = datetime.utcnow()
     upserted = 0
+    kept_ids: set[str] = set()
     for info in infos:
+        pub = _parse_yt_datetime(info.published_at)
+        if pub is not None and pub.date() < cohort_start_date():
+            continue
         existing = await YouTubeVideo.find_one(YouTubeVideo.video_id == info.video_id)
-        url = f"https://www.youtube.com/watch?v={info.video_id}"
         if not existing:
             existing = YouTubeVideo(
                 profile_id=str(profile.id),
@@ -270,27 +326,52 @@ async def _sync_videos(
                 channel_id=channel.channel_id,
                 video_id=info.video_id,
             )
-        existing.title = info.title
-        existing.url = url
-        existing.published_at = _parse_yt_datetime(info.published_at)
-        existing.thumbnail_url = info.thumbnail_url
-        existing.view_count = info.view_count
-        existing.like_count = info.like_count
-        existing.comment_count = info.comment_count
-        existing.duration = info.duration
+        _apply_video_fields(existing, info, profile=profile, channel=channel)
         existing.updated_at = now
         if existing.id is None:
             await existing.insert()
         else:
             await existing.save()
+        kept_ids.add(info.video_id)
         upserted += 1
+
+    await _purge_videos_before_floor(channel.channel_id, floor, keep_ids=kept_ids)
     return upserted
+
+
+async def _purge_videos_before_floor(
+    channel_id: str,
+    floor: datetime,
+    *,
+    keep_ids: set[str] | None = None,
+) -> int:
+    """Remove stored videos older than programme start."""
+    del keep_ids  # reserved for future selective keep; floor is the source of truth
+    removed = 0
+    async for row in YouTubeVideo.find(YouTubeVideo.channel_id == channel_id):
+        pub = row.published_at
+        if pub is None:
+            continue
+        if pub.replace(tzinfo=None) < floor:
+            await row.delete()
+            removed += 1
+    if removed:
+        logger.info(
+            "purged %s pre-programme YouTube video(s) for channel=%s (floor=%s)",
+            removed,
+            channel_id,
+            floor.date().isoformat(),
+        )
+    return removed
 
 
 async def _sum_video_engagement(channel_id: str) -> tuple[int, int]:
     likes = 0
     comments = 0
+    floor = cohort_start_dt()
     async for row in YouTubeVideo.find(YouTubeVideo.channel_id == channel_id):
+        if row.published_at and row.published_at.replace(tzinfo=None) < floor:
+            continue
         if row.like_count is not None:
             likes += int(row.like_count)
         if row.comment_count is not None:
@@ -328,6 +409,98 @@ async def _upsert_snapshot(
     else:
         await snap.save()
     return snap
+
+
+def _video_public_dict(row: YouTubeVideo) -> dict[str, Any]:
+    return {
+        "video_id": row.video_id,
+        "title": row.title,
+        "description": row.description or "",
+        "url": row.url,
+        "published_at": row.published_at.isoformat() + "Z" if row.published_at else None,
+        "thumbnail_url": row.thumbnail_url,
+        "channel_title": row.channel_title,
+        "tags": list(row.tags or []),
+        "category_id": row.category_id,
+        "live_broadcast_content": row.live_broadcast_content,
+        "default_language": row.default_language,
+        "default_audio_language": row.default_audio_language,
+        "view_count": int(row.view_count or 0),
+        "like_count": row.like_count,
+        "comment_count": row.comment_count,
+        "favorite_count": row.favorite_count,
+        "duration": row.duration,
+        "dimension": row.dimension,
+        "definition": row.definition,
+        "caption": row.caption,
+        "licensed_content": row.licensed_content,
+        "projection": row.projection,
+        "privacy_status": row.privacy_status,
+        "upload_status": row.upload_status,
+        "license": row.license,
+        "embeddable": row.embeddable,
+        "public_stats_viewable": row.public_stats_viewable,
+        "made_for_kids": row.made_for_kids,
+    }
+
+
+async def get_youtube_insights(profile_id: str) -> dict[str, Any]:
+    """Public YouTube data for Insights tab — channel + all videos since programme start."""
+    channel = await YouTubeChannel.find_one(YouTubeChannel.profile_id == profile_id)
+    floor = cohort_start_dt()
+    videos: list[YouTubeVideo] = []
+    if channel:
+        rows = await YouTubeVideo.find(YouTubeVideo.channel_id == channel.channel_id).sort(
+            -YouTubeVideo.published_at
+        ).to_list()
+        for row in rows:
+            if row.published_at and row.published_at.replace(tzinfo=None) < floor:
+                continue
+            videos.append(row)
+
+    video_dicts = [_video_public_dict(v) for v in videos]
+    views = sum(int(v.view_count or 0) for v in videos)
+    likes = sum(int(v.like_count or 0) for v in videos if v.like_count is not None)
+    comments = sum(int(v.comment_count or 0) for v in videos if v.comment_count is not None)
+    best = max(videos, key=lambda v: int(v.view_count or 0), default=None)
+
+    return {
+        "connected": bool(channel and channel.connected),
+        "window_from": cohort_start_ymd(),
+        "window_to": datetime.utcnow().date().isoformat(),
+        "channel": None
+        if not channel
+        else {
+            "channel_id": channel.channel_id,
+            "channel_url": channel.channel_url,
+            "handle": channel.handle,
+            "channel_name": channel.channel_name,
+            "description": channel.description,
+            "thumbnail_url": channel.thumbnail_url,
+            "subscriber_count": channel.subscriber_count,
+            "hidden_subscriber_count": channel.hidden_subscriber_count,
+            "view_count": channel.view_count,
+            "video_count": channel.video_count,
+            "sync_status": channel.sync_status.value
+            if hasattr(channel.sync_status, "value")
+            else str(channel.sync_status),
+            "last_error": channel.last_error,
+            "last_synced_at": channel.last_synced_at.isoformat() + "Z"
+            if channel.last_synced_at
+            else None,
+        },
+        "totals": {
+            "videos_in_window": len(videos),
+            "views_in_window": views,
+            "likes_in_window": likes,
+            "comments_in_window": comments,
+            "avg_views": round(views / len(videos), 1) if videos else 0,
+            "best_video_id": best.video_id if best else None,
+            "best_video_title": best.title if best else None,
+            "best_video_views": int(best.view_count or 0) if best else 0,
+        },
+        "videos": video_dicts,
+    }
 
 
 async def mark_youtube_disconnected(profile: Profile) -> None:

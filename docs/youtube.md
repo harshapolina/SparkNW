@@ -59,7 +59,15 @@ Daily sync uses stored `channel_id` only.
 
 `profiles` only stores `youtube_channel_id`, `youtube_connected`, `youtube_last_synced_at`.
 
+## Video window
+
+Sync pulls **all public uploads on/after programme start** (`SPARK_COHORT_START`, default **2026-07-15**).
+Older uploads are not stored. `max_videos: 0` (default) means “all in window” (hard-capped at 2000).
+
+Insights: `GET /api/v1/youtube/profiles/{id}/insights` — channel public fields + every stored video’s public Data API fields for that window (Admin → Scraping → profile → Insights → YouTube insights).
+
 ## Scoring
 
 `YOUTUBE_SCORING_ENABLED` / `youtube_scoring_enabled` defaults to **false**.  
 Leaderboard shows YT metrics for display only; Instagram SPARK points are unchanged until a formula is provided.
+

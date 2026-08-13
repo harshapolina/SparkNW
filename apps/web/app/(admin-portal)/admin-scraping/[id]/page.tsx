@@ -77,6 +77,69 @@ type YouTubeChannelRow = {
   last_synced_at?: string | null;
 };
 
+type YouTubeInsightsVideo = {
+  video_id: string;
+  title: string;
+  description?: string;
+  url: string;
+  published_at?: string | null;
+  thumbnail_url?: string | null;
+  channel_title?: string | null;
+  tags?: string[];
+  category_id?: string | null;
+  live_broadcast_content?: string | null;
+  default_language?: string | null;
+  default_audio_language?: string | null;
+  view_count: number;
+  like_count?: number | null;
+  comment_count?: number | null;
+  favorite_count?: number | null;
+  duration?: string | null;
+  dimension?: string | null;
+  definition?: string | null;
+  caption?: string | null;
+  licensed_content?: boolean | null;
+  projection?: string | null;
+  privacy_status?: string | null;
+  upload_status?: string | null;
+  license?: string | null;
+  embeddable?: boolean | null;
+  public_stats_viewable?: boolean | null;
+  made_for_kids?: boolean | null;
+};
+
+type YouTubeInsights = {
+  connected: boolean;
+  window_from: string;
+  window_to: string;
+  channel: {
+    channel_id: string;
+    channel_url?: string | null;
+    handle?: string | null;
+    channel_name?: string | null;
+    description?: string | null;
+    thumbnail_url?: string | null;
+    subscriber_count?: number | null;
+    hidden_subscriber_count?: boolean;
+    view_count: number;
+    video_count: number;
+    sync_status?: string;
+    last_error?: string | null;
+    last_synced_at?: string | null;
+  } | null;
+  totals: {
+    videos_in_window?: number;
+    views_in_window?: number;
+    likes_in_window?: number;
+    comments_in_window?: number;
+    avg_views?: number;
+    best_video_id?: string | null;
+    best_video_title?: string | null;
+    best_video_views?: number;
+  };
+  videos: YouTubeInsightsVideo[];
+};
+
 type Analytics = {
   followers_trend: { date: string; value: number }[];
   views_trend: { date: string; value: number }[];
@@ -183,6 +246,12 @@ export default function AdminCreatorDetailPage() {
     enabled: Boolean(profileId),
     retry: false,
   });
+  const youtubeInsightsQ = useQuery({
+    queryKey: ["youtube", "insights", profileId],
+    queryFn: () => api<YouTubeInsights>(`/youtube/profiles/${profileId}/insights`),
+    enabled: Boolean(profileId) && tab === "insights",
+    retry: false,
+  });
 
   const [refreshError, setRefreshError] = useState("");
   const [scrapingNote, setScrapingNote] = useState("");
@@ -243,7 +312,7 @@ export default function AdminCreatorDetailPage() {
     mutationFn: async () => {
       return api<YouTubeChannelRow>(`/youtube/profiles/${profileId}/connect`, {
         method: "POST",
-        body: JSON.stringify({ url: ytUrl.trim(), max_videos: 25, sync_videos: true }),
+        body: JSON.stringify({ url: ytUrl.trim(), max_videos: 0, sync_videos: true }),
       });
     },
     onSuccess: (row) => {
@@ -253,6 +322,7 @@ export default function AdminCreatorDetailPage() {
       qc.setQueryData(["youtube", profileId], row);
       void qc.invalidateQueries({ queryKey: ["profile", profileId] });
       void qc.invalidateQueries({ queryKey: ["spark", "admin"] });
+      void qc.invalidateQueries({ queryKey: ["youtube", "insights", profileId] });
     },
     onError: (err) => {
       setYtNote("");
@@ -264,13 +334,14 @@ export default function AdminCreatorDetailPage() {
     mutationFn: async () => {
       return api<Record<string, unknown>>(`/youtube/profiles/${profileId}/sync`, {
         method: "POST",
-        body: JSON.stringify({ max_videos: 25, fetch_videos: true }),
+        body: JSON.stringify({ max_videos: 0, fetch_videos: true }),
       });
     },
     onSuccess: () => {
       setYtError("");
       setYtNote("YouTube sync finished");
       void qc.invalidateQueries({ queryKey: ["youtube", profileId] });
+      void qc.invalidateQueries({ queryKey: ["youtube", "insights", profileId] });
       void qc.invalidateQueries({ queryKey: ["profile", profileId] });
       void qc.invalidateQueries({ queryKey: ["spark", "admin"] });
     },
@@ -992,6 +1063,232 @@ export default function AdminCreatorDetailPage() {
             &quot;IG lifetime&quot; number is Instagram&apos;s profile total and is not used in these cards. Views are
             reel/video play counts — photos/carousels usually have no public view field.
           </p>
+
+          <div className="border-t border-white/[0.06] pt-6">
+            <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-100">YouTube insights</h3>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Public Data API fields only · videos uploaded{" "}
+                  <span className="text-zinc-300">
+                    {youtubeInsightsQ.data?.window_from || "2026-07-15"} →{" "}
+                    {youtubeInsightsQ.data?.window_to || "today"}
+                  </span>
+                  . Lifetime channel totals below are YouTube&apos;s channel stats; the video list is programme-window only.
+                </p>
+              </div>
+              {youtubeQ.data?.connected ? (
+                <button
+                  type="button"
+                  onClick={() => syncYoutube.mutate()}
+                  disabled={syncYoutube.isPending}
+                  className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/[0.08] disabled:opacity-50"
+                >
+                  {syncYoutube.isPending ? "Syncing…" : "Sync YouTube"}
+                </button>
+              ) : null}
+            </div>
+
+            {!youtubeInsightsQ.data?.connected ? (
+              <div className="rounded-xl border border-white/10 bg-[#121212] px-4 py-3 text-sm text-zinc-400">
+                No YouTube channel linked. Connect one on the Overview tab, then Sync — every public upload from
+                15 Jul 2026 onward will appear here.
+              </div>
+            ) : (
+              <>
+                {youtubeInsightsQ.data.channel ? (
+                  <div className="mb-4 rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+                    <div className="flex flex-wrap items-start gap-4">
+                      {youtubeInsightsQ.data.channel.thumbnail_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={youtubeInsightsQ.data.channel.thumbnail_url}
+                          alt=""
+                          className="h-14 w-14 rounded-full object-cover"
+                        />
+                      ) : null}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-base font-semibold text-zinc-100">
+                          {youtubeInsightsQ.data.channel.channel_name || "YouTube channel"}
+                        </div>
+                        <div className="mt-0.5 text-xs text-zinc-500">
+                          {youtubeInsightsQ.data.channel.handle || youtubeInsightsQ.data.channel.channel_id}
+                          {youtubeInsightsQ.data.channel.channel_url ? (
+                            <>
+                              {" · "}
+                              <a
+                                href={youtubeInsightsQ.data.channel.channel_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[#ff4d00] hover:underline"
+                              >
+                                Open channel
+                              </a>
+                            </>
+                          ) : null}
+                        </div>
+                        {youtubeInsightsQ.data.channel.description ? (
+                          <p className="mt-2 whitespace-pre-wrap text-xs leading-relaxed text-zinc-400 line-clamp-4">
+                            {youtubeInsightsQ.data.channel.description}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      {[
+                        [
+                          "Subscribers",
+                          youtubeInsightsQ.data.channel.hidden_subscriber_count
+                            ? "Hidden"
+                            : formatNumber(num(youtubeInsightsQ.data.channel.subscriber_count)),
+                        ],
+                        ["Channel views (lifetime)", formatNumber(num(youtubeInsightsQ.data.channel.view_count))],
+                        ["Channel videos (lifetime)", formatNumber(num(youtubeInsightsQ.data.channel.video_count))],
+                        [
+                          "Last synced",
+                          youtubeInsightsQ.data.channel.last_synced_at
+                            ? new Date(youtubeInsightsQ.data.channel.last_synced_at).toLocaleString()
+                            : "—",
+                        ],
+                      ].map(([label, value]) => (
+                        <div key={String(label)} className="rounded-xl border border-white/[0.04] bg-black/20 p-3">
+                          <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">{label}</div>
+                          <div className="mt-1 text-sm font-semibold tabular text-zinc-100">{value}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {[
+                    ["Videos since 15 Jul", formatNumber(num(youtubeInsightsQ.data.totals.videos_in_window))],
+                    ["Views (in window)", formatNumber(num(youtubeInsightsQ.data.totals.views_in_window))],
+                    ["Likes (in window)", formatNumber(num(youtubeInsightsQ.data.totals.likes_in_window))],
+                    ["Comments (in window)", formatNumber(num(youtubeInsightsQ.data.totals.comments_in_window))],
+                    ["Avg views / video", formatNumber(num(youtubeInsightsQ.data.totals.avg_views))],
+                    [
+                      "Best video views",
+                      formatNumber(num(youtubeInsightsQ.data.totals.best_video_views)),
+                    ],
+                  ].map(([label, value]) => (
+                    <div key={String(label)} className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4">
+                      <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">{label}</div>
+                      <div className="mt-2 text-lg font-semibold tabular">{value}</div>
+                    </div>
+                  ))}
+                </div>
+                {youtubeInsightsQ.data.totals.best_video_title ? (
+                  <p className="mb-4 text-xs text-zinc-500">
+                    Top video in window:{" "}
+                    <span className="text-zinc-300">{youtubeInsightsQ.data.totals.best_video_title}</span>
+                    {youtubeInsightsQ.data.totals.best_video_id ? (
+                      <>
+                        {" · "}
+                        <a
+                          href={`https://www.youtube.com/watch?v=${youtubeInsightsQ.data.totals.best_video_id}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[#ff4d00] hover:underline"
+                        >
+                          Watch
+                        </a>
+                      </>
+                    ) : null}
+                  </p>
+                ) : null}
+
+                <div className="space-y-3">
+                  <div className="text-sm font-semibold text-zinc-200">
+                    All public uploads since 15 Jul ({youtubeInsightsQ.data.videos.length})
+                  </div>
+                  {!youtubeInsightsQ.data.videos.length ? (
+                    <p className="text-sm text-zinc-500">
+                      No uploads in the programme window yet. Click Sync YouTube after they publish.
+                    </p>
+                  ) : (
+                    youtubeInsightsQ.data.videos.map((v) => (
+                      <div
+                        key={v.video_id}
+                        className="overflow-hidden rounded-2xl border border-white/[0.06] bg-[#121212]"
+                      >
+                        <div className="flex flex-col gap-4 p-4 sm:flex-row">
+                          {v.thumbnail_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={v.thumbnail_url}
+                              alt=""
+                              className="h-28 w-full shrink-0 rounded-xl object-cover sm:h-24 sm:w-40"
+                            />
+                          ) : (
+                            <div className="flex h-28 w-full shrink-0 items-center justify-center rounded-xl bg-black/40 text-xs text-zinc-600 sm:h-24 sm:w-40">
+                              No thumb
+                            </div>
+                          )}
+                          <div className="min-w-0 flex-1 space-y-2">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <a
+                                href={v.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-sm font-semibold text-zinc-100 hover:text-[#ff4d00]"
+                              >
+                                {v.title || v.video_id}
+                              </a>
+                              <span className="text-[11px] tabular text-zinc-500">
+                                {v.published_at ? new Date(v.published_at).toLocaleString() : "—"}
+                              </span>
+                            </div>
+                            {v.description ? (
+                              <p className="whitespace-pre-wrap text-xs leading-relaxed text-zinc-500 line-clamp-3">
+                                {v.description}
+                              </p>
+                            ) : null}
+                            <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs tabular text-zinc-400">
+                              <span>{formatNumber(v.view_count)} views</span>
+                              <span>{formatNumber(num(v.like_count))} likes</span>
+                              <span>{formatNumber(num(v.comment_count))} comments</span>
+                              {v.favorite_count != null ? (
+                                <span>{formatNumber(v.favorite_count)} favorites</span>
+                              ) : null}
+                              {v.duration ? <span>{v.duration}</span> : null}
+                              {v.definition ? <span>{v.definition}</span> : null}
+                              {v.dimension ? <span>{v.dimension}</span> : null}
+                              {v.privacy_status ? <span>{v.privacy_status}</span> : null}
+                              {v.license ? <span>{v.license}</span> : null}
+                              {v.caption != null ? <span>captions: {String(v.caption)}</span> : null}
+                              {v.made_for_kids != null ? (
+                                <span>made for kids: {v.made_for_kids ? "yes" : "no"}</span>
+                              ) : null}
+                              {v.embeddable != null ? (
+                                <span>embeddable: {v.embeddable ? "yes" : "no"}</span>
+                              ) : null}
+                              {v.category_id ? <span>category {v.category_id}</span> : null}
+                              {v.live_broadcast_content && v.live_broadcast_content !== "none" ? (
+                                <span>{v.live_broadcast_content}</span>
+                              ) : null}
+                            </div>
+                            {(v.tags || []).length ? (
+                              <div className="flex flex-wrap gap-1.5">
+                                {v.tags!.slice(0, 24).map((t) => (
+                                  <span
+                                    key={t}
+                                    className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] text-zinc-400"
+                                  >
+                                    {t}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 

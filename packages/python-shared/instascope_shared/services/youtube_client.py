@@ -78,10 +78,28 @@ class YouTubeVideoInfo:
     published_at: str | None
     thumbnail_url: str | None
     channel_id: str | None
+    channel_title: str | None
+    tags: tuple[str, ...]
+    category_id: str | None
+    live_broadcast_content: str | None
+    default_language: str | None
+    default_audio_language: str | None
     view_count: int
     like_count: int | None
     comment_count: int | None
+    favorite_count: int | None
     duration: str | None
+    dimension: str | None
+    definition: str | None
+    caption: str | None
+    licensed_content: bool | None
+    projection: str | None
+    privacy_status: str | None
+    upload_status: str | None
+    license: str | None
+    embeddable: bool | None
+    public_stats_viewable: bool | None
+    made_for_kids: bool | None
     raw: dict[str, Any]
 
 
@@ -227,12 +245,15 @@ def _video_from_item(item: dict[str, Any]) -> YouTubeVideoInfo:
     snippet = item.get("snippet") or {}
     stats = item.get("statistics") or {}
     content = item.get("contentDetails") or {}
+    status = item.get("status") or {}
     thumbs = snippet.get("thumbnails") or {}
     thumb = (
         (thumbs.get("high") or {}).get("url")
         or (thumbs.get("medium") or {}).get("url")
         or (thumbs.get("default") or {}).get("url")
     )
+    tags_raw = snippet.get("tags") or []
+    tags = tuple(str(t) for t in tags_raw if t) if isinstance(tags_raw, list) else ()
     return YouTubeVideoInfo(
         video_id=str(item.get("id") or ""),
         title=str(snippet.get("title") or ""),
@@ -240,10 +261,28 @@ def _video_from_item(item: dict[str, Any]) -> YouTubeVideoInfo:
         published_at=snippet.get("publishedAt"),
         thumbnail_url=thumb,
         channel_id=snippet.get("channelId"),
+        channel_title=snippet.get("channelTitle"),
+        tags=tags,
+        category_id=str(snippet["categoryId"]) if snippet.get("categoryId") is not None else None,
+        live_broadcast_content=snippet.get("liveBroadcastContent"),
+        default_language=snippet.get("defaultLanguage"),
+        default_audio_language=snippet.get("defaultAudioLanguage"),
         view_count=_as_int(stats.get("viewCount")),
         like_count=_as_optional_int(stats.get("likeCount")),
         comment_count=_as_optional_int(stats.get("commentCount")),
+        favorite_count=_as_optional_int(stats.get("favoriteCount")),
         duration=content.get("duration"),
+        dimension=content.get("dimension"),
+        definition=content.get("definition"),
+        caption=content.get("caption"),
+        licensed_content=content.get("licensedContent"),
+        projection=content.get("projection"),
+        privacy_status=status.get("privacyStatus"),
+        upload_status=status.get("uploadStatus"),
+        license=status.get("license"),
+        embeddable=status.get("embeddable"),
+        public_stats_viewable=status.get("publicStatsViewable"),
+        made_for_kids=status.get("madeForKids"),
         raw=item,
     )
 
@@ -473,13 +512,41 @@ class YouTubeClient:
         uploads_playlist_id: str,
         *,
         max_videos: int | None = None,
+        published_after: str | None = None,
     ):
-        """Paginate uploads playlist; yields video IDs."""
+        """Paginate uploads playlist (newest first); yields video IDs.
+
+        If ``published_after`` is set (RFC3339 or YYYY-MM-DD), stop when a page
+        item is older than that floor (programme window). Uploads playlists are
+        reverse-chronological, so older videos are not fetched.
+        """
+        from datetime import datetime as _dt
+
+        floor: _dt | None = None
+        if published_after:
+            raw = published_after.strip()
+            try:
+                if len(raw) == 10 and raw[4] == "-":
+                    floor = _dt.fromisoformat(raw)
+                else:
+                    floor = _dt.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+            except Exception:
+                floor = None
+
         token: str | None = None
         yielded = 0
         while True:
             page, token = await self.list_playlist_items(uploads_playlist_id, page_token=token)
             for row in page:
+                if floor is not None and row.published_at:
+                    try:
+                        pub = _dt.fromisoformat(
+                            str(row.published_at).replace("Z", "+00:00")
+                        ).replace(tzinfo=None)
+                        if pub.date() < floor.date():
+                            return
+                    except Exception:
+                        pass
                 yield row.video_id
                 yielded += 1
                 if max_videos is not None and yielded >= max_videos:
@@ -488,13 +555,13 @@ class YouTubeClient:
                 return
 
     async def list_videos(self, video_ids: list[str]) -> list[YouTubeVideoInfo]:
-        """videos.list?id=… batched ≤50 (1 unit per call)."""
+        """videos.list?id=… batched ≤50 (1 unit per call). Public parts only."""
         out: list[YouTubeVideoInfo] = []
         for batch in chunked(video_ids):
             data = await self._get(
                 "/videos",
                 {
-                    "part": "snippet,statistics,contentDetails",
+                    "part": "snippet,statistics,contentDetails,status",
                     "id": ",".join(batch),
                     "maxResults": MAX_IDS_PER_REQUEST,
                 },

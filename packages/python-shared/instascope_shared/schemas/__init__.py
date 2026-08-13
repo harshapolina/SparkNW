@@ -331,12 +331,13 @@ class DailyYouTubeSyncSettingsUpdateRequest(BaseModel):
 
 class YouTubeConnectRequest(BaseModel):
     url: str = Field(min_length=1, description="Channel URL, @handle, or UC… id")
-    max_videos: int = Field(default=50, ge=0, le=200)
+    # 0 = all uploads on/after programme start (15 Jul); hard-capped server-side.
+    max_videos: int = Field(default=0, ge=0, le=2000)
     sync_videos: bool = True
 
 
 class YouTubeSyncRequest(BaseModel):
-    max_videos: int = Field(default=50, ge=0, le=200)
+    max_videos: int = Field(default=0, ge=0, le=2000)
     fetch_videos: bool = True
 
 
@@ -365,3 +366,43 @@ class YouTubeResolveResponse(BaseModel):
     views: int = 0
     videos: int = 0
     thumbnail: Optional[str] = None
+
+
+class YouTubeVideoPublic(BaseModel):
+    video_id: str
+    title: str = ""
+    description: str = ""
+    url: str = ""
+    published_at: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    channel_title: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    category_id: Optional[str] = None
+    live_broadcast_content: Optional[str] = None
+    default_language: Optional[str] = None
+    default_audio_language: Optional[str] = None
+    view_count: int = 0
+    like_count: Optional[int] = None
+    comment_count: Optional[int] = None
+    favorite_count: Optional[int] = None
+    duration: Optional[str] = None
+    dimension: Optional[str] = None
+    definition: Optional[str] = None
+    caption: Optional[str] = None
+    licensed_content: Optional[bool] = None
+    projection: Optional[str] = None
+    privacy_status: Optional[str] = None
+    upload_status: Optional[str] = None
+    license: Optional[str] = None
+    embeddable: Optional[bool] = None
+    public_stats_viewable: Optional[bool] = None
+    made_for_kids: Optional[bool] = None
+
+
+class YouTubeInsightsResponse(BaseModel):
+    connected: bool
+    window_from: str
+    window_to: str
+    channel: Optional[dict[str, Any]] = None
+    totals: dict[str, Any] = Field(default_factory=dict)
+    videos: list[YouTubeVideoPublic] = Field(default_factory=list)

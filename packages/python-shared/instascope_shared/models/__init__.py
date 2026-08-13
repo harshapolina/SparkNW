@@ -321,7 +321,7 @@ class YouTubeChannel(Document):
 
 
 class YouTubeVideo(Document):
-    """Public video rows for a tracked YouTube channel."""
+    """Public video rows for a tracked YouTube channel (programme window uploads)."""
 
     profile_id: Indexed(str)  # type: ignore[valid-type]
     user_id: Indexed(str)  # type: ignore[valid-type]
@@ -329,13 +329,35 @@ class YouTubeVideo(Document):
     video_id: Indexed(str)  # type: ignore[valid-type]
 
     title: str = ""
+    description: str = ""
     url: str = ""
     published_at: Optional[datetime] = None
     thumbnail_url: Optional[str] = None
+    channel_title: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    category_id: Optional[str] = None
+    live_broadcast_content: Optional[str] = None
+    default_language: Optional[str] = None
+    default_audio_language: Optional[str] = None
+
     view_count: int = 0
     like_count: Optional[int] = None
     comment_count: Optional[int] = None
+    favorite_count: Optional[int] = None
+
     duration: Optional[str] = None
+    dimension: Optional[str] = None
+    definition: Optional[str] = None
+    caption: Optional[str] = None
+    licensed_content: Optional[bool] = None
+    projection: Optional[str] = None
+
+    privacy_status: Optional[str] = None
+    upload_status: Optional[str] = None
+    license: Optional[str] = None
+    embeddable: Optional[bool] = None
+    public_stats_viewable: Optional[bool] = None
+    made_for_kids: Optional[bool] = None
 
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     created_at: datetime = Field(default_factory=datetime.utcnow)

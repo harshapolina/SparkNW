@@ -259,3 +259,47 @@ async def test_playlist_items_pagination_token():
     assert len(items) == 1
     assert items[0].video_id == "abc"
     assert token == "NEXT"
+
+
+@pytest.mark.asyncio
+async def test_iter_upload_stops_before_published_after():
+    """Uploads are newest-first; stop once we hit a video older than the floor."""
+    items = [
+        {
+            "contentDetails": {
+                "videoId": "new1",
+                "videoPublishedAt": "2026-08-01T12:00:00Z",
+            },
+            "snippet": {"title": "new", "position": 0},
+        },
+        {
+            "contentDetails": {
+                "videoId": "new2",
+                "videoPublishedAt": "2026-07-20T12:00:00Z",
+            },
+            "snippet": {"title": "mid", "position": 1},
+        },
+        {
+            "contentDetails": {
+                "videoId": "old1",
+                "videoPublishedAt": "2026-07-01T12:00:00Z",
+            },
+            "snippet": {"title": "old", "position": 2},
+        },
+    ]
+
+    mock = AsyncMock()
+    mock.get = AsyncMock(return_value=_mock_response(200, {"items": items}))
+    client = YouTubeClient(api_key="test-key", client=mock)
+    ids = []
+    async for vid in client.iter_upload_video_ids("UUxxx", published_after="2026-07-15"):
+        ids.append(vid)
+    assert ids == ["new1", "new2"]
+
+
+def test_effective_max_videos_zero_means_hard_cap():
+    from instascope_shared.services.youtube_sync import HARD_MAX_VIDEOS, _effective_max_videos
+
+    assert _effective_max_videos(0) == HARD_MAX_VIDEOS
+    assert _effective_max_videos(25) == 25
+    assert _effective_max_videos(99999) == HARD_MAX_VIDEOS
