@@ -60,6 +60,23 @@ type Snapshot = {
   followers_growth_pct: number;
 };
 
+type YouTubeChannelRow = {
+  profile_id: string;
+  channel_id: string;
+  channel_url?: string | null;
+  handle?: string | null;
+  channel_name?: string | null;
+  thumbnail_url?: string | null;
+  subscriber_count?: number | null;
+  hidden_subscriber_count?: boolean;
+  view_count: number;
+  video_count: number;
+  connected: boolean;
+  sync_status: string;
+  last_error?: string | null;
+  last_synced_at?: string | null;
+};
+
 type Analytics = {
   followers_trend: { date: string; value: number }[];
   views_trend: { date: string; value: number }[];
@@ -160,6 +177,12 @@ export default function AdminCreatorDetailPage() {
     queryFn: () => api<Analytics>(`/analytics/profiles/${profileId}`),
     enabled: Boolean(profileId) && (tab === "analytics" || tab === "growth" || tab === "overview"),
   });
+  const youtubeQ = useQuery({
+    queryKey: ["youtube", profileId],
+    queryFn: () => api<YouTubeChannelRow>(`/youtube/profiles/${profileId}`),
+    enabled: Boolean(profileId),
+    retry: false,
+  });
 
   const [refreshError, setRefreshError] = useState("");
   const [scrapingNote, setScrapingNote] = useState("");
@@ -168,6 +191,9 @@ export default function AdminCreatorDetailPage() {
   const [igDraft, setIgDraft] = useState("");
   const [igEditing, setIgEditing] = useState(false);
   const [igError, setIgError] = useState("");
+  const [ytUrl, setYtUrl] = useState("");
+  const [ytNote, setYtNote] = useState("");
+  const [ytError, setYtError] = useState("");
 
   useEffect(() => {
     return () => {
@@ -212,6 +238,47 @@ export default function AdminCreatorDetailPage() {
     if (!igDirty) return profileQ.data;
     return saveIgLink.mutateAsync(igDraft.trim());
   };
+
+  const connectYoutube = useMutation({
+    mutationFn: async () => {
+      return api<YouTubeChannelRow>(`/youtube/profiles/${profileId}/connect`, {
+        method: "POST",
+        body: JSON.stringify({ url: ytUrl.trim(), max_videos: 25, sync_videos: true }),
+      });
+    },
+    onSuccess: (row) => {
+      setYtError("");
+      setYtNote(`Connected ${row.channel_name || row.channel_id} · sync ${row.sync_status}`);
+      setYtUrl("");
+      qc.setQueryData(["youtube", profileId], row);
+      void qc.invalidateQueries({ queryKey: ["profile", profileId] });
+      void qc.invalidateQueries({ queryKey: ["spark", "admin"] });
+    },
+    onError: (err) => {
+      setYtNote("");
+      setYtError((err as Error).message || "YouTube connect failed");
+    },
+  });
+
+  const syncYoutube = useMutation({
+    mutationFn: async () => {
+      return api<Record<string, unknown>>(`/youtube/profiles/${profileId}/sync`, {
+        method: "POST",
+        body: JSON.stringify({ max_videos: 25, fetch_videos: true }),
+      });
+    },
+    onSuccess: () => {
+      setYtError("");
+      setYtNote("YouTube sync finished");
+      void qc.invalidateQueries({ queryKey: ["youtube", profileId] });
+      void qc.invalidateQueries({ queryKey: ["profile", profileId] });
+      void qc.invalidateQueries({ queryKey: ["spark", "admin"] });
+    },
+    onError: (err) => {
+      setYtNote("");
+      setYtError((err as Error).message || "YouTube sync failed");
+    },
+  });
 
   const refresh = useMutation({
     mutationFn: async () => {
@@ -513,6 +580,99 @@ export default function AdminCreatorDetailPage() {
             </button>
           </div>
         </div>
+      </div>
+
+      <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">YouTube (public data)</h2>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              Separate from Instagram scrape · channel ID stored permanently after connect
+            </p>
+          </div>
+          {youtubeQ.data?.connected ? (
+            <button
+              type="button"
+              disabled={syncYoutube.isPending}
+              onClick={() => syncYoutube.mutate()}
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-xs font-medium disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={syncYoutube.isPending ? "animate-spin" : undefined} />
+              {syncYoutube.isPending ? "Syncing…" : "Sync YouTube"}
+            </button>
+          ) : null}
+        </div>
+
+        {youtubeQ.data?.connected ? (
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-zinc-500">Channel</div>
+              <div className="mt-1 text-sm font-medium">
+                {youtubeQ.data.channel_name || "—"}{" "}
+                <span className="text-zinc-500">{youtubeQ.data.handle || ""}</span>
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-zinc-500">Subscribers</div>
+              <div className="mt-1 text-sm font-semibold tabular">
+                {youtubeQ.data.hidden_subscriber_count
+                  ? "Hidden"
+                  : formatNumber(youtubeQ.data.subscriber_count ?? 0)}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-zinc-500">Views · Videos</div>
+              <div className="mt-1 text-sm font-semibold tabular">
+                {formatNumber(youtubeQ.data.view_count)} · {formatNumber(youtubeQ.data.video_count)}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-zinc-500">Sync</div>
+              <div className="mt-1 text-sm capitalize text-zinc-300">{youtubeQ.data.sync_status}</div>
+              <div className="text-[11px] text-zinc-500">
+                {youtubeQ.data.last_synced_at
+                  ? new Date(youtubeQ.data.last_synced_at).toLocaleString()
+                  : "Never"}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-3 text-sm text-zinc-500">
+            Not connected. Paste a channel URL or @handle below (uses server API key).
+          </p>
+        )}
+
+        {youtubeQ.data?.last_error ? (
+          <p className="mt-3 text-xs text-rose-400">{youtubeQ.data.last_error}</p>
+        ) : null}
+
+        <form
+          className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!ytUrl.trim()) {
+              setYtError("Paste a YouTube URL or @handle");
+              return;
+            }
+            connectYoutube.mutate();
+          }}
+        >
+          <input
+            value={ytUrl}
+            onChange={(e) => setYtUrl(e.target.value)}
+            placeholder="https://youtube.com/@handle or UC…"
+            className="w-full flex-1 rounded-xl border border-white/10 bg-black px-3 py-2.5 text-sm outline-none focus:border-[#ff3b30]"
+          />
+          <button
+            type="submit"
+            disabled={connectYoutube.isPending}
+            className="rounded-xl bg-[#ff3b30] px-4 py-2.5 text-sm font-semibold disabled:opacity-60"
+          >
+            {connectYoutube.isPending ? "Connecting…" : youtubeQ.data?.connected ? "Reconnect" : "Connect YouTube"}
+          </button>
+        </form>
+        {ytNote ? <p className="mt-2 text-xs text-emerald-400">{ytNote}</p> : null}
+        {ytError ? <p className="mt-2 text-xs text-rose-400">{ytError}</p> : null}
       </div>
 
       <div className="flex gap-1 overflow-x-auto rounded-xl border border-white/[0.06] bg-[#121212] p-1">

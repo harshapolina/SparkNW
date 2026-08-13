@@ -150,6 +150,71 @@ export default function StudentDashboardPage() {
         ))}
       </div>
 
+      <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold">Your YouTube</h2>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              Public channel metrics · not counted in SPARK points yet
+            </p>
+          </div>
+          {data.youtube?.handle || data.youtube?.channel_name ? (
+            <span className="text-xs text-zinc-400">
+              {data.youtube.channel_name} {data.youtube.handle ? `· ${data.youtube.handle}` : ""}
+            </span>
+          ) : null}
+        </div>
+        {data.youtube?.connected ? (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            {[
+              {
+                label: "Subscribers",
+                value: formatNumber(data.youtube.subscribers ?? 0),
+                sub:
+                  data.youtube.subscribers_delta != null
+                    ? `${data.youtube.subscribers_delta >= 0 ? "+" : ""}${formatNumber(data.youtube.subscribers_delta)} vs prior snap`
+                    : "Live public count",
+              },
+              {
+                label: "Total views",
+                value: formatNumber(data.youtube.views ?? 0),
+                sub:
+                  data.youtube.views_delta != null
+                    ? `${data.youtube.views_delta >= 0 ? "+" : ""}${formatNumber(data.youtube.views_delta)} vs prior snap`
+                    : "Channel lifetime",
+              },
+              {
+                label: "Videos",
+                value: formatNumber(data.youtube.video_count ?? 0),
+                sub: "Public uploads tracked",
+              },
+              {
+                label: "Likes (tracked)",
+                value: formatNumber(data.youtube.likes ?? 0),
+                sub: "From synced videos",
+              },
+              {
+                label: "Comments (tracked)",
+                value: formatNumber(data.youtube.comments ?? 0),
+                sub: data.youtube.last_synced_at
+                  ? `Synced ${new Date(data.youtube.last_synced_at).toLocaleString()}`
+                  : "Awaiting sync",
+              },
+            ].map((k) => (
+              <div key={k.label} className="rounded-xl border border-white/[0.04] bg-black/40 p-3">
+                <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">{k.label}</div>
+                <div className="mt-1 text-xl font-semibold tabular">{k.value}</div>
+                <div className="mt-1 text-[11px] text-zinc-500">{k.sub}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-zinc-500">
+            No YouTube channel linked yet. Ask an admin to connect your channel from Scraping → your profile.
+          </p>
+        )}
+      </div>
+
       <div className="grid gap-3 md:grid-cols-3">
         <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
           <div className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Streak / Consistency Score</div>

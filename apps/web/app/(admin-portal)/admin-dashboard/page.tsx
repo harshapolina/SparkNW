@@ -785,6 +785,66 @@ export default function AdminDashboardPage() {
             </div>
           </div>
 
+          <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+            <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold">YouTube tracking</h2>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  Public Data API · scoring{" "}
+                  {admin.youtube?.scoring_enabled ? "enabled" : "off until SPARK rules are set"}
+                </p>
+              </div>
+              <Link href="/admin-scraping" className="text-xs text-[#ff3b30] hover:underline">
+                Manage channels →
+              </Link>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                { label: "Channels connected", value: formatNumber(admin.youtube?.connected ?? 0) },
+                { label: "Total subscribers", value: formatNumber(admin.youtube?.total_subscribers ?? 0) },
+                { label: "Total views", value: formatNumber(admin.youtube?.total_views ?? 0) },
+                { label: "Total videos", value: formatNumber(admin.youtube?.total_videos ?? 0) },
+                {
+                  label: "Sync failed",
+                  value: formatNumber(admin.youtube?.failed ?? 0),
+                  danger: true,
+                },
+                {
+                  label: "Quota exceeded",
+                  value: formatNumber(admin.youtube?.quota_exceeded ?? 0),
+                  danger: true,
+                },
+                {
+                  label: "Daily sync",
+                  value: admin.youtube?.daily_sync_enabled ? "ON" : "OFF",
+                },
+                {
+                  label: "Last sync",
+                  value: admin.youtube?.last_sync
+                    ? new Date(admin.youtube.last_sync).toLocaleString()
+                    : "—",
+                },
+              ].map((k) => (
+                <div key={k.label} className="rounded-xl border border-white/[0.04] bg-black/40 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">{k.label}</div>
+                  <div
+                    className={cn(
+                      "mt-1 text-lg font-semibold tabular",
+                      "danger" in k && k.danger && Number(admin.youtube?.failed ?? 0) > 0
+                        ? "text-rose-400"
+                        : "text-zinc-100"
+                    )}
+                  >
+                    {k.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-[11px] text-zinc-500">
+              Next: {admin.youtube?.next_sync ?? "Daily 08:00 IST when enabled"} · Instagram scrape health unchanged
+            </p>
+          </div>
+
           {/* Portfolio analytics grid (old /analytics) */}
           <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
             <div className="mb-4 flex items-center justify-between">

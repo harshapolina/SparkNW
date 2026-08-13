@@ -134,6 +134,28 @@ function AdminScrapingPageInner() {
     onError: (e: Error) => setError(e.message),
   });
 
+  const dailyYoutubeQ = useQuery({
+    queryKey: ["settings", "daily-youtube-sync"],
+    queryFn: () => api<{ enabled: boolean }>("/settings/daily-youtube-sync"),
+  });
+
+  const dailyYoutubeToggle = useMutation({
+    mutationFn: (enabled: boolean) =>
+      api<{ enabled: boolean }>("/settings/daily-youtube-sync", {
+        method: "PATCH",
+        body: JSON.stringify({ enabled }),
+      }),
+    onSuccess: (data) => {
+      qc.setQueryData(["settings", "daily-youtube-sync"], data);
+      setBulkNote(
+        data.enabled
+          ? "Daily YouTube sync is ON — connected channels sync each morning (own toggle)."
+          : "Daily YouTube sync is OFF — Instagram daily scrape is unchanged."
+      );
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
   const { data, isLoading } = useQuery({
     queryKey: ["profiles", q, page, statusFilter],
     queryFn: () => api<ListResponse>(`/profiles?${queryString}`),
@@ -315,6 +337,34 @@ function AdminScrapingPageInner() {
                 className={cn(
                   "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
                   dailyScrapeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
+                )}
+              />
+            </button>
+          </div>
+          <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-[#121212] px-4 py-2.5">
+            <div className="min-w-0">
+              <div className="text-xs font-semibold text-zinc-200">Daily YouTube sync</div>
+              <div className="text-[11px] text-zinc-500">
+                {dailyYoutubeQ.data?.enabled
+                  ? "On — connected channels at 08:00 IST"
+                  : "Off — independent of Instagram scrape"}
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={!!dailyYoutubeQ.data?.enabled}
+              disabled={dailyYoutubeQ.isLoading || dailyYoutubeToggle.isPending}
+              onClick={() => dailyYoutubeToggle.mutate(!dailyYoutubeQ.data?.enabled)}
+              className={cn(
+                "relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50",
+                dailyYoutubeQ.data?.enabled ? "bg-[#ff3b30]" : "bg-zinc-700"
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
+                  dailyYoutubeQ.data?.enabled ? "translate-x-5" : "translate-x-0"
                 )}
               />
             </button>

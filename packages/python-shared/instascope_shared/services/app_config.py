@@ -19,6 +19,7 @@ logger = logging.getLogger("instascope.app_config")
 
 PROXY_CONFIG_KEY = "scrape_proxy"
 DAILY_SCRAPE_CONFIG_KEY = "daily_scrape"
+DAILY_YOUTUBE_SYNC_CONFIG_KEY = "daily_youtube_sync"
 
 
 class AppConfig(Document):
@@ -148,6 +149,41 @@ async def set_daily_scrape_enabled(enabled: bool) -> bool:
     if not doc:
         doc = AppConfig(
             key=DAILY_SCRAPE_CONFIG_KEY,
+            data=data,
+            updated_at=datetime.utcnow(),
+        )
+        await doc.insert()
+        return bool(enabled)
+    merged = dict(doc.data or {})
+    merged["enabled"] = bool(enabled)
+    doc.data = merged
+    doc.updated_at = datetime.utcnow()
+    await doc.save()
+    return bool(enabled)
+
+
+async def is_daily_youtube_sync_enabled() -> bool:
+    """Whether Celery Beat should fan out YouTube syncs.
+
+    Independent of Instagram daily-scrape toggle.
+    Defaults to False when unset so quota is not spent until an admin enables it.
+    """
+    try:
+        doc = await AppConfig.find_one(AppConfig.key == DAILY_YOUTUBE_SYNC_CONFIG_KEY)
+    except Exception:
+        logger.exception("failed reading app_config daily_youtube_sync")
+        return False
+    if not doc or not isinstance(doc.data, dict):
+        return False
+    return bool(doc.data.get("enabled"))
+
+
+async def set_daily_youtube_sync_enabled(enabled: bool) -> bool:
+    data = {"enabled": bool(enabled)}
+    doc = await AppConfig.find_one(AppConfig.key == DAILY_YOUTUBE_SYNC_CONFIG_KEY)
+    if not doc:
+        doc = AppConfig(
+            key=DAILY_YOUTUBE_SYNC_CONFIG_KEY,
             data=data,
             updated_at=datetime.utcnow(),
         )

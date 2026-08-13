@@ -7,12 +7,16 @@ from instascope_shared.models import User, UserSettings
 from instascope_shared.schemas import (
     DailyScrapeSettingsResponse,
     DailyScrapeSettingsUpdateRequest,
+    DailyYouTubeSyncSettingsResponse,
+    DailyYouTubeSyncSettingsUpdateRequest,
     SettingsResponse,
     SettingsUpdateRequest,
 )
 from instascope_shared.services.app_config import (
     is_daily_scrape_enabled,
+    is_daily_youtube_sync_enabled,
     set_daily_scrape_enabled,
+    set_daily_youtube_sync_enabled,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -73,3 +77,18 @@ async def update_daily_scrape_settings(
     """Admin: turn daily auto-scrape on/off. Stays until changed again."""
     enabled = await set_daily_scrape_enabled(payload.enabled)
     return DailyScrapeSettingsResponse(enabled=enabled)
+
+
+@router.get("/daily-youtube-sync", response_model=DailyYouTubeSyncSettingsResponse)
+async def get_daily_youtube_sync_settings(_: User = Depends(require_admin)):
+    """Admin: YouTube morning sync toggle (independent of Instagram daily scrape)."""
+    return DailyYouTubeSyncSettingsResponse(enabled=await is_daily_youtube_sync_enabled())
+
+
+@router.patch("/daily-youtube-sync", response_model=DailyYouTubeSyncSettingsResponse)
+async def update_daily_youtube_sync_settings(
+    payload: DailyYouTubeSyncSettingsUpdateRequest,
+    _: User = Depends(require_admin),
+):
+    enabled = await set_daily_youtube_sync_enabled(payload.enabled)
+    return DailyYouTubeSyncSettingsResponse(enabled=enabled)

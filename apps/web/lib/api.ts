@@ -83,6 +83,9 @@ export type Profile = {
     source?: string;
     updated_at?: string;
   } | null;
+  youtube_channel_id?: string | null;
+  youtube_connected?: boolean;
+  youtube_last_synced_at?: string | null;
   status: string;
   last_scraped_at?: string | null;
   last_success_at?: string | null;

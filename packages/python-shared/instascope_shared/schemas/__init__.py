@@ -126,6 +126,10 @@ class ProfileResponse(BaseModel):
     insights: dict[str, Any] = Field(default_factory=dict)
     student: dict[str, Any] = Field(default_factory=dict)
     scrape_progress: Optional[dict[str, Any]] = None
+    # Minimal YouTube connection refs (metrics live in youtube_* collections)
+    youtube_channel_id: Optional[str] = None
+    youtube_connected: bool = False
+    youtube_last_synced_at: Optional[datetime] = None
     status: str
     last_scraped_at: Optional[datetime] = None
     last_success_at: Optional[datetime] = None
@@ -315,3 +319,49 @@ class DailyScrapeSettingsResponse(BaseModel):
 
 class DailyScrapeSettingsUpdateRequest(BaseModel):
     enabled: bool
+
+
+class DailyYouTubeSyncSettingsResponse(BaseModel):
+    enabled: bool
+
+
+class DailyYouTubeSyncSettingsUpdateRequest(BaseModel):
+    enabled: bool
+
+
+class YouTubeConnectRequest(BaseModel):
+    url: str = Field(min_length=1, description="Channel URL, @handle, or UC… id")
+    max_videos: int = Field(default=50, ge=0, le=200)
+    sync_videos: bool = True
+
+
+class YouTubeSyncRequest(BaseModel):
+    max_videos: int = Field(default=50, ge=0, le=200)
+    fetch_videos: bool = True
+
+
+class YouTubeChannelResponse(BaseModel):
+    profile_id: str
+    channel_id: str
+    channel_url: Optional[str] = None
+    handle: Optional[str] = None
+    channel_name: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    subscriber_count: Optional[int] = None
+    hidden_subscriber_count: bool = False
+    view_count: int = 0
+    video_count: int = 0
+    connected: bool = True
+    sync_status: str
+    last_error: Optional[str] = None
+    last_synced_at: Optional[datetime] = None
+
+
+class YouTubeResolveResponse(BaseModel):
+    channel_id: str
+    title: str
+    handle: Optional[str] = None
+    subscribers: Optional[int] = None
+    views: int = 0
+    videos: int = 0
+    thumbnail: Optional[str] = None

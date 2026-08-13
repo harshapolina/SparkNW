@@ -15,12 +15,20 @@ celery_app = Celery(
     "instascope",
     broker=settings.redis_url,
     backend=settings.redis_url,
-    include=["tasks.scrape_profile", "tasks.fanout_daily", "tasks.retry_failed"],
+    include=[
+        "tasks.scrape_profile",
+        "tasks.fanout_daily",
+        "tasks.retry_failed",
+        "tasks.sync_youtube",
+        "tasks.fanout_youtube",
+    ],
 )
 
 _tz = (settings.celery_timezone or "Asia/Kolkata").strip() or "Asia/Kolkata"
 _hour = max(0, min(23, int(settings.daily_scrape_hour_ist)))
 _minute = max(0, min(59, int(settings.daily_scrape_minute_ist)))
+_yt_hour = max(0, min(23, int(settings.daily_youtube_sync_hour_ist)))
+_yt_minute = max(0, min(59, int(settings.daily_youtube_sync_minute_ist)))
 
 celery_app.conf.update(
     task_serializer="json",
@@ -35,6 +43,11 @@ celery_app.conf.update(
         "daily-scrape-all-profiles": {
             "task": "tasks.fanout_daily",
             "schedule": crontab(hour=_hour, minute=_minute),
+        },
+        # YouTube public sync — own admin toggle (not tied to Instagram daily-scrape).
+        "daily-youtube-sync": {
+            "task": "tasks.fanout_youtube",
+            "schedule": crontab(hour=_yt_hour, minute=_yt_minute),
         },
         "retry-failed": {
             "task": "tasks.retry_failed",

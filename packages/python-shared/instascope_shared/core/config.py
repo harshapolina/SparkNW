@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     follower_growth_notify_pct: float = 5.0
     engagement_spike_notify_pct: float = 50.0
 
+    # YouTube Data API — scoring stays off until SPARK rules are provided.
+    youtube_scoring_enabled: bool = False
+    youtube_api_key: str | None = None
+    # Daily YouTube sync (Celery Beat) — own toggle in Mongo later; schedule defaults.
+    daily_youtube_sync_hour_ist: int = 8
+    daily_youtube_sync_minute_ist: int = 0
+    daily_youtube_sync_stagger_seconds: float = 2.0
+
     @property
     def cors_origin_list(self) -> list[str]:
         origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]

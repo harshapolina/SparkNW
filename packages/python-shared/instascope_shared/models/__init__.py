@@ -29,6 +29,15 @@ class JobType(str, Enum):
     SCRAPE_PROFILE = "scrape_profile"
     BULK_REFRESH = "bulk_refresh"
     RECOMPUTE_METRICS = "recompute_metrics"
+    SYNC_YOUTUBE = "sync_youtube"
+
+
+class YouTubeSyncStatus(str, Enum):
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+    QUOTA_EXCEEDED = "quota_exceeded"
 
 
 class MediaType(str, Enum):
@@ -131,6 +140,11 @@ class Profile(Document):
     # SPARK student roster fields from registration sheet (never overwritten by scrape)
     student: dict = Field(default_factory=dict)
 
+    # Minimal YouTube link — full metrics live in youtube_channels / videos / snapshots
+    youtube_channel_id: Optional[str] = None  # permanent UC… id once resolved
+    youtube_connected: bool = False
+    youtube_last_synced_at: Optional[datetime] = None
+
     # Live scrape progress for UI (scraped/total/percent/phase); cleared when done
     scrape_progress: Optional[dict] = None
 
@@ -150,6 +164,8 @@ class Profile(Document):
             IndexModel([("org_id", ASCENDING), ("status", ASCENDING)]),
             IndexModel([("org_id", ASCENDING), ("username", ASCENDING)]),
             IndexModel([("status", ASCENDING), ("last_scraped_at", ASCENDING)]),
+            IndexModel([("youtube_channel_id", ASCENDING)]),
+            IndexModel([("org_id", ASCENDING), ("youtube_connected", ASCENDING)]),
         ]
 
 
@@ -266,6 +282,101 @@ class Notification(Document):
         ]
 
 
+class YouTubeChannel(Document):
+    """Public YouTube channel state for a SPARK profile (separate from Instagram Profile metrics)."""
+
+    profile_id: Indexed(str)  # type: ignore[valid-type]
+    user_id: Indexed(str)  # type: ignore[valid-type]
+    org_id: str = DEFAULT_ORG_ID
+
+    channel_id: Indexed(str)  # type: ignore[valid-type]  # permanent UC…
+    channel_url: Optional[str] = None
+    handle: Optional[str] = None
+    channel_name: Optional[str] = None
+    description: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+
+    subscriber_count: Optional[int] = None
+    hidden_subscriber_count: bool = False
+    view_count: int = 0
+    video_count: int = 0
+    uploads_playlist_id: Optional[str] = None
+
+    connected: bool = True
+    sync_status: YouTubeSyncStatus = YouTubeSyncStatus.PENDING
+    last_error: Optional[str] = None
+    last_synced_at: Optional[datetime] = None
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "youtube_channels"
+        indexes = [
+            IndexModel([("profile_id", ASCENDING)], unique=True),
+            IndexModel([("channel_id", ASCENDING)], unique=True),
+            IndexModel([("org_id", ASCENDING), ("connected", ASCENDING)]),
+            IndexModel([("sync_status", ASCENDING), ("last_synced_at", ASCENDING)]),
+        ]
+
+
+class YouTubeVideo(Document):
+    """Public video rows for a tracked YouTube channel."""
+
+    profile_id: Indexed(str)  # type: ignore[valid-type]
+    user_id: Indexed(str)  # type: ignore[valid-type]
+    channel_id: Indexed(str)  # type: ignore[valid-type]
+    video_id: Indexed(str)  # type: ignore[valid-type]
+
+    title: str = ""
+    url: str = ""
+    published_at: Optional[datetime] = None
+    thumbnail_url: Optional[str] = None
+    view_count: int = 0
+    like_count: Optional[int] = None
+    comment_count: Optional[int] = None
+    duration: Optional[str] = None
+
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "youtube_videos"
+        indexes = [
+            IndexModel([("video_id", ASCENDING)], unique=True),
+            IndexModel([("channel_id", ASCENDING), ("published_at", DESCENDING)]),
+            IndexModel([("profile_id", ASCENDING), ("published_at", DESCENDING)]),
+        ]
+
+
+class YouTubeSnapshot(Document):
+    """Daily YouTube metrics snapshot for growth charts (mirrors ProfileSnapshot idea)."""
+
+    profile_id: Indexed(str)  # type: ignore[valid-type]
+    user_id: Indexed(str)  # type: ignore[valid-type]
+    channel_id: Indexed(str)  # type: ignore[valid-type]
+    snapshot_date: str  # YYYY-MM-DD (UTC)
+
+    subscribers: Optional[int] = None
+    total_views: int = 0
+    video_count: int = 0
+    likes: int = 0
+    comments: int = 0
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "youtube_snapshots"
+        indexes = [
+            IndexModel(
+                [("profile_id", ASCENDING), ("snapshot_date", ASCENDING)],
+                unique=True,
+            ),
+            IndexModel([("channel_id", ASCENDING), ("snapshot_date", ASCENDING)]),
+            IndexModel([("user_id", ASCENDING), ("snapshot_date", ASCENDING)]),
+        ]
+
+
 DOCUMENT_MODELS = [
     User,
     UserSettings,
@@ -275,6 +386,9 @@ DOCUMENT_MODELS = [
     Job,
     ScrapeLog,
     Notification,
+    YouTubeChannel,
+    YouTubeVideo,
+    YouTubeSnapshot,
 ]
 
 # Late import avoids circular refs — AppConfig lives with services but is a Document.

@@ -233,7 +233,7 @@ export default function AdminLeaderboardPage() {
         </div>
 
         <div className="mt-4 overflow-x-auto">
-          <table className="w-full min-w-[900px] text-left text-sm">
+          <table className="w-full min-w-[1100px] text-left text-sm">
             <thead>
               <tr className="border-b border-white/10 text-[10px] uppercase tracking-[0.12em] text-zinc-500">
                 <th className="px-3 py-3 font-semibold">Rank</th>
@@ -256,6 +256,12 @@ export default function AdminLeaderboardPage() {
                 </th>
                 <th className={cn("px-3 py-3 font-semibold", sort === "engagement" && "text-[#ff4d00]")}>
                   Engagement{sort === "engagement" ? " ↓" : ""}
+                </th>
+                <th className="px-3 py-3 font-semibold" title="Display only — not in SPARK points yet">
+                  YT Subs
+                </th>
+                <th className="px-3 py-3 font-semibold" title="Display only — not in SPARK points yet">
+                  YT Views
                 </th>
                 <th className="px-3 py-3 font-semibold">Trend</th>
               </tr>
@@ -322,6 +328,12 @@ export default function AdminLeaderboardPage() {
                   >
                     {Number(row.engagement || 0).toFixed(2)}%
                   </td>
+                  <td className="px-3 py-3 tabular text-zinc-400">
+                    {row.youtube_connected ? formatNumber(row.youtube_subscribers ?? 0) : "—"}
+                  </td>
+                  <td className="px-3 py-3 tabular text-zinc-400">
+                    {row.youtube_connected ? formatNumber(row.youtube_views ?? 0) : "—"}
+                  </td>
                   <td className="px-3 py-3">
                     <Movement delta={row.rank_delta} />
                   </td>
@@ -329,7 +341,7 @@ export default function AdminLeaderboardPage() {
               ))}
               {!pageRows.length && (
                 <tr>
-                  <td colSpan={9} className="px-3 py-10 text-center text-zinc-500">
+                  <td colSpan={11} className="px-3 py-10 text-center text-zinc-500">
                     No creators match these filters.
                   </td>
                 </tr>
@@ -340,7 +352,8 @@ export default function AdminLeaderboardPage() {
 
         <p className="mt-3 text-[11px] text-zinc-500">
           <span className="text-zinc-300">OVERALL / POINTS</span> = SPARK score from scraped posts since 15 Jul 2026.{" "}
-          <span className="text-zinc-300">FOLLOWERS / VIEWS / ENGAGEMENT</span> = cohort metrics from that date onward.
+          <span className="text-zinc-300">FOLLOWERS / VIEWS / ENGAGEMENT</span> = cohort metrics from that date onward.{" "}
+          <span className="text-zinc-300">YT Subs / YT Views</span> = display only (not in SPARK points yet).
           Orange column is the active sort.
         </p>
 

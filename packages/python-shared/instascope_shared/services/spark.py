@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from instascope_shared.cohort import clamp_scoring_window, snapshot_floor_ymd
+from instascope_shared.core.config import get_settings
 from instascope_shared.models import (
     DEFAULT_ORG_ID,
     Job,
@@ -15,6 +16,9 @@ from instascope_shared.models import (
     Profile,
     ProfileSnapshot,
     ProfileStatus,
+    YouTubeChannel,
+    YouTubeSnapshot,
+    YouTubeSyncStatus,
 )
 
 SortKey = Literal["overall", "points", "followers", "views", "engagement"]
@@ -414,6 +418,14 @@ def score_profile(
         "points_to_next_tier": remaining,
         "task_history": sorted(task_history, key=lambda t: t.get("date") or "", reverse=True)[:20],
         "is_private": bool(profile.is_private),
+        # YouTube metrics (display only — not included in SPARK points yet)
+        "youtube_connected": bool(getattr(profile, "youtube_connected", False)),
+        "youtube_channel_id": getattr(profile, "youtube_channel_id", None),
+        "youtube_subscribers": None,
+        "youtube_views": None,
+        "youtube_likes": None,
+        "youtube_comments": None,
+        "youtube_video_count": None,
     }
 
 
@@ -460,6 +472,115 @@ def _earliest_snap_by_profile(snaps: list[ProfileSnapshot]) -> dict[str, Profile
         if not cur or s.snapshot_date < cur.snapshot_date:
             earliest[s.profile_id] = s
     return earliest
+
+
+def _empty_youtube_metrics() -> dict[str, Any]:
+    return {
+        "connected": False,
+        "channel_id": None,
+        "channel_name": None,
+        "handle": None,
+        "subscribers": None,
+        "views": None,
+        "likes": None,
+        "comments": None,
+        "video_count": None,
+        "sync_status": None,
+        "last_synced_at": None,
+        "last_error": None,
+        "subscribers_delta": None,
+        "views_delta": None,
+        "scoring_enabled": bool(get_settings().youtube_scoring_enabled),
+    }
+
+
+async def _youtube_channels_by_profile(profile_ids: list[str]) -> dict[str, YouTubeChannel]:
+    if not profile_ids:
+        return {}
+    rows = await YouTubeChannel.find({"profile_id": {"$in": profile_ids}}).to_list()
+    return {r.profile_id: r for r in rows}
+
+
+async def _latest_youtube_snaps(profile_ids: list[str]) -> dict[str, YouTubeSnapshot]:
+    if not profile_ids:
+        return {}
+    snaps = await YouTubeSnapshot.find({"profile_id": {"$in": profile_ids}}).to_list()
+    latest: dict[str, YouTubeSnapshot] = {}
+    for s in snaps:
+        cur = latest.get(s.profile_id)
+        if not cur or s.snapshot_date > cur.snapshot_date:
+            latest[s.profile_id] = s
+    return latest
+
+
+async def _prev_youtube_snaps(
+    profile_ids: list[str],
+    latest: dict[str, YouTubeSnapshot],
+) -> dict[str, YouTubeSnapshot]:
+    """Previous snapshot before the latest date (for growth deltas)."""
+    if not profile_ids or not latest:
+        return {}
+    snaps = await YouTubeSnapshot.find({"profile_id": {"$in": profile_ids}}).to_list()
+    prev: dict[str, YouTubeSnapshot] = {}
+    for s in snaps:
+        top = latest.get(s.profile_id)
+        if not top or s.snapshot_date >= top.snapshot_date:
+            continue
+        cur = prev.get(s.profile_id)
+        if not cur or s.snapshot_date > cur.snapshot_date:
+            prev[s.profile_id] = s
+    return prev
+
+
+def _apply_youtube_to_row(
+    row: dict[str, Any],
+    channel: YouTubeChannel | None,
+    snap: YouTubeSnapshot | None = None,
+    prev: YouTubeSnapshot | None = None,
+) -> None:
+    metrics = _empty_youtube_metrics()
+    if channel and channel.connected:
+        metrics.update(
+            {
+                "connected": True,
+                "channel_id": channel.channel_id,
+                "channel_name": channel.channel_name,
+                "handle": channel.handle,
+                "subscribers": channel.subscriber_count,
+                "views": int(channel.view_count or 0),
+                "video_count": int(channel.video_count or 0),
+                "likes": int(snap.likes) if snap else None,
+                "comments": int(snap.comments) if snap else None,
+                "sync_status": channel.sync_status.value
+                if hasattr(channel.sync_status, "value")
+                else str(channel.sync_status),
+                "last_synced_at": channel.last_synced_at.isoformat() if channel.last_synced_at else None,
+                "last_error": channel.last_error,
+            }
+        )
+        if snap and prev:
+            if snap.subscribers is not None and prev.subscribers is not None:
+                metrics["subscribers_delta"] = int(snap.subscribers) - int(prev.subscribers)
+            metrics["views_delta"] = int(snap.total_views or 0) - int(prev.total_views or 0)
+    row["youtube"] = metrics
+    row["youtube_connected"] = metrics["connected"]
+    row["youtube_channel_id"] = metrics["channel_id"]
+    row["youtube_subscribers"] = metrics["subscribers"]
+    row["youtube_views"] = metrics["views"]
+    row["youtube_likes"] = metrics["likes"]
+    row["youtube_comments"] = metrics["comments"]
+    row["youtube_video_count"] = metrics["video_count"]
+    # SPARK points unchanged — youtube_scoring_enabled reserved for a future formula.
+    _ = get_settings().youtube_scoring_enabled
+
+
+async def _enrich_leaderboard_youtube(rows: list[dict[str, Any]]) -> None:
+    ids = [r["id"] for r in rows]
+    channels = await _youtube_channels_by_profile(ids)
+    snaps = await _latest_youtube_snaps(ids)
+    for r in rows:
+        pid = r["id"]
+        _apply_youtube_to_row(r, channels.get(pid), snaps.get(pid))
 
 
 async def build_leaderboard(
@@ -556,6 +677,7 @@ async def build_leaderboard(
         r["is_you"] = bool(you_profile_id and r["id"] == you_profile_id)
         r["window_from"] = window_start.strftime("%Y-%m-%d")
         r["window_to"] = window_end.strftime("%Y-%m-%d")
+    await _enrich_leaderboard_youtube(rows)
     return rows
 
 
@@ -686,6 +808,18 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
         for s in reversed(snaps[-30:])
     ]
 
+    yt_channel = await YouTubeChannel.find_one(YouTubeChannel.profile_id == profile_id)
+    yt_snaps = await _latest_youtube_snaps([profile_id])
+    yt_prev = await _prev_youtube_snaps([profile_id], yt_snaps)
+    youtube_row: dict[str, Any] = {"id": profile_id}
+    _apply_youtube_to_row(
+        youtube_row,
+        yt_channel,
+        yt_snaps.get(profile_id),
+        yt_prev.get(profile_id),
+    )
+    youtube_payload = youtube_row.get("youtube") or _empty_youtube_metrics()
+
     return {
         "empty": False,
         "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
@@ -701,6 +835,7 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
         "insights": dict(getattr(profile, "insights", None) or {}) if profile else {},
         "recent_posts": recent_posts,
         "history": history,
+        "youtube": youtube_payload,
         "profile": {
             "bio": getattr(profile, "bio", None) if profile else None,
             "website": getattr(profile, "website", None) if profile else None,
@@ -1067,6 +1202,39 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
     alerts.sort(key=lambda a: a["created_at"], reverse=True)
     alerts = alerts[:25]
 
+    # YouTube portfolio summary (separate from Instagram scrape health)
+    yt_channels = await YouTubeChannel.find(
+        {"profile_id": {"$in": profile_ids}} if profile_ids else {}
+    ).to_list() if profile_ids else []
+    from instascope_shared.services.app_config import is_daily_youtube_sync_enabled
+
+    yt_connected = [c for c in yt_channels if c.connected]
+    yt_failed = [
+        c
+        for c in yt_channels
+        if c.sync_status
+        in {YouTubeSyncStatus.FAILED, YouTubeSyncStatus.UNAVAILABLE, YouTubeSyncStatus.QUOTA_EXCEEDED}
+    ]
+    yt_last = None
+    for c in yt_channels:
+        if c.last_synced_at and (yt_last is None or c.last_synced_at > yt_last):
+            yt_last = c.last_synced_at
+    youtube_overview = {
+        "connected": len(yt_connected),
+        "total_channels": len(yt_channels),
+        "total_subscribers": sum(int(c.subscriber_count or 0) for c in yt_connected),
+        "total_views": sum(int(c.view_count or 0) for c in yt_connected),
+        "total_videos": sum(int(c.video_count or 0) for c in yt_connected),
+        "failed": len(yt_failed),
+        "quota_exceeded": sum(
+            1 for c in yt_channels if c.sync_status == YouTubeSyncStatus.QUOTA_EXCEEDED
+        ),
+        "last_sync": yt_last.isoformat() if yt_last else None,
+        "next_sync": "Daily 08:00 IST when YouTube sync is enabled",
+        "daily_sync_enabled": await is_daily_youtube_sync_enabled(),
+        "scoring_enabled": bool(get_settings().youtube_scoring_enabled),
+    }
+
     return {
         "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
         "date_range": f"{since} → {today}",
@@ -1098,6 +1266,7 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
         "alerts": alerts,
         "insights": insights,
         "needing_attention": needing,
+        "youtube": youtube_overview,
         # Lifetime unique counts (1 profile = 1 count; re-scrapes do not inflate).
         "overall": {
             "total_profiles": len(profiles),

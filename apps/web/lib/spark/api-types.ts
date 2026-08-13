@@ -45,6 +45,30 @@ export type SparkCreatorRow = {
   }>;
   is_you?: boolean;
   avatar_url?: string | null;
+  youtube_connected?: boolean;
+  youtube_channel_id?: string | null;
+  youtube_subscribers?: number | null;
+  youtube_views?: number | null;
+  youtube_likes?: number | null;
+  youtube_comments?: number | null;
+  youtube_video_count?: number | null;
+  youtube?: {
+    connected?: boolean;
+    channel_id?: string | null;
+    channel_name?: string | null;
+    handle?: string | null;
+    subscribers?: number | null;
+    views?: number | null;
+    likes?: number | null;
+    comments?: number | null;
+    video_count?: number | null;
+    sync_status?: string | null;
+    last_synced_at?: string | null;
+    last_error?: string | null;
+    subscribers_delta?: number | null;
+    views_delta?: number | null;
+    scoring_enabled?: boolean;
+  } | null;
 };
 
 export type LeaderboardResponse = {
@@ -189,6 +213,19 @@ export type AdminOverviewResponse = {
     last_sync: string | null;
     next_sync: string;
   };
+  youtube?: {
+    connected: number;
+    total_channels: number;
+    total_subscribers: number;
+    total_views: number;
+    total_videos: number;
+    failed: number;
+    quota_exceeded: number;
+    last_sync: string | null;
+    next_sync: string;
+    daily_sync_enabled: boolean;
+    scoring_enabled: boolean;
+  };
   grit: { qualified: number; striking: number; at_risk: number };
   submissions: { pending: number; approved: number; rejected: number };
   at_risk_count: number;
@@ -238,6 +275,7 @@ export type StudentDashboardResponse = {
     followers_growth: number;
     followers_growth_pct: number;
   }>;
+  youtube?: SparkCreatorRow["youtube"];
   profile?: {
     bio?: string | null;
     website?: string | null;
