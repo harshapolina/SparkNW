@@ -222,6 +222,17 @@ html.dark .table-premium td {
   background: rgba(255, 255, 255, 0.3);
 }
 
+/* Admin left nav — scroll without visible scrollbar */
+.admin-sidebar-nav {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.admin-sidebar-nav::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 select[class*="color-scheme:dark"],
 select[class*="\[color-scheme\:dark\]"] {
   color-scheme: dark;

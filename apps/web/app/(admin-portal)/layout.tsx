@@ -95,7 +95,7 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
             Admin
           </div>
         </div>
-        <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-2">
+        <nav className="admin-sidebar-nav flex-1 space-y-0.5 overflow-y-auto px-3 py-2">
           {nav.map((item) => {
             const Icon = item.icon;
             const hasChildren = "children" in item && item.children;
