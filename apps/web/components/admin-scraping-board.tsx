@@ -8,6 +8,7 @@ import {
   AlertCircle,
   BadgeCheck,
   Ban,
+  Camera,
   CheckCircle2,
   CircleDashed,
   Download,
@@ -21,6 +22,7 @@ import {
   RefreshCw,
   Search,
   Unlink,
+  Video,
   XCircle,
 } from "lucide-react";
 import { api, type Profile } from "@/lib/api";
@@ -136,7 +138,7 @@ const VIEW_COPY: Record<
   overall: {
     title: "Scraping / All platforms",
     subtitle:
-      "Instagram scrapes and YouTube syncs in one place. Use the sidebar to focus on a single platform.",
+      "YouTube sync activity and Instagram scraping, separated cleanly. Open a platform page for the full board.",
   },
   instagram: {
     title: "Instagram scraping",
@@ -661,15 +663,37 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
         </div>
       </div>
 
-      {showInstagram ? <ScrapeActivityBanner status={scrapeStatusQ.data} /> : null}
-
       {showYoutube ? (
+      <div className="space-y-4">
+        {view === "overall" ? (
+          <div className="flex items-center gap-2">
+            <span className="grid h-7 w-7 place-items-center rounded-lg bg-[#ff3b30]/15 text-[#ff3b30]">
+              <Video size={14} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold text-zinc-100">YouTube</div>
+              <p className="text-[11px] text-zinc-500">Live queue and recent sync history</p>
+            </div>
+            <Link
+              href="/admin-scraping/youtube"
+              className="shrink-0 text-xs font-medium text-[#ff3b30] hover:underline"
+            >
+              Full YouTube board →
+            </Link>
+          </div>
+        ) : null}
+
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="text-sm font-semibold text-zinc-100">YouTube sync queue</div>
+            <div className="text-sm font-semibold text-zinc-100">
+              {view === "youtube" ? "Sync activity" : "YouTube sync activity"}
+            </div>
             <p className="mt-0.5 text-xs text-zinc-500">
-              Already-synced channels stay listed. Sync remaining continues leftover jobs; daily 08:00 IST refreshes everyone.
+              {youtubeSyncQ.data?.connected_total || 0} connected
+              {(youtubeSyncQ.data?.active_count || 0) > 0
+                ? ` · ${youtubeSyncQ.data?.active_count} in queue`
+                : " · queue clear"}
             </p>
           </div>
           <button
@@ -683,108 +707,130 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
           </button>
         </div>
 
-        {(youtubeSyncQ.data?.active_count || 0) > 0 ? (
-          <div className="mt-4 space-y-2 rounded-xl border border-violet-500/25 bg-violet-500/10 px-4 py-3 text-violet-100">
-            <div className="text-sm font-semibold">
-              Syncing now
-              {youtubeSyncQ.data?.running
-                ? ` — @${youtubeSyncQ.data.running.username}`
-                : ` (${youtubeSyncQ.data?.active_count} in queue)`}
-              <span className="ml-2 font-normal text-violet-200/70">
-                · {youtubeSyncQ.data?.active_count} job(s)
+        <div className="mt-4 grid gap-3 lg:grid-cols-2 lg:items-stretch">
+          <div className="flex min-h-0 flex-col rounded-xl border border-white/[0.06] bg-black/30 p-4">
+            <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                Live queue
+              </div>
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
+                  (youtubeSyncQ.data?.active_count || 0) > 0
+                    ? "bg-sky-500/15 text-sky-300"
+                    : "bg-zinc-800 text-zinc-500"
+                )}
+              >
+                {(youtubeSyncQ.data?.active_count || 0) > 0
+                  ? `${youtubeSyncQ.data?.active_count} active`
+                  : "Idle"}
               </span>
             </div>
-            <ul className="thin-scroll max-h-48 space-y-1.5 overflow-y-auto overscroll-contain pr-1 text-xs text-violet-100/90 sm:max-h-56">
-              {(youtubeSyncQ.data?.queue || []).map((row) => (
-                <li key={row.job_id || row.profile_id} className="flex flex-wrap items-center gap-2">
-                  <Link
-                    href={`/admin-scraping/${row.profile_id}`}
-                    className="font-medium text-white hover:underline"
-                  >
-                    @{row.username}
-                  </Link>
-                  <span className="rounded-full bg-black/30 px-2 py-0.5 uppercase tracking-wide text-[10px]">
-                    {row.status}
-                  </span>
-                  {row.channel_name ? (
-                    <span className="text-violet-200/70">{row.channel_name}</span>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : (
-          <p className="mt-3 text-xs text-zinc-500">
-            No YouTube jobs in queue
-            {youtubeSyncQ.data?.connected_total
-              ? ` · ${youtubeSyncQ.data.connected_total} channel(s) connected`
-              : " · connect channels on a profile first"}
-            .
-          </p>
-        )}
-
-        <div className="mt-5 grid gap-4 lg:grid-cols-2">
-          <div>
-            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-zinc-500">
-              Past YouTube syncs
+            <div className="thin-scroll h-[220px] overflow-y-auto">
+              {(youtubeSyncQ.data?.active_count || 0) > 0 ? (
+                <ul className="space-y-1.5 text-xs">
+                  {(youtubeSyncQ.data?.queue || []).map((row) => (
+                    <li
+                      key={row.job_id || row.profile_id}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-white/[0.04] bg-[#121212]/80 px-3 py-2"
+                    >
+                      <div className="min-w-0">
+                        <Link
+                          href={`/admin-scraping/${row.profile_id}`}
+                          className="font-medium text-zinc-100 hover:text-[#ff4d00]"
+                        >
+                          @{row.username}
+                        </Link>
+                        {row.channel_name ? (
+                          <div className="truncate text-[10px] text-zinc-500">{row.channel_name}</div>
+                        ) : null}
+                      </div>
+                      <span className="shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] uppercase tracking-wide text-sky-300">
+                        {row.status}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-zinc-500">
+                  No jobs running. Daily 08:00 IST syncs when the toggle is ON.
+                </p>
+              )}
             </div>
-            {(youtubeSyncQ.data?.history || []).length ? (
-              <ul className="thin-scroll max-h-64 space-y-2 overflow-y-auto text-xs">
-                {youtubeSyncQ.data!.history.map((row) => (
-                  <li
-                    key={row.job_id || `${row.profile_id}-${row.finished_at}`}
-                    className="rounded-xl border border-white/[0.06] bg-black/30 px-3 py-2"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <Link
-                        href={`/admin-scraping/${row.profile_id}`}
-                        className="font-medium text-zinc-200 hover:text-[#ff4d00]"
-                      >
-                        @{row.username}
-                      </Link>
+          </div>
+
+          <div className="flex min-h-0 flex-col rounded-xl border border-white/[0.06] bg-black/30 p-4">
+            <div className="mb-3 flex shrink-0 items-center justify-between gap-2">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                Past syncs
+              </div>
+              <span className="text-[10px] text-zinc-600">
+                {(youtubeSyncQ.data?.history || []).length} recent
+              </span>
+            </div>
+            <div className="thin-scroll h-[220px] overflow-y-auto">
+              {(youtubeSyncQ.data?.history || []).length ? (
+                <ul className="space-y-1.5 text-xs">
+                  {youtubeSyncQ.data!.history.map((row) => (
+                    <li
+                      key={row.job_id || `${row.profile_id}-${row.finished_at}`}
+                      className="flex items-center gap-3 rounded-lg border border-white/[0.04] bg-[#121212]/80 px-3 py-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <Link
+                          href={`/admin-scraping/${row.profile_id}`}
+                          className="font-medium text-zinc-100 hover:text-[#ff4d00]"
+                        >
+                          @{row.username}
+                        </Link>
+                        <div className="truncate text-[10px] text-zinc-500">
+                          {row.finished_at
+                            ? new Date(row.finished_at).toLocaleString(undefined, {
+                                day: "2-digit",
+                                month: "short",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })
+                            : row.created_at
+                              ? new Date(row.created_at).toLocaleString(undefined, {
+                                  day: "2-digit",
+                                  month: "short",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "—"}
+                          {row.channel_name ? ` · ${row.channel_name}` : ""}
+                        </div>
+                        {row.error_message ? (
+                          <p className="mt-0.5 line-clamp-1 text-[10px] text-rose-300/90">
+                            {row.error_message}
+                          </p>
+                        ) : null}
+                      </div>
                       <span
                         className={cn(
-                          "rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide",
+                          "shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
                           row.status === "success"
-                            ? "bg-emerald-500/15 text-emerald-300"
+                            ? "bg-lime-500/15 text-lime-400"
                             : "bg-rose-500/15 text-rose-300"
                         )}
                       >
                         {row.status}
                       </span>
-                    </div>
-                    <div className="mt-1 text-zinc-500">
-                      {row.finished_at
-                        ? new Date(row.finished_at).toLocaleString()
-                        : row.created_at
-                          ? new Date(row.created_at).toLocaleString()
-                          : "—"}
-                      {row.channel_name ? ` · ${row.channel_name}` : ""}
-                    </div>
-                    {row.error_message ? (
-                      <p className="mt-1 text-rose-300/90 line-clamp-2">{row.error_message}</p>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-xs text-zinc-500">No past YouTube sync jobs yet.</p>
-            )}
-          </div>
-
-          <div>
-            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-zinc-500">
-              Connected channels
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-zinc-500">No completed YouTube syncs yet.</p>
+              )}
             </div>
-            <p className="text-xs text-zinc-500">
-              {youtubeSyncQ.data?.connected_total || 0} connected · see board below
-            </p>
           </div>
         </div>
       </div>
+      </div>
       ) : null}
 
-      {showYoutube ? (
+      {showYoutube && view === "youtube" ? (
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -1009,6 +1055,20 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
         ) : null}
       </div>
       ) : null}
+
+      {showInstagram && view === "overall" ? (
+        <div className="flex items-center gap-2 border-t border-white/[0.06] pt-6">
+          <span className="grid h-7 w-7 place-items-center rounded-lg bg-sky-500/10 text-sky-300">
+            <Camera size={14} />
+          </span>
+          <div>
+            <div className="text-sm font-semibold text-zinc-100">Instagram</div>
+            <p className="text-[11px] text-zinc-500">Live scrapes, add creator, and cohort board</p>
+          </div>
+        </div>
+      ) : null}
+
+      {showInstagram ? <ScrapeActivityBanner status={scrapeStatusQ.data} /> : null}
 
       {showInstagram ? (
       <>
