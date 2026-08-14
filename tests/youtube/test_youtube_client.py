@@ -262,6 +262,51 @@ async def test_playlist_items_pagination_token():
 
 
 @pytest.mark.asyncio
+async def test_list_playlist_converts_uc_to_uu():
+    channel_id = "UCabcdefghijklmnopqrstuv"
+    mock = AsyncMock()
+    mock.get = AsyncMock(
+        return_value=_mock_response(
+            200,
+            {
+                "items": [
+                    {
+                        "snippet": {"title": "V1", "position": 0, "resourceId": {"videoId": "abc"}},
+                        "contentDetails": {"videoId": "abc"},
+                    }
+                ],
+            },
+        )
+    )
+    client = YouTubeClient(api_key="test-key", client=mock)
+    await client.list_playlist_items(channel_id, channel_id=channel_id)
+    args, kwargs = mock.get.await_args
+    assert kwargs["params"]["playlistId"] == "UU" + channel_id[2:]
+
+
+@pytest.mark.asyncio
+async def test_playlist_not_found_message_is_clean():
+    mock = AsyncMock()
+    mock.get = AsyncMock(
+        return_value=_mock_response(
+            404,
+            {
+                "error": {
+                    "message": "The playlist identified with the request's <code>playlistId</code> parameter cannot be found.",
+                    "errors": [{"reason": "playlistNotFound"}],
+                }
+            },
+        )
+    )
+    client = YouTubeClient(api_key="test-key", client=mock)
+    with pytest.raises(YouTubeNotFoundError) as ei:
+        await client.list_playlist_items("UUbad")
+    assert ei.value.reason == "playlistNotFound"
+    assert "<code>" not in str(ei.value)
+    assert "uploads playlist" in str(ei.value).lower()
+
+
+@pytest.mark.asyncio
 async def test_iter_upload_stops_before_published_after():
     """Uploads are newest-first; stop once we hit a video older than the floor."""
     items = [

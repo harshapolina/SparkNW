@@ -29,8 +29,13 @@ class YouTubeInvalidChannelError(YouTubeError):
 class YouTubeNotFoundError(YouTubeError):
     """Channel or resource does not exist / was deleted."""
 
-    def __init__(self, message: str = "YouTube channel not found"):
-        super().__init__(message, status_code=404, reason="not_found")
+    def __init__(
+        self,
+        message: str = "YouTube channel not found",
+        *,
+        reason: str = "not_found",
+    ):
+        super().__init__(message, status_code=404, reason=reason)
 
 
 class YouTubeQuotaExceededError(YouTubeError):

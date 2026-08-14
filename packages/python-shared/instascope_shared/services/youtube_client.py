@@ -219,6 +219,35 @@ def _as_optional_int(value: Any) -> int | None:
         return None
 
 
+def _strip_api_html(message: str) -> str:
+    """YouTube sometimes embeds <code>…</code> in error messages."""
+    cleaned = re.sub(r"</?code>", "", message or "")
+    cleaned = re.sub(r"<[^>]+>", "", cleaned)
+    return cleaned.strip()
+
+
+def uploads_playlist_id_for_channel(
+    channel_id: str | None,
+    reported: str | None = None,
+) -> str | None:
+    """Resolve uploads playlist id (UU…) from API value or UC→UU convention.
+
+    Never treat a bare channel id (UC…) as a playlist id — playlistItems.list
+    will 404 with "playlistId parameter cannot be found".
+    """
+    reported = str(reported or "").strip()
+    cid = str(channel_id or "").strip()
+    if reported.startswith("UU"):
+        return reported
+    if reported and not reported.startswith("UC"):
+        return reported
+    if cid.startswith("UC") and len(cid) > 2:
+        return "UU" + cid[2:]
+    if reported.startswith("UC") and len(reported) > 2:
+        return "UU" + reported[2:]
+    return reported or None
+
+
 def _thumbnails_map(thumbs: dict[str, Any] | None) -> dict[str, str]:
     out: dict[str, str] = {}
     if not isinstance(thumbs, dict):
@@ -245,8 +274,9 @@ def _channel_from_item(item: dict[str, Any]) -> YouTubeChannelInfo:
     thumb = _best_thumb(snippet.get("thumbnails"))
     hidden = bool(stats.get("hiddenSubscriberCount"))
     subs = None if hidden else _as_optional_int(stats.get("subscriberCount"))
+    channel_id = str(item.get("id") or "")
     return YouTubeChannelInfo(
-        channel_id=str(item.get("id") or ""),
+        channel_id=channel_id,
         title=str(snippet.get("title") or ""),
         description=str(snippet.get("description") or ""),
         custom_url=snippet.get("customUrl"),
@@ -255,7 +285,9 @@ def _channel_from_item(item: dict[str, Any]) -> YouTubeChannelInfo:
         hidden_subscriber_count=hidden,
         view_count=_as_int(stats.get("viewCount")),
         video_count=_as_int(stats.get("videoCount")),
-        uploads_playlist_id=related.get("uploads"),
+        uploads_playlist_id=uploads_playlist_id_for_channel(
+            channel_id, related.get("uploads")
+        ),
         published_at=snippet.get("publishedAt"),
         raw=item,
     )
@@ -365,7 +397,9 @@ class YouTubeClient:
             return body
 
         err = (body.get("error") or {}) if isinstance(body, dict) else {}
-        message = redact_secrets(str(err.get("message") or resp.text or "YouTube API error"), self._api_key)
+        message = _strip_api_html(
+            redact_secrets(str(err.get("message") or resp.text or "YouTube API error"), self._api_key)
+        )
         reason = ""
         for e in err.get("errors") or []:
             if isinstance(e, dict) and e.get("reason"):
@@ -388,7 +422,12 @@ class YouTubeClient:
         if resp.status_code == 429 or reason in {"rateLimitExceeded", "userRateLimitExceeded"}:
             raise YouTubeRateLimitError(message)
         if resp.status_code == 404 or reason in {"channelNotFound", "playlistNotFound", "videoNotFound"}:
-            raise YouTubeNotFoundError(message)
+            if reason == "playlistNotFound" or "playlistid" in message.lower():
+                raise YouTubeNotFoundError(
+                    "YouTube uploads playlist not found (channel may have no public videos)",
+                    reason="playlistNotFound",
+                )
+            raise YouTubeNotFoundError(message, reason=reason or "not_found")
         raise YouTubeApiError(message, status_code=resp.status_code, reason=reason or "api_error")
 
     async def list_channels_by_ids(self, channel_ids: list[str]) -> list[YouTubeChannelInfo]:
@@ -495,16 +534,36 @@ class YouTubeClient:
         *,
         page_token: str | None = None,
         max_results: int = 50,
+        channel_id: str | None = None,
     ) -> tuple[list[YouTubePlaylistItem], str | None]:
         """playlistItems.list for uploads playlist (1 unit per page)."""
+        pid = str(playlist_id or "").strip()
+        fallback = uploads_playlist_id_for_channel(channel_id, pid)
+        # Prefer derived UU… when reported id looks like a channel id
+        if fallback and fallback != pid and pid.startswith("UC"):
+            pid = fallback
+
         params: dict[str, Any] = {
             "part": "snippet,contentDetails",
-            "playlistId": playlist_id,
+            "playlistId": pid,
             "maxResults": max(1, min(50, max_results)),
         }
         if page_token:
             params["pageToken"] = page_token
-        data = await self._get("/playlistItems", params)
+        try:
+            data = await self._get("/playlistItems", params)
+        except YouTubeNotFoundError as exc:
+            alt = uploads_playlist_id_for_channel(channel_id, None)
+            if (
+                getattr(exc, "reason", "") == "playlistNotFound"
+                and alt
+                and alt != pid
+                and not page_token
+            ):
+                params = {**params, "playlistId": alt}
+                data = await self._get("/playlistItems", params)
+            else:
+                raise
         items: list[YouTubePlaylistItem] = []
         for item in data.get("items") or []:
             content = item.get("contentDetails") or {}
@@ -528,6 +587,7 @@ class YouTubeClient:
         *,
         max_videos: int | None = None,
         published_after: str | None = None,
+        channel_id: str | None = None,
     ):
         """Paginate uploads playlist (newest first); yields video IDs.
 
@@ -551,7 +611,11 @@ class YouTubeClient:
         token: str | None = None
         yielded = 0
         while True:
-            page, token = await self.list_playlist_items(uploads_playlist_id, page_token=token)
+            page, token = await self.list_playlist_items(
+                uploads_playlist_id,
+                page_token=token,
+                channel_id=channel_id,
+            )
             for row in page:
                 if floor is not None and row.published_at:
                     try:

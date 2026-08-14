@@ -24,7 +24,12 @@ from instascope_shared.models import (
     YouTubeSyncStatus,
     YouTubeVideo,
 )
-from instascope_shared.services.youtube_client import YouTubeClient, YouTubeChannelInfo, YouTubeVideoInfo
+from instascope_shared.services.youtube_client import (
+    YouTubeClient,
+    YouTubeChannelInfo,
+    YouTubeVideoInfo,
+    uploads_playlist_id_for_channel,
+)
 from instascope_shared.services.youtube_errors import (
     YouTubeError,
     YouTubeNotFoundError,
@@ -132,6 +137,16 @@ def _map_sync_error(exc: Exception) -> tuple[YouTubeSyncStatus, str]:
     if isinstance(exc, YouTubeError):
         return YouTubeSyncStatus.FAILED, msg
     return YouTubeSyncStatus.FAILED, msg
+
+
+def _is_playlist_not_found(exc: Exception) -> bool:
+    reason = getattr(exc, "reason", "") or ""
+    msg = str(exc).lower()
+    if reason == "playlistNotFound":
+        return True
+    if "playlistid" in msg.replace(" ", ""):
+        return True
+    return "playlist" in msg and ("not found" in msg or "cannot be found" in msg)
 
 
 def _apply_video_fields(existing: YouTubeVideo, info: YouTubeVideoInfo, *, profile: Profile, channel: YouTubeChannel) -> None:
@@ -281,7 +296,9 @@ async def _upsert_channel_from_info(
     existing.hidden_subscriber_count = info.hidden_subscriber_count
     existing.view_count = info.view_count
     existing.video_count = info.video_count
-    existing.uploads_playlist_id = info.uploads_playlist_id
+    existing.uploads_playlist_id = uploads_playlist_id_for_channel(
+        info.channel_id, info.uploads_playlist_id
+    )
     existing.connected = True
     existing.updated_at = now
     if existing.id is None:
@@ -303,6 +320,9 @@ async def sync_youtube_channel(
     Uses stored channel_id only (no search.list). Videos are limited to uploads
     on/after SPARK_COHORT_START (default 15 Jul 2026). Failures are recorded on
     the YouTubeChannel document; bulk fan-out callers should catch and continue.
+
+    Missing uploads playlists do not fail the whole sync — channel metrics and
+    snapshots are still written (common for empty / restricted channels).
     """
     profile = await Profile.get(profile_id)
     if not profile:
@@ -320,13 +340,31 @@ async def sync_youtube_channel(
         channel = await _upsert_channel_from_info(profile, info, source_url=channel.channel_url if channel else None)
 
         videos_upserted = 0
-        if fetch_videos and channel.uploads_playlist_id:
-            videos_upserted = await _sync_videos(
-                yt,
-                profile=profile,
-                channel=channel,
-                max_videos=max_videos,
-            )
+        videos_warning: str | None = None
+        playlist_id = uploads_playlist_id_for_channel(
+            channel.channel_id, channel.uploads_playlist_id
+        )
+        if playlist_id and playlist_id != channel.uploads_playlist_id:
+            channel.uploads_playlist_id = playlist_id
+        if fetch_videos and playlist_id:
+            try:
+                videos_upserted = await _sync_videos(
+                    yt,
+                    profile=profile,
+                    channel=channel,
+                    max_videos=max_videos,
+                )
+            except YouTubeNotFoundError as exc:
+                if _is_playlist_not_found(exc):
+                    videos_warning = str(exc)[:280]
+                    logger.warning(
+                        "YouTube uploads playlist missing profile_id=%s channel_id=%s err=%s",
+                        profile_id,
+                        channel.channel_id,
+                        videos_warning,
+                    )
+                else:
+                    raise
 
         likes_sum, comments_sum = await _sum_video_engagement(channel.channel_id)
         snap = await _upsert_snapshot(
@@ -338,6 +376,7 @@ async def sync_youtube_channel(
 
         now = datetime.utcnow()
         channel.sync_status = YouTubeSyncStatus.SUCCESS
+        # Soft warning only — board stays "scraped"; do not surface as failed
         channel.last_error = None
         channel.last_synced_at = now
         channel.updated_at = now
@@ -357,6 +396,7 @@ async def sync_youtube_channel(
             "total_views": channel.view_count,
             "video_count": channel.video_count,
             "videos_upserted": videos_upserted,
+            "videos_warning": videos_warning,
             "videos_since": cohort_start_ymd(),
             "snapshot_date": snap.snapshot_date,
             "sync_status": channel.sync_status.value,
@@ -393,11 +433,15 @@ async def _sync_videos(
     floor = cohort_start_dt()
     floor_ymd = cohort_start_ymd()
     cap = _effective_max_videos(max_videos)
+    playlist_id = uploads_playlist_id_for_channel(
+        channel.channel_id, channel.uploads_playlist_id
+    ) or ""
     video_ids: list[str] = []
     async for vid in yt.iter_upload_video_ids(
-        channel.uploads_playlist_id or "",
+        playlist_id,
         max_videos=cap,
         published_after=floor_ymd,
+        channel_id=channel.channel_id,
     ):
         video_ids.append(vid)
     if not video_ids:

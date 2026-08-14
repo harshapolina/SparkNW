@@ -66,6 +66,29 @@ def test_map_sync_error_quota_and_not_found():
     assert status == YouTubeSyncStatus.UNAVAILABLE
 
 
+def test_uploads_playlist_id_for_channel():
+    from instascope_shared.services.youtube_client import uploads_playlist_id_for_channel
+
+    cid = "UCabcdefghijklmnopqrstuv"
+    assert uploads_playlist_id_for_channel(cid, "UU" + cid[2:]) == "UU" + cid[2:]
+    # Never use bare UC… as playlist id
+    assert uploads_playlist_id_for_channel(cid, cid) == "UU" + cid[2:]
+    assert uploads_playlist_id_for_channel(cid, None) == "UU" + cid[2:]
+    assert uploads_playlist_id_for_channel(cid, "") == "UU" + cid[2:]
+
+
+def test_is_playlist_not_found():
+    from instascope_shared.services.youtube_sync import _is_playlist_not_found
+
+    assert _is_playlist_not_found(
+        YouTubeNotFoundError("x", reason="playlistNotFound")
+    )
+    assert _is_playlist_not_found(
+        YouTubeNotFoundError("The playlist identified cannot be found")
+    )
+    assert not _is_playlist_not_found(YouTubeNotFoundError("channel gone"))
+
+
 def test_document_models_register_youtube():
     from instascope_shared.models import DOCUMENT_MODELS
 
