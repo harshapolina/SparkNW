@@ -493,8 +493,11 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
               {youtubeSyncQ.data?.running
                 ? ` — @${youtubeSyncQ.data.running.username}`
                 : ` (${youtubeSyncQ.data?.active_count} in queue)`}
+              <span className="ml-2 font-normal text-violet-200/70">
+                · {youtubeSyncQ.data?.active_count} job(s)
+              </span>
             </div>
-            <ul className="space-y-1.5 text-xs text-violet-100/90">
+            <ul className="max-h-48 space-y-1.5 overflow-y-auto overscroll-contain pr-1 text-xs text-violet-100/90 sm:max-h-56">
               {(youtubeSyncQ.data?.queue || []).map((row) => (
                 <li key={row.job_id || row.profile_id} className="flex flex-wrap items-center gap-2">
                   <Link
