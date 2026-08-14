@@ -1215,16 +1215,82 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
         if c.sync_status
         in {YouTubeSyncStatus.FAILED, YouTubeSyncStatus.UNAVAILABLE, YouTubeSyncStatus.QUOTA_EXCEEDED}
     ]
+    yt_scraped = [
+        c
+        for c in yt_connected
+        if c.last_synced_at and c.sync_status == YouTubeSyncStatus.SUCCESS
+    ]
+    yt_pending = [
+        c
+        for c in yt_connected
+        if not c.last_synced_at or c.sync_status == YouTubeSyncStatus.PENDING
+    ]
     yt_last = None
     for c in yt_channels:
         if c.last_synced_at and (yt_last is None or c.last_synced_at > yt_last):
             yt_last = c.last_synced_at
+
+    profiles_by_id = {str(p.id): p for p in profiles}
+    top_channels = []
+    for c in sorted(
+        yt_connected,
+        key=lambda x: int(x.subscriber_count or 0),
+        reverse=True,
+    )[:8]:
+        p = profiles_by_id.get(c.profile_id)
+        student = getattr(p, "student", None) or {}
+        top_channels.append(
+            {
+                "profile_id": c.profile_id,
+                "username": getattr(p, "username", None) or "—",
+                "full_name": getattr(p, "full_name", None)
+                or (student.get("full_name") if isinstance(student, dict) else None),
+                "student_id": student.get("student_id") if isinstance(student, dict) else None,
+                "campus": student.get("university") if isinstance(student, dict) else None,
+                "channel_name": c.channel_name,
+                "handle": c.handle,
+                "subscribers": int(c.subscriber_count or 0),
+                "hidden_subscribers": bool(c.hidden_subscriber_count),
+                "views": int(c.view_count or 0),
+                "videos": int(c.video_count or 0),
+                "sync_status": c.sync_status.value
+                if hasattr(c.sync_status, "value")
+                else str(c.sync_status),
+                "last_synced_at": c.last_synced_at.isoformat() + "Z"
+                if c.last_synced_at
+                else None,
+            }
+        )
+
+    from instascope_shared.services.youtube_jobs import youtube_ref_from_student
+
+    connected_pids = {c.profile_id for c in yt_connected}
+    yt_no_link = 0
+    for p in profiles:
+        if str(p.id) in connected_pids:
+            continue
+        student = getattr(p, "student", None) or {}
+        if not youtube_ref_from_student(student if isinstance(student, dict) else None):
+            yt_no_link += 1
+
     youtube_overview = {
         "connected": len(yt_connected),
         "total_channels": len(yt_channels),
+        "scraped": len(yt_scraped),
+        "not_scraped": max(0, len(yt_connected) - len(yt_scraped)),
+        "pending_sync": len(yt_pending),
+        "no_youtube": yt_no_link,
         "total_subscribers": sum(int(c.subscriber_count or 0) for c in yt_connected),
         "total_views": sum(int(c.view_count or 0) for c in yt_connected),
         "total_videos": sum(int(c.video_count or 0) for c in yt_connected),
+        "avg_subscribers": (
+            round(
+                sum(int(c.subscriber_count or 0) for c in yt_connected) / len(yt_connected),
+                1,
+            )
+            if yt_connected
+            else 0.0
+        ),
         "failed": len(yt_failed),
         "quota_exceeded": sum(
             1 for c in yt_channels if c.sync_status == YouTubeSyncStatus.QUOTA_EXCEEDED
@@ -1233,6 +1299,7 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
         "next_sync": "Daily 08:00 IST when YouTube sync is enabled",
         "daily_sync_enabled": await is_daily_youtube_sync_enabled(),
         "scoring_enabled": bool(get_settings().youtube_scoring_enabled),
+        "top_channels": top_channels,
     }
 
     return {

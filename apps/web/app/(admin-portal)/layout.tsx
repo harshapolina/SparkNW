@@ -33,8 +33,26 @@ const scrapingChildren = [
   { href: "/admin-scraping", label: "Overall", icon: Layers, exact: true },
 ] as const;
 
-const nav = [
-  { href: "/admin-dashboard", label: "Dashboard", icon: LayoutDashboard },
+const dashboardChildren = [
+  { href: "/admin-dashboard/youtube", label: "YouTube", icon: Video },
+  { href: "/admin-dashboard/instagram", label: "Instagram", icon: Camera },
+  { href: "/admin-dashboard", label: "Overall", icon: Layers, exact: true },
+] as const;
+
+type NavChild = {
+  href: string;
+  label: string;
+  icon: typeof Video;
+  exact?: boolean;
+};
+
+const nav: {
+  href: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  children?: readonly NavChild[];
+}[] = [
+  { href: "/admin-dashboard", label: "Dashboard", icon: LayoutDashboard, children: dashboardChildren },
   { href: "/admin-leaderboard", label: "Leaderboard", icon: Trophy },
   { href: "/admin-scraping", label: "Scraping", icon: RefreshCw, children: scrapingChildren },
   { href: "/admin-analytics", label: "Analytics", icon: BarChart3 },
@@ -46,18 +64,28 @@ const nav = [
   { href: "/admin-how-it-works", label: "How it works", icon: BookOpen },
 ];
 
-function scrapingSectionActive(pathname: string, href: string, exact?: boolean) {
-  if (href === "/admin-scraping/youtube") return pathname.startsWith("/admin-scraping/youtube");
-  if (href === "/admin-scraping/instagram") return pathname.startsWith("/admin-scraping/instagram");
+function sectionChildActive(pathname: string, base: string, href: string, exact?: boolean) {
+  if (href === `${base}/youtube`) return pathname.startsWith(`${base}/youtube`);
+  if (href === `${base}/instagram`) return pathname.startsWith(`${base}/instagram`);
   if (exact) {
     return (
-      pathname === "/admin-scraping" ||
-      (pathname.startsWith("/admin-scraping/") &&
-        !pathname.startsWith("/admin-scraping/youtube") &&
-        !pathname.startsWith("/admin-scraping/instagram"))
+      pathname === base ||
+      (pathname.startsWith(`${base}/`) &&
+        !pathname.startsWith(`${base}/youtube`) &&
+        !pathname.startsWith(`${base}/instagram`))
     );
   }
-  return pathname.startsWith("/admin-scraping");
+  return pathname.startsWith(base);
+}
+
+function parentHref(itemHref: string) {
+  if (itemHref === "/admin-scraping") return adminScrapingListHref();
+  return itemHref;
+}
+
+function childHref(href: string) {
+  if (href === "/admin-scraping") return adminScrapingListHref();
+  return href;
 }
 
 export default function AdminPortalLayout({ children }: { children: React.ReactNode }) {
@@ -65,16 +93,23 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
   const pathname = usePathname();
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
-  const scrapingOpen = pathname.startsWith("/admin-scraping");
-  const [scrapingExpanded, setScrapingExpanded] = useState(scrapingOpen);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({
+    "/admin-dashboard": pathname.startsWith("/admin-dashboard"),
+    "/admin-scraping": pathname.startsWith("/admin-scraping"),
+  });
 
   useEffect(() => {
     setUser(getStoredUser());
   }, [ready]);
 
   useEffect(() => {
-    if (scrapingOpen) setScrapingExpanded(true);
-  }, [scrapingOpen]);
+    setExpanded((prev) => {
+      const next = { ...prev };
+      if (pathname.startsWith("/admin-dashboard")) next["/admin-dashboard"] = true;
+      if (pathname.startsWith("/admin-scraping")) next["/admin-scraping"] = true;
+      return next;
+    });
+  }, [pathname]);
 
   if (!ready) {
     return (
@@ -98,19 +133,19 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
         <nav className="admin-sidebar-nav flex-1 space-y-0.5 overflow-y-auto px-3 py-2">
           {nav.map((item) => {
             const Icon = item.icon;
-            const hasChildren = "children" in item && item.children;
-            const branchOpen = hasChildren && scrapingExpanded;
+            const hasChildren = Boolean(item.children?.length);
+            const isOpen = Boolean(expanded[item.href]);
             const parentActive = hasChildren
-              ? scrapingOpen
+              ? pathname.startsWith(item.href)
               : pathname === item.href || pathname.startsWith(item.href + "/");
 
-            if (hasChildren) {
+            if (hasChildren && item.children) {
               return (
                 <div key={item.href} className="pt-0.5">
                   <div
                     className={cn(
                       "flex items-center rounded-xl transition",
-                      parentActive && !scrapingExpanded
+                      parentActive && !isOpen
                         ? "bg-[#ff3b30] text-white shadow-lg shadow-[#ff3b30]/20"
                         : parentActive
                           ? "bg-white/[0.04] text-zinc-100"
@@ -118,49 +153,48 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
                     )}
                   >
                     <Link
-                      href={adminScrapingListHref()}
+                      href={parentHref(item.href)}
                       className="flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5 text-[13px]"
-                      onClick={() => setScrapingExpanded(true)}
+                      onClick={() => setExpanded((prev) => ({ ...prev, [item.href]: true }))}
                     >
                       <Icon size={16} />
                       {item.label}
                     </Link>
                     <button
                       type="button"
-                      aria-label={scrapingExpanded ? "Collapse Scraping" : "Expand Scraping"}
-                      aria-expanded={scrapingExpanded}
-                      onClick={() => setScrapingExpanded((open) => !open)}
+                      aria-label={isOpen ? `Collapse ${item.label}` : `Expand ${item.label}`}
+                      aria-expanded={isOpen}
+                      onClick={() =>
+                        setExpanded((prev) => ({ ...prev, [item.href]: !prev[item.href] }))
+                      }
                       className="mr-1 rounded-lg p-1.5 hover:bg-white/10"
                     >
                       <ChevronDown
                         size={14}
-                        className={cn("transition-transform", scrapingExpanded && "rotate-180")}
+                        className={cn("transition-transform", isOpen && "rotate-180")}
                       />
                     </button>
                   </div>
                   <div
                     className={cn(
                       "grid transition-[grid-template-rows] duration-200 ease-out",
-                      branchOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+                      isOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
                     )}
                   >
                     <div className="overflow-hidden">
                       <div className="relative ml-[22px] mt-1 space-y-0.5 border-l border-white/10 pb-1 pl-3">
                         {item.children.map((child) => {
                           const ChildIcon = child.icon;
-                          const childActive = scrapingSectionActive(
+                          const childActive = sectionChildActive(
                             pathname,
+                            item.href,
                             child.href,
-                            "exact" in child ? child.exact : false
+                            child.exact
                           );
                           return (
                             <Link
                               key={child.href + child.label}
-                              href={
-                                child.href === "/admin-scraping"
-                                  ? adminScrapingListHref()
-                                  : child.href
-                              }
+                              href={childHref(child.href)}
                               className={cn(
                                 "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px] transition",
                                 childActive
@@ -221,9 +255,10 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
         <header className="flex items-center justify-between gap-2 overflow-x-auto border-b border-white/[0.06] px-4 py-3 lg:hidden">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-[#ff3b30]">Spark</span>
           <div className="flex gap-3 text-xs text-zinc-400">
-            <Link href="/admin-scraping/youtube">YouTube</Link>
-            <Link href="/admin-scraping/instagram">Instagram</Link>
-            <Link href={adminScrapingListHref()}>Overall</Link>
+            <Link href="/admin-dashboard/youtube">YT dash</Link>
+            <Link href="/admin-dashboard/instagram">IG dash</Link>
+            <Link href="/admin-scraping/youtube">YT scrape</Link>
+            <Link href="/admin-scraping/instagram">IG scrape</Link>
             <Link href="/admin-leaderboard">Board</Link>
           </div>
         </header>

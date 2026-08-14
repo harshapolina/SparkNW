@@ -216,15 +216,35 @@ export type AdminOverviewResponse = {
   youtube?: {
     connected: number;
     total_channels: number;
+    scraped?: number;
+    not_scraped?: number;
+    pending_sync?: number;
+    no_youtube?: number;
     total_subscribers: number;
     total_views: number;
     total_videos: number;
+    avg_subscribers?: number;
     failed: number;
     quota_exceeded: number;
     last_sync: string | null;
     next_sync: string;
     daily_sync_enabled: boolean;
     scoring_enabled: boolean;
+    top_channels?: {
+      profile_id: string;
+      username: string;
+      full_name?: string | null;
+      student_id?: string | null;
+      campus?: string | null;
+      channel_name?: string | null;
+      handle?: string | null;
+      subscribers: number;
+      hidden_subscribers?: boolean;
+      views: number;
+      videos: number;
+      sync_status: string;
+      last_synced_at?: string | null;
+    }[];
   };
   grit: { qualified: number; striking: number; at_risk: number };
   submissions: { pending: number; approved: number; rejected: number };
