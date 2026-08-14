@@ -6,11 +6,11 @@ import { useEffect, useState } from "react";
 import {
   Bell,
   BookOpen,
+  Camera,
   ChevronDown,
   Database,
   Download,
   FileSpreadsheet,
-  Instagram,
   Layers,
   LayoutDashboard,
   Medal,
@@ -19,7 +19,7 @@ import {
   BarChart3,
   Trophy,
   Upload,
-  Youtube,
+  Video,
 } from "lucide-react";
 import { clearTokens, getStoredUser, type User } from "@/lib/api";
 import { BrandLogo } from "@/components/brand-logo";
@@ -28,8 +28,8 @@ import { adminScrapingListHref } from "@/lib/admin-scraping-list-state";
 import { cn } from "@/lib/utils";
 
 const scrapingChildren = [
-  { href: "/admin-scraping/youtube", label: "YouTube", icon: Youtube },
-  { href: "/admin-scraping/instagram", label: "Instagram", icon: Instagram },
+  { href: "/admin-scraping/youtube", label: "YouTube", icon: Video },
+  { href: "/admin-scraping/instagram", label: "Instagram", icon: Camera },
   { href: "/admin-scraping", label: "Overall", icon: Layers, exact: true },
 ] as const;
 
