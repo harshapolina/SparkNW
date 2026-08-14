@@ -364,7 +364,7 @@ export function DateRangePicker({
             setOpen((v) => !v);
           }}
           className={cn(
-            "inline-flex min-w-[260px] items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-left text-sm transition",
+            "inline-flex w-full min-w-0 items-center gap-2.5 rounded-xl border px-3.5 py-2.5 text-left text-sm transition sm:min-w-[260px] sm:w-auto",
             open || active
               ? "border-[#ff4d00]/45 bg-[#ff4d00]/10 text-zinc-100 shadow-[0_0_0_1px_rgba(255,77,0,0.12)]"
               : "border-white/10 bg-black/40 text-zinc-300 hover:border-white/20"

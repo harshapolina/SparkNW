@@ -123,7 +123,7 @@ export default function StudentDashboardPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight md:text-4xl">
+          <h1 className="font-[family-name:var(--font-display)] text-2xl font-semibold tracking-tight sm:text-3xl md:text-4xl">
             Hey {creator.name.split(" ")[0]}.{" "}
             <span className="text-[#ff4d00]">Keep the camera rolling.</span>
           </h1>
@@ -133,7 +133,7 @@ export default function StudentDashboardPage() {
           </p>
           <ProgrammeWindowNote className="mt-2 !text-xs" />
         </div>
-        <div className="text-right text-[11px] uppercase tracking-[0.12em] text-zinc-500">
+        <div className="text-left text-[11px] uppercase tracking-[0.12em] text-zinc-500 md:text-right">
           <div>{data.week_label}</div>
           <div className="mt-0.5 normal-case tracking-normal">{data.refresh_note}</div>
         </div>
@@ -293,7 +293,7 @@ export default function StudentDashboardPage() {
               </div>
             ))}
           </div>
-          <div className="h-56">
+          <div className="h-56 min-w-0">
             <ResponsiveContainer width="100%" height="100%" debounce={40}>
               <AreaChart data={data.performance || []}>
                 <defs>
@@ -480,9 +480,36 @@ export default function StudentDashboardPage() {
       </div>
 
       {(data.history?.length || 0) > 0 && (
-        <div className="overflow-x-auto rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+        <div className="overflow-x-auto rounded-2xl border border-white/[0.06] bg-[#121212] p-4 sm:p-5">
           <h2 className="mb-4 text-sm font-semibold">Growth history</h2>
-          <table className="w-full min-w-[560px] text-left text-sm">
+          <div className="space-y-3 md:hidden">
+            {(data.history || []).slice(0, 15).map((s) => (
+              <div key={s.id} className="rounded-xl border border-white/[0.06] bg-black/40 p-3 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-300">{s.snapshot_date}</span>
+                  <span className={s.followers_growth_pct >= 0 ? "text-lime-400" : "text-rose-400"}>
+                    {s.followers_growth_pct >= 0 ? "+" : ""}
+                    {s.followers_growth_pct.toFixed(2)}%
+                  </span>
+                </div>
+                <div className="mt-2 grid grid-cols-3 gap-2 text-[11px] text-zinc-500">
+                  <div>
+                    <div className="uppercase tracking-wide">Followers</div>
+                    <div className="mt-0.5 tabular text-zinc-200">{formatNumber(s.followers)}</div>
+                  </div>
+                  <div>
+                    <div className="uppercase tracking-wide">Likes</div>
+                    <div className="mt-0.5 tabular text-zinc-200">{formatNumber(s.avg_likes)}</div>
+                  </div>
+                  <div>
+                    <div className="uppercase tracking-wide">Views</div>
+                    <div className="mt-0.5 tabular text-zinc-200">{formatNumber(s.avg_views)}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <table className="hidden w-full text-left text-sm md:table">
             <thead>
               <tr className="border-b border-white/[0.06] text-[11px] uppercase tracking-wide text-zinc-500">
                 <th className="pb-2 pr-3 font-medium">Date</th>

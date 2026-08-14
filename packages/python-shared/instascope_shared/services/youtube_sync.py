@@ -436,43 +436,54 @@ async def _sync_videos(
     playlist_id = uploads_playlist_id_for_channel(
         channel.channel_id, channel.uploads_playlist_id
     ) or ""
-    video_ids: list[str] = []
+    upserted = 0
+    kept_ids: set[str] = set()
+    pending_ids: list[str] = []
+    seen_any = False
+
+    async def _flush(ids: list[str]) -> None:
+        nonlocal upserted
+        if not ids:
+            return
+        infos = await yt.list_videos(ids)
+        now = datetime.utcnow()
+        for info in infos:
+            pub = _parse_yt_datetime(info.published_at)
+            if pub is not None and pub.date() < cohort_start_date():
+                continue
+            existing = await YouTubeVideo.find_one(YouTubeVideo.video_id == info.video_id)
+            if not existing:
+                existing = YouTubeVideo(
+                    profile_id=str(profile.id),
+                    user_id=profile.user_id,
+                    channel_id=channel.channel_id,
+                    video_id=info.video_id,
+                )
+            _apply_video_fields(existing, info, profile=profile, channel=channel)
+            existing.updated_at = now
+            if existing.id is None:
+                await existing.insert()
+            else:
+                await existing.save()
+            kept_ids.add(info.video_id)
+            upserted += 1
+
     async for vid in yt.iter_upload_video_ids(
         playlist_id,
         max_videos=cap,
         published_after=floor_ymd,
         channel_id=channel.channel_id,
     ):
-        video_ids.append(vid)
-    if not video_ids:
-        # Drop any pre-programme rows left from older syncs.
+        seen_any = True
+        pending_ids.append(vid)
+        if len(pending_ids) >= 50:
+            await _flush(pending_ids)
+            pending_ids = []
+    await _flush(pending_ids)
+
+    if not seen_any:
         await _purge_videos_before_floor(channel.channel_id, floor)
         return 0
-
-    infos = await yt.list_videos(video_ids)
-    now = datetime.utcnow()
-    upserted = 0
-    kept_ids: set[str] = set()
-    for info in infos:
-        pub = _parse_yt_datetime(info.published_at)
-        if pub is not None and pub.date() < cohort_start_date():
-            continue
-        existing = await YouTubeVideo.find_one(YouTubeVideo.video_id == info.video_id)
-        if not existing:
-            existing = YouTubeVideo(
-                profile_id=str(profile.id),
-                user_id=profile.user_id,
-                channel_id=channel.channel_id,
-                video_id=info.video_id,
-            )
-        _apply_video_fields(existing, info, profile=profile, channel=channel)
-        existing.updated_at = now
-        if existing.id is None:
-            await existing.insert()
-        else:
-            await existing.save()
-        kept_ids.add(info.video_id)
-        upserted += 1
 
     await _purge_videos_before_floor(channel.channel_id, floor, keep_ids=kept_ids)
     return upserted

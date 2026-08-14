@@ -92,6 +92,7 @@ export function AdminDashboardBoard({ view }: { view: DashboardBoardView }) {
   const { data: admin, isPending, error } = useQuery({
     queryKey: ["spark", "admin"],
     queryFn: () => api<AdminOverviewResponse>("/spark/admin"),
+    staleTime: 60_000,
   });
   const notifQ = useQuery({
     queryKey: ["notifications"],

@@ -179,7 +179,7 @@ export default function AdminLeaderboardPage() {
             ))}
           </div>
           <div className="flex flex-wrap gap-2">
-            <label className="flex min-w-[200px] flex-1 items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2">
+            <label className="flex min-w-0 w-full flex-1 items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2 sm:min-w-[200px]">
               <Search size={14} className="text-zinc-500" />
               <input
                 value={q}
@@ -197,7 +197,7 @@ export default function AdminLeaderboardPage() {
                 setCampus(e.target.value);
                 setPage(1);
               }}
-              className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-sm text-zinc-100 [color-scheme:dark]"
+              className="w-full rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-sm text-zinc-100 [color-scheme:dark] sm:w-auto"
             >
               <option value="all" className="bg-[#121212] text-zinc-100">
                 All campuses
@@ -214,7 +214,7 @@ export default function AdminLeaderboardPage() {
                 setTier(e.target.value);
                 setPage(1);
               }}
-              className="rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-sm text-zinc-100 [color-scheme:dark]"
+              className="w-full rounded-xl border border-white/10 bg-[#121212] px-3 py-2 text-sm text-zinc-100 [color-scheme:dark] sm:w-auto"
             >
               <option value="all" className="bg-[#121212] text-zinc-100">
                 All tiers
@@ -232,7 +232,69 @@ export default function AdminLeaderboardPage() {
           </div>
         </div>
 
-        <div className="mt-4 overflow-x-auto">
+        <div className="mt-4 space-y-3 lg:hidden">
+          {pageRows.map((row) => (
+            <Link
+              key={row.id}
+              href={`/admin-scraping/${row.id}`}
+              className="block rounded-2xl border border-white/[0.06] bg-black/30 p-4"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2.5">
+                  <span
+                    className={cn(
+                      "w-8 shrink-0 text-lg font-semibold tabular",
+                      row.rank === 1 && "text-[#cd7f32]",
+                      row.rank === 2 && "text-zinc-300",
+                      row.rank === 3 && "text-[#f5c542]",
+                      row.rank > 3 && "text-zinc-500"
+                    )}
+                  >
+                    {row.rank}
+                  </span>
+                  <SparkAvatar initials={row.initials} size="sm" accent={row.rank <= 3} />
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-zinc-100">
+                      {row.name}
+                      {row.team ? ` · ${row.team}` : ""}
+                    </div>
+                    <div className="truncate text-[11px] text-zinc-500">
+                      {row.handle} · {row.campus}
+                    </div>
+                  </div>
+                </div>
+                <TierBadge tier={row.tier} />
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-zinc-500 sm:grid-cols-3">
+                <div>
+                  <div className="uppercase tracking-wide">Points</div>
+                  <div className="mt-0.5 text-sm tabular text-[#ff4d00]">{formatNumber(row.points)}</div>
+                </div>
+                <div>
+                  <div className="uppercase tracking-wide">Followers</div>
+                  <div className="mt-0.5 text-sm tabular text-zinc-200">{formatNumber(row.followers)}</div>
+                </div>
+                <div>
+                  <div className="uppercase tracking-wide">Engagement</div>
+                  <div className="mt-0.5 text-sm tabular text-zinc-200">{Number(row.engagement || 0).toFixed(2)}%</div>
+                </div>
+              </div>
+              <div className="mt-2 flex items-center justify-between text-[11px] text-zinc-500">
+                <span>
+                  YT {row.youtube_connected ? `${formatNumber(row.youtube_subscribers ?? 0)} subs` : "—"}
+                </span>
+                <Movement delta={row.rank_delta} />
+              </div>
+            </Link>
+          ))}
+          {!pageRows.length && (
+            <div className="rounded-2xl border border-white/[0.06] px-3 py-10 text-center text-zinc-500">
+              No creators match these filters.
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 hidden overflow-x-auto lg:block">
           <table className="w-full min-w-[1100px] text-left text-sm">
             <thead>
               <tr className="border-b border-white/10 text-[10px] uppercase tracking-[0.12em] text-zinc-500">

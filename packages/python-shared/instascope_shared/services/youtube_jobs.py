@@ -429,8 +429,16 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
             "running",
             "retrying",
         }:
+            already = False
+            if ch and ch.last_synced_at:
+                sync = (
+                    ch.sync_status.value
+                    if hasattr(ch.sync_status, "value")
+                    else str(ch.sync_status or "")
+                )
+                already = sync == "success"
             return {
-                "scraped": False,
+                "scraped": already,
                 "scrape_label": "Syncing",
                 "reason": "YouTube sync is in the queue or running now",
             }

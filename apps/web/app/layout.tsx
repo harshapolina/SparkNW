@@ -20,9 +20,15 @@ export const metadata: Metadata = {
   },
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+};
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className="dark" data-theme="dark">
       <body className={`${geistSans.variable} ${geistMono.variable} ${display.variable} antialiased`}>
         <Providers>{children}</Providers>
       </body>

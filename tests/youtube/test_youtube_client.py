@@ -307,8 +307,8 @@ async def test_playlist_not_found_message_is_clean():
 
 
 @pytest.mark.asyncio
-async def test_iter_upload_stops_before_published_after():
-    """Uploads are newest-first; stop once we hit a video older than the floor."""
+async def test_iter_upload_skips_old_in_middle_and_keeps_going():
+    """A misdated old row must not freeze paging — later in-window videos still count."""
     items = [
         {
             "contentDetails": {
@@ -319,17 +319,17 @@ async def test_iter_upload_stops_before_published_after():
         },
         {
             "contentDetails": {
-                "videoId": "new2",
-                "videoPublishedAt": "2026-07-20T12:00:00Z",
+                "videoId": "old_mid",
+                "videoPublishedAt": "2026-07-01T12:00:00Z",
             },
-            "snippet": {"title": "mid", "position": 1},
+            "snippet": {"title": "old", "position": 1},
         },
         {
             "contentDetails": {
-                "videoId": "old1",
-                "videoPublishedAt": "2026-07-01T12:00:00Z",
+                "videoId": "new2",
+                "videoPublishedAt": "2026-07-20T12:00:00Z",
             },
-            "snippet": {"title": "old", "position": 2},
+            "snippet": {"title": "later", "position": 2},
         },
     ]
 

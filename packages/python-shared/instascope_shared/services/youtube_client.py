@@ -616,20 +616,33 @@ class YouTubeClient:
                 page_token=token,
                 channel_id=channel_id,
             )
+            if not page:
+                if not token:
+                    return
+                continue
+            new_on_page = 0
             for row in page:
+                is_old = False
                 if floor is not None and row.published_at:
                     try:
                         pub = _dt.fromisoformat(
                             str(row.published_at).replace("Z", "+00:00")
                         ).replace(tzinfo=None)
-                        if pub.date() < floor.date():
-                            return
+                        is_old = pub.date() < floor.date()
                     except Exception:
-                        pass
+                        is_old = False
+                if is_old:
+                    continue
                 yield row.video_id
                 yielded += 1
+                new_on_page += 1
                 if max_videos is not None and yielded >= max_videos:
                     return
+            # Uploads are usually newest-first. Stop only when a whole page is
+            # older than the programme floor — one stale/misdated item must not
+            # freeze the count while later videos still exist.
+            if floor is not None and new_on_page == 0:
+                return
             if not token:
                 return
 

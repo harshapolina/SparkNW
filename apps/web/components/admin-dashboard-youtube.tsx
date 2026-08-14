@@ -66,9 +66,11 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
     refetchInterval: (q) => ((q.state.data?.active_count || 0) > 0 ? 3000 : 20000),
   });
 
-  const connected = yt?.connected ?? 0;
-  const scraped = yt?.scraped ?? 0;
-  const notScraped = yt?.not_scraped ?? Math.max(0, connected - scraped);
+  const live = syncQ.data;
+  const connected = live?.connected_total ?? yt?.connected ?? 0;
+  const scraped = live?.scraped_total ?? yt?.scraped ?? 0;
+  const notScraped =
+    live?.not_scraped_total ?? yt?.not_scraped ?? Math.max(0, connected - scraped);
   const roster = admin.total_participants || admin.overall?.total_profiles || 0;
   const coverage = connected ? Math.round((scraped / connected) * 1000) / 10 : 0;
   const connectPct = roster ? Math.round((connected / roster) * 1000) / 10 : 0;

@@ -1,12 +1,11 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
-import { Bell, Check, Clock, Moon, Save, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Bell, Check, Clock, Save, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
-import { applyDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 
 type Settings = {
@@ -78,16 +77,9 @@ export default function SettingsPage() {
   const value = useMemo(() => ({ ...(data || ({} as Settings)), ...draft }), [data, draft]);
   const dirty = Object.keys(draft).length > 0;
 
-  useEffect(() => {
-    if (data && typeof data.dark_mode === "boolean" && draft.dark_mode === undefined) {
-      applyDarkMode(data.dark_mode);
-    }
-  }, [data, draft.dark_mode]);
-
   const save = useMutation({
     mutationFn: async () => {
       const payload: Partial<Settings> = {
-        dark_mode: value.dark_mode,
         follower_growth_notify_pct: Number(value.follower_growth_notify_pct),
         notify_followers_down: value.notify_followers_down,
         notify_scrape_failed: value.notify_scrape_failed,
@@ -109,7 +101,6 @@ export default function SettingsPage() {
     onSuccess: (saved) => {
       setDraft({});
       setMessage({ type: "ok", text: "Settings saved." });
-      applyDarkMode(saved.dark_mode);
       qc.setQueryData(["settings"], saved);
     },
     onError: (e: Error) => {
@@ -120,7 +111,6 @@ export default function SettingsPage() {
   function setField<K extends keyof Settings>(key: K, v: Settings[K]) {
     setMessage(null);
     setDraft((d) => ({ ...d, [key]: v }));
-    if (key === "dark_mode") applyDarkMode(Boolean(v));
   }
 
   if (isLoading) {
@@ -150,30 +140,11 @@ export default function SettingsPage() {
             Settings
           </div>
           <p className="mt-1 text-xs leading-relaxed text-stone-600">
-            Theme, timezone, and how alerts fire.
+            Timezone and how alerts fire.
           </p>
         </div>
 
         <div className="flex flex-1 flex-col gap-3 p-4">
-          <div className="rounded-2xl bg-white/75 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-stone-900 text-white">
-                  <Moon size={15} />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold">Dark mode</div>
-                  <p className="text-[11px] text-stone-500">Applies instantly, saves with the rest</p>
-                </div>
-              </div>
-              <Toggle
-                label="Dark mode"
-                checked={Boolean(value.dark_mode)}
-                onChange={(v) => setField("dark_mode", v)}
-              />
-            </div>
-          </div>
-
           <div className="rounded-2xl bg-white/75 p-4">
             <div className="flex items-center gap-2.5">
               <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-100 text-sky-700">
@@ -231,7 +202,6 @@ export default function SettingsPage() {
                 onClick={() => {
                   setDraft({});
                   setMessage(null);
-                  applyDarkMode(data.dark_mode);
                 }}
               >
                 Discard

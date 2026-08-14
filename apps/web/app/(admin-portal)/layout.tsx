@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
   BookOpen,
@@ -15,20 +15,21 @@ import {
   Layers,
   LayoutDashboard,
   Medal,
-  Moon,
+  Menu,
   RefreshCw,
   Settings,
-  Sun,
+  X,
   BarChart3,
   Trophy,
   Upload,
   Video,
 } from "lucide-react";
-import { clearTokens, getStoredUser, type User, api } from "@/lib/api";
+import { clearTokens, getStoredUser, type User } from "@/lib/api";
 import { BrandLogo } from "@/components/brand-logo";
 import { useRequireRole } from "@/lib/spark/auth-guard";
 import { adminScrapingListHref } from "@/lib/admin-scraping-list-state";
 import { applyDarkMode } from "@/lib/dark-mode";
+import { prefetchAdminSpark } from "@/lib/spark/prefetch";
 import { cn } from "@/lib/utils";
 
 const scrapingChildren = [
@@ -98,42 +99,25 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
   const router = useRouter();
   const qc = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     "/admin-dashboard": pathname.startsWith("/admin-dashboard"),
     "/admin-scraping": pathname.startsWith("/admin-scraping"),
   });
 
-  const settingsQ = useQuery({
-    queryKey: ["settings"],
-    queryFn: () => api<{ dark_mode: boolean }>("/settings"),
-    enabled: ready,
-  });
-  const darkOn = settingsQ.data?.dark_mode !== false;
-
-  const darkToggle = useMutation({
-    mutationFn: (dark_mode: boolean) =>
-      api<{ dark_mode: boolean }>("/settings", {
-        method: "PATCH",
-        body: JSON.stringify({ dark_mode }),
-      }),
-    onSuccess: (data) => {
-      qc.setQueryData(["settings"], (prev: { dark_mode?: boolean } | undefined) => ({
-        ...(prev || {}),
-        ...data,
-      }));
-      applyDarkMode(data.dark_mode);
-    },
-  });
-
   useEffect(() => {
     setUser(getStoredUser());
+    applyDarkMode(true);
   }, [ready]);
 
   useEffect(() => {
-    if (typeof settingsQ.data?.dark_mode === "boolean") {
-      applyDarkMode(settingsQ.data.dark_mode);
-    }
-  }, [settingsQ.data?.dark_mode]);
+    if (!ready) return;
+    prefetchAdminSpark(qc);
+  }, [ready, qc]);
+
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     setExpanded((prev) => {
@@ -153,20 +137,8 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
   }
 
   return (
-    <div
-      className={cn(
-        "flex min-h-screen text-white transition-colors",
-        darkOn
-          ? "bg-[#050505] [background-image:radial-gradient(1200px_500px_at_10%_-10%,rgba(255,59,48,0.12),transparent),radial-gradient(800px_400px_at_100%_0%,rgba(88,28,135,0.12),transparent)]"
-          : "bg-zinc-100 text-zinc-900"
-      )}
-    >
-      <aside
-        className={cn(
-          "sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col border-r lg:flex",
-          darkOn ? "border-white/[0.06] bg-[#0a0a0a]/90 backdrop-blur-xl" : "border-zinc-200 bg-white"
-        )}
-      >
+    <div className="flex min-h-screen bg-[#050505] text-white [background-image:radial-gradient(1200px_500px_at_10%_-10%,rgba(255,59,48,0.12),transparent),radial-gradient(800px_400px_at_100%_0%,rgba(88,28,135,0.12),transparent)]">
+      <aside className="sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col border-r border-white/[0.06] bg-[#0a0a0a]/90 backdrop-blur-xl lg:flex">
         <div className="px-4 py-5">
           <Link href="/admin-dashboard" className="inline-flex items-center">
             <BrandLogo height={26} priority />
@@ -276,22 +248,7 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
             );
           })}
         </nav>
-        <div className={cn("space-y-2 border-t p-4 text-[11px]", darkOn ? "border-white/[0.06] text-zinc-500" : "border-zinc-200 text-zinc-500")}>
-          <button
-            type="button"
-            disabled={darkToggle.isPending}
-            onClick={() => darkToggle.mutate(!darkOn)}
-            className={cn(
-              "mb-2 flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-[12px] transition",
-              darkOn ? "bg-white/[0.04] text-zinc-200 hover:bg-white/[0.07]" : "bg-zinc-100 text-zinc-800"
-            )}
-          >
-            <span className="inline-flex items-center gap-2">
-              {darkOn ? <Moon size={13} className="text-[#ff3b30]" /> : <Sun size={13} />}
-              {darkOn ? "Void dark" : "Light desk"}
-            </span>
-            <span className="text-[10px] uppercase tracking-wide text-zinc-500">{darkOn ? "On" : "Off"}</span>
-          </button>
+        <div className="space-y-2 border-t border-white/[0.06] p-4 text-[11px] text-zinc-500">
           <div className="flex items-center gap-2 text-zinc-400">
             <Database size={12} /> Shared cohort scrapes
           </div>
@@ -312,17 +269,76 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
         </div>
       </aside>
       <div className="min-w-0 flex-1">
-        <header className="flex items-center justify-between gap-2 overflow-x-auto border-b border-white/[0.06] px-4 py-3 lg:hidden">
-          <span className="text-xs font-bold uppercase tracking-[0.16em] text-[#ff3b30]">Spark</span>
-          <div className="flex gap-3 text-xs text-zinc-400">
-            <Link href="/admin-dashboard/youtube">YT dash</Link>
-            <Link href="/admin-dashboard/instagram">IG dash</Link>
-            <Link href="/admin-scraping/youtube">YT scrape</Link>
-            <Link href="/admin-scraping/instagram">IG scrape</Link>
-            <Link href="/admin-leaderboard">Board</Link>
+        <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-white/[0.06] bg-[#0a0a0a]/95 px-4 py-3 backdrop-blur lg:hidden">
+          <div className="flex min-w-0 items-center gap-2">
+            <button
+              type="button"
+              aria-label="Open menu"
+              className="rounded-lg p-1.5 hover:bg-white/10"
+              onClick={() => setMobileOpen(true)}
+            >
+              <Menu size={18} />
+            </button>
+            <Link href="/admin-dashboard" className="inline-flex min-w-0 items-center">
+              <BrandLogo height={22} priority />
+            </Link>
           </div>
+          <button
+            type="button"
+            className="shrink-0 text-xs text-zinc-400 hover:text-[#ff4d00]"
+            onClick={() => {
+              clearTokens();
+              router.replace("/admin-login");
+            }}
+          >
+            Sign out
+          </button>
         </header>
-        <main className="px-4 py-6 md:px-7 md:py-7">{children}</main>
+        {mobileOpen ? (
+          <div className="fixed inset-0 z-40 lg:hidden">
+            <button
+              type="button"
+              aria-label="Close menu"
+              className="absolute inset-0 bg-black/70"
+              onClick={() => setMobileOpen(false)}
+            />
+            <aside className="relative z-10 flex h-full w-[min(88vw,280px)] flex-col overflow-y-auto border-r border-white/[0.06] bg-[#0a0a0a]">
+              <div className="flex items-center justify-between px-4 py-4">
+                <BrandLogo height={24} />
+                <button type="button" aria-label="Close menu" onClick={() => setMobileOpen(false)} className="rounded-lg p-1.5 hover:bg-white/10">
+                  <X size={18} />
+                </button>
+              </div>
+              <nav className="flex-1 space-y-1 px-3 pb-6">
+                {nav.flatMap((item) => {
+                  const Icon = item.icon;
+                  const items = item.children?.length
+                    ? [{ href: parentHref(item.href), label: `${item.label} · Overall`, icon: Icon }, ...item.children]
+                    : [item];
+                  return items.map((entry) => {
+                    const EIcon = entry.icon;
+                    const href = "exact" in entry ? childHref(entry.href) : entry.href;
+                    const active = pathname === href || pathname.startsWith(href + "/");
+                    return (
+                      <Link
+                        key={href + entry.label}
+                        href={href}
+                        className={cn(
+                          "flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-[13px]",
+                          active ? "bg-[#ff3b30] text-white" : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-100"
+                        )}
+                      >
+                        <EIcon size={16} />
+                        {entry.label}
+                      </Link>
+                    );
+                  });
+                })}
+              </nav>
+            </aside>
+          </div>
+        ) : null}
+        <main className="min-w-0 px-4 py-6 md:px-7 md:py-7">{children}</main>
       </div>
     </div>
   );

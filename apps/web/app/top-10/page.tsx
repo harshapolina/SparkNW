@@ -37,17 +37,17 @@ export default function PublicTop10Page() {
 
   return (
     <div className="min-h-screen bg-black text-white">
-      <div className="mx-auto max-w-5xl space-y-8 px-4 py-8 md:px-8 md:py-12">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
+      <div className="mx-auto min-w-0 max-w-5xl space-y-8 px-4 py-8 md:px-8 md:py-12">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-3">
             <BrandLogo height={28} priority />
             <LivePill />
           </div>
-          <div className="flex items-center gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-3 text-xs">
             <Link href="/student-login" className="text-zinc-400 hover:text-white">
               Student login
             </Link>
-            <span className="text-zinc-700">·</span>
+            <span className="hidden text-zinc-700 sm:inline">·</span>
             <Link href="/admin-login" className="text-zinc-400 hover:text-white">
               Admin login
             </Link>
@@ -56,7 +56,7 @@ export default function PublicTop10Page() {
 
         <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-xl">
-            <h1 className="font-[family-name:var(--font-display)] text-4xl font-semibold tracking-tight md:text-5xl">
+            <h1 className="font-[family-name:var(--font-display)] text-[1.75rem] font-semibold leading-tight tracking-tight sm:text-4xl md:text-5xl">
               Top the <span className="text-[#ff3b30]">board</span>. Unlock{" "}
               <span className="text-[#ff3b30]">milestones</span>.
             </h1>
@@ -66,7 +66,7 @@ export default function PublicTop10Page() {
               only remembers what you posted after the programme started.
             </p>
           </div>
-          <label className="flex w-full max-w-sm items-center gap-2 rounded-full border border-white/10 bg-[#121212] px-4 py-2.5">
+          <label className="flex w-full max-w-full items-center gap-2 rounded-full border border-white/10 bg-[#121212] px-4 py-2.5 sm:max-w-sm">
             <Search size={15} className="text-zinc-500" />
             <input
               value={q}
@@ -97,7 +97,7 @@ export default function PublicTop10Page() {
 
         {items.length > 0 && (
           <div className="overflow-hidden rounded-2xl border border-white/[0.06]">
-            <div className="grid grid-cols-[72px_minmax(0,1fr)_100px] items-center gap-3 border-b border-white/[0.06] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500">
+            <div className="hidden grid-cols-[72px_minmax(0,1fr)_100px] items-center gap-3 border-b border-white/[0.06] px-4 py-3 text-[10px] font-bold uppercase tracking-[0.14em] text-zinc-500 sm:grid">
               <div>Rank / Creator</div>
               <div />
               <div className="text-right">Points</div>
@@ -105,38 +105,55 @@ export default function PublicTop10Page() {
             {items.map((row) => {
               const barColor =
                 row.rank <= 3 ? "#ff3b30" : row.tier === "GOLD" ? "#f5c542" : row.tier === "SILVER" ? "#a1a1aa" : "#c47a3a";
+              const rankClass = cn(
+                "text-2xl font-semibold tabular",
+                row.rank === 1 && "text-[#ff3b30]",
+                row.rank === 2 && "text-[#ff7a45]",
+                row.rank === 3 && "text-[#f5c542]",
+                row.rank > 3 && "text-zinc-500"
+              );
               return (
-                <div
-                  key={row.id}
-                  className="grid grid-cols-[72px_minmax(0,1fr)_100px] items-center gap-3 border-b border-white/[0.04] px-4 py-3.5"
-                >
-                  <div
-                    className={cn(
-                      "text-2xl font-semibold tabular",
-                      row.rank === 1 && "text-[#ff3b30]",
-                      row.rank === 2 && "text-[#ff7a45]",
-                      row.rank === 3 && "text-[#f5c542]",
-                      row.rank > 3 && "text-zinc-500"
-                    )}
-                  >
-                    {String(row.rank).padStart(2, "0")}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2.5">
-                      <SparkAvatar initials={row.initials} size="sm" accent={row.rank === 1} />
+                <div key={row.id} className="border-b border-white/[0.04] px-4 py-3.5">
+                  <div className="flex items-start justify-between gap-3 sm:hidden">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <div className={rankClass}>{String(row.rank).padStart(2, "0")}</div>
                       <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="truncate text-sm font-semibold">{row.name}</span>
-                          <TierBadge tier={row.tier} />
+                        <div className="flex items-center gap-2.5">
+                          <SparkAvatar initials={row.initials} size="sm" accent={row.rank === 1} />
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="truncate text-sm font-semibold">{row.name}</span>
+                              <TierBadge tier={row.tier} />
+                            </div>
+                            <div className="mt-0.5 break-words text-[11px] text-zinc-500">
+                              {row.handle} · {formatNumber(row.followers)} followers · {row.streak_weeks}
+                            </div>
+                          </div>
                         </div>
-                        <div className="mt-0.5 text-[11px] text-zinc-500">
-                          {row.handle} · {formatNumber(row.followers)} followers · {row.streak_weeks}
-                        </div>
+                        <ProgressBar className="mt-2" value={row.points} max={maxPts} color={barColor} />
                       </div>
                     </div>
-                    <ProgressBar className="mt-2" value={row.points} max={maxPts} color={barColor} />
+                    <div className="shrink-0 text-right text-sm font-semibold tabular">{formatNumber(row.points)} PTS</div>
                   </div>
-                  <div className="text-right text-sm font-semibold tabular">{formatNumber(row.points)} PTS</div>
+                  <div className="hidden grid-cols-[72px_minmax(0,1fr)_100px] items-center gap-3 sm:grid">
+                    <div className={rankClass}>{String(row.rank).padStart(2, "0")}</div>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2.5">
+                        <SparkAvatar initials={row.initials} size="sm" accent={row.rank === 1} />
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate text-sm font-semibold">{row.name}</span>
+                            <TierBadge tier={row.tier} />
+                          </div>
+                          <div className="mt-0.5 text-[11px] text-zinc-500">
+                            {row.handle} · {formatNumber(row.followers)} followers · {row.streak_weeks}
+                          </div>
+                        </div>
+                      </div>
+                      <ProgressBar className="mt-2" value={row.points} max={maxPts} color={barColor} />
+                    </div>
+                    <div className="text-right text-sm font-semibold tabular">{formatNumber(row.points)} PTS</div>
+                  </div>
                 </div>
               );
             })}

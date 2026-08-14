@@ -2,10 +2,9 @@
 
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
-import { Bell, Clock, Moon, Save, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Bell, Clock, Save, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
-import { applyDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 
 type Settings = {
@@ -77,16 +76,9 @@ export default function AdminSettingsPage() {
   const value = useMemo(() => ({ ...(data || ({} as Settings)), ...draft }), [data, draft]);
   const dirty = Object.keys(draft).length > 0;
 
-  useEffect(() => {
-    if (data && typeof data.dark_mode === "boolean" && draft.dark_mode === undefined) {
-      applyDarkMode(data.dark_mode);
-    }
-  }, [data, draft.dark_mode]);
-
   const save = useMutation({
     mutationFn: async () => {
       const payload: Partial<Settings> = {
-        dark_mode: value.dark_mode,
         follower_growth_notify_pct: Number(value.follower_growth_notify_pct),
         notify_followers_down: value.notify_followers_down,
         notify_scrape_failed: value.notify_scrape_failed,
@@ -105,7 +97,6 @@ export default function AdminSettingsPage() {
     onSuccess: (saved) => {
       setDraft({});
       setMessage({ type: "ok", text: "Settings saved." });
-      applyDarkMode(saved.dark_mode);
       qc.setQueryData(["settings"], saved);
     },
     onError: (e: Error) => setMessage({ type: "err", text: e.message || "Could not save." }),
@@ -114,7 +105,6 @@ export default function AdminSettingsPage() {
   function setField<K extends keyof Settings>(key: K, v: Settings[K]) {
     setMessage(null);
     setDraft((d) => ({ ...d, [key]: v }));
-    if (key === "dark_mode") applyDarkMode(Boolean(v));
   }
 
   if (isLoading) return <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />;
@@ -134,7 +124,7 @@ export default function AdminSettingsPage() {
             ← Dashboard
           </Link>
           <h1 className="mt-2 text-2xl font-semibold tracking-tight">Settings</h1>
-          <p className="mt-1 text-sm text-zinc-500">Theme, timezone, and how scrape/growth alerts fire.</p>
+          <p className="mt-1 text-sm text-zinc-500">Timezone and how scrape/growth alerts fire.</p>
         </div>
         <button
           type="button"
@@ -161,14 +151,7 @@ export default function AdminSettingsPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <section className="space-y-3 rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
           <div className="flex items-center gap-2 text-sm font-semibold">
-            <Moon size={16} className="text-[#ff4d00]" /> Workspace
-          </div>
-          <div className="flex items-center justify-between rounded-xl bg-black/40 px-4 py-3">
-            <div>
-              <div className="text-sm font-medium">Dark mode</div>
-              <p className="text-[11px] text-zinc-500">Applies instantly, saves with the rest</p>
-            </div>
-            <Toggle label="Dark mode" checked={Boolean(value.dark_mode)} onChange={(v) => setField("dark_mode", v)} />
+            <Clock size={16} className="text-[#ff4d00]" /> Workspace
           </div>
           <div className="rounded-xl bg-black/40 px-4 py-3">
             <div className="flex items-center gap-2">
