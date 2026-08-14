@@ -352,6 +352,22 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
 
     channels_by_profile = {ch.profile_id: ch for ch in channels}
 
+    def _youtube_job_error(job: Job, ch: YouTubeChannel | None) -> str | None:
+        raw = (job.error_message or "").strip()
+        if not raw:
+            return (ch.last_error or None) if ch else None
+        low = raw.lower()
+        # Old bug: retry_failed re-ran YouTube jobs as Instagram scrapes and
+        # overwrote the real YouTube error with proxy messages.
+        if "instagram" in low or "http fallback enabled" in low or "login wall" in low:
+            if ch and (ch.last_error or "").strip():
+                return str(ch.last_error).strip()[:280]
+            return "YouTube sync failed — retry Sync (ignore stale Instagram retry noise)"
+        # YouTube API sometimes returns HTML-ish tokens like <code>playlistId</code>
+        cleaned = re.sub(r"</?code>", "", raw)
+        cleaned = re.sub(r"<[^>]+>", "", cleaned)
+        return cleaned.strip()[:280] or None
+
     def _job_row(job: Job) -> dict[str, Any]:
         pid = str(job.profile_id or "")
         p = profiles.get(pid)
@@ -367,7 +383,7 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
             or (ch.channel_id if ch else None),
             "channel_name": ch.channel_name if ch else None,
             "status": job.status.value if hasattr(job.status, "value") else str(job.status),
-            "error_message": job.error_message,
+            "error_message": _youtube_job_error(job, ch),
             "created_at": job.created_at.isoformat() + "Z" if job.created_at else None,
             "started_at": job.started_at.isoformat() + "Z" if job.started_at else None,
             "finished_at": job.finished_at.isoformat() + "Z" if job.finished_at else None,

@@ -8,7 +8,7 @@ from datetime import datetime
 from celery_app import celery_app
 from instascope_shared.core.config import get_settings
 from instascope_shared.db.mongodb import close_db, connect_db
-from instascope_shared.models import Job, JobStatus, Profile, ProfileStatus
+from instascope_shared.models import Job, JobStatus, JobType, Profile, ProfileStatus
 from instascope_shared.services.scrape_pipeline import apply_scrape_result, mark_scrape_failed
 from instascope_scraper.profile import ScrapeError, scrape_profile
 from instascope_scraper.types import parse_proxy_url
@@ -27,6 +27,11 @@ async def _scrape(job_id: str, profile_id: str) -> dict:
         profile = await Profile.get(profile_id)
         if not job or not profile:
             return {"ok": False, "error": "missing job/profile"}
+
+        jt = job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type or "")
+        if jt != JobType.SCRAPE_PROFILE.value:
+            # Do not run Instagram scrape against YouTube (or other) jobs.
+            return {"ok": False, "error": f"refused_job_type:{jt}"}
 
         if profile.status == ProfileStatus.PAUSED:
             job.status = JobStatus.CANCELLED

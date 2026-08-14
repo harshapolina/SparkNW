@@ -8,7 +8,7 @@ from datetime import datetime
 
 from celery_app import celery_app
 from instascope_shared.db.mongodb import close_db, connect_db
-from instascope_shared.models import Job, JobStatus
+from instascope_shared.models import Job, JobStatus, JobType
 from instascope_shared.services.youtube_errors import YouTubeError
 from instascope_shared.services.youtube_sync import sync_youtube_channel
 
@@ -20,6 +20,9 @@ async def _sync(job_id: str, profile_id: str) -> dict:
     try:
         job = await Job.get(job_id)
         if job:
+            jt = job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type or "")
+            if jt != JobType.SYNC_YOUTUBE.value:
+                return {"ok": False, "error": f"refused_job_type:{jt}"}
             job.status = JobStatus.RUNNING
             job.started_at = datetime.utcnow()
             job.attempts = int(job.attempts or 0) + 1
