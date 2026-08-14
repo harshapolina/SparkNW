@@ -78,7 +78,16 @@ def _norm_ig_username(raw: str) -> str:
         return username
 
 
+_DUMMY_HASH = hash_password("spark-dummy-password-not-used")
+
+
 async def signup(payload: SignupRequest) -> AuthResponse:
+    existing_admin = await User.find_one(User.role == UserRole.ADMIN)
+    if existing_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Signup is disabled",
+        )
     existing = await User.find_one(User.email == payload.email.lower())
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
@@ -97,16 +106,16 @@ async def signup(payload: SignupRequest) -> AuthResponse:
 
 
 async def login(payload: LoginRequest) -> AuthResponse:
-    user = await User.find_one(User.email == payload.email.lower())
-    if not user or not verify_password(payload.password, user.password_hash):
+    email = str(payload.email).strip().lower()
+    user = await User.find_one(User.email == email)
+    hashed = user.password_hash if user else _DUMMY_HASH
+    ok = verify_password(payload.password, hashed)
+    if not user or not ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
     if _role_value(user) == UserRole.STUDENT.value:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Students must sign in with student ID and Instagram handle",
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password")
 
     # Backfill role/org for legacy accounts
     dirty = False
@@ -163,7 +172,7 @@ async def _find_student_profile(student_id: str, ig_username: str, org_id: str =
     if not matches:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="No matching student profile for that student ID and Instagram handle",
+            detail="Invalid student ID or Instagram handle",
         )
     if len(matches) > 1:
         # Prefer exact username match

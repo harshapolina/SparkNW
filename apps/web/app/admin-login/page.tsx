@@ -54,20 +54,24 @@ export default function AdminLoginPage() {
             <span className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Email</span>
             <input
               type="email"
+              autoComplete="username"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
+              maxLength={120}
               className="w-full rounded-xl border border-white/10 bg-black px-3 py-2.5 text-sm outline-none focus:border-[#ff3b30]"
-              placeholder="admin@example.com"
+              placeholder=""
             />
           </label>
           <label className="block space-y-1.5">
             <span className="text-[11px] uppercase tracking-[0.12em] text-zinc-500">Password</span>
             <input
               type="password"
+              autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              maxLength={128}
               className="w-full rounded-xl border border-white/10 bg-black px-3 py-2.5 text-sm outline-none focus:border-[#ff3b30]"
             />
           </label>
@@ -84,12 +88,6 @@ export default function AdminLoginPage() {
         <div className="mt-6 flex flex-wrap gap-4 text-xs text-zinc-500">
           <Link href="/top-10" className="hover:text-zinc-300">
             Public Top 10
-          </Link>
-          <Link href="/student-login" className="hover:text-zinc-300">
-            Student login
-          </Link>
-          <Link href="/login" className="hover:text-zinc-300">
-            Spark login
           </Link>
         </div>
       </div>

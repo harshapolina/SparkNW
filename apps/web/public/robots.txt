@@ -1,0 +1,10 @@
+User-agent: *
+Disallow: /admin-login
+Disallow: /login
+Disallow: /signup
+Disallow: /admin-dashboard
+Disallow: /admin-scraping
+Disallow: /admin-leaderboard
+Disallow: /admin-settings
+Disallow: /admin-alerts
+Disallow: /admin-import
