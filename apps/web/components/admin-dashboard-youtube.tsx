@@ -74,7 +74,7 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
   const connectPct = roster ? Math.round((connected / roster) * 1000) / 10 : 0;
   const top = yt?.top_channels || [];
   const queue = syncQ.data?.queue || [];
-  const history = (syncQ.data?.history || []).slice(0, 6);
+  const history = syncQ.data?.history || [];
 
   return (
     <div className="space-y-6">
@@ -185,9 +185,9 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
         />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
-        <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
-          <div className="mb-4 flex items-end justify-between gap-3">
+      <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr] xl:items-stretch">
+        <div className="flex min-h-0 flex-col rounded-2xl border border-white/[0.06] bg-[#121212] p-5 xl:h-[520px]">
+          <div className="mb-4 flex shrink-0 items-end justify-between gap-3">
             <div>
               <h2 className="text-sm font-semibold">Top channels</h2>
               <p className="mt-0.5 text-xs text-zinc-500">By subscriber count among connected creators</p>
@@ -201,7 +201,7 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
               No connected channels yet. Import YouTube links or connect from a creator page.
             </p>
           ) : (
-            <div className="thin-scroll max-h-[420px] overflow-y-auto">
+            <div className="thin-scroll min-h-0 flex-1 overflow-y-auto">
               <table className="w-full table-fixed text-left text-sm">
                 <colgroup>
                   <col className="w-10" />
@@ -271,8 +271,8 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
           )}
         </div>
 
-        <div className="space-y-4">
-          <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+        <div className="flex min-h-0 flex-col gap-4 xl:h-[520px]">
+          <div className="flex shrink-0 flex-col rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-semibold">Live sync queue</h2>
               <span className="inline-flex items-center gap-1 text-[11px] text-zinc-500">
@@ -280,31 +280,36 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
                 {syncQ.data?.active_count || 0} active
               </span>
             </div>
-            {!queue.length ? (
-              <p className="text-sm text-zinc-500">Queue is clear. Daily 08:00 IST runs when sync is ON.</p>
-            ) : (
-              <ul className="thin-scroll max-h-48 space-y-2 overflow-y-auto text-xs">
-                {queue.map((row) => (
-                  <li
-                    key={`${row.profile_id}-${row.status}`}
-                    className="flex items-center justify-between gap-2 rounded-xl border border-white/[0.05] bg-black/30 px-3 py-2"
-                  >
-                    <Link href={`/admin-scraping/${row.profile_id}`} className="font-medium hover:text-[#ff4d00]">
-                      @{row.username}
-                    </Link>
-                    <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] uppercase text-sky-300">
-                      {row.status}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <dl className="mt-4 space-y-2 border-t border-white/[0.05] pt-3 text-xs">
+            <div className="thin-scroll h-[88px] overflow-y-auto">
+              {!queue.length ? (
+                <p className="text-sm text-zinc-500">
+                  Queue is clear. Daily 08:00 IST runs when sync is ON.
+                </p>
+              ) : (
+                <ul className="space-y-2 text-xs">
+                  {queue.map((row) => (
+                    <li
+                      key={`${row.profile_id}-${row.status}`}
+                      className="flex items-center justify-between gap-2 rounded-xl border border-white/[0.05] bg-black/30 px-3 py-2"
+                    >
+                      <Link
+                        href={`/admin-scraping/${row.profile_id}`}
+                        className="font-medium hover:text-[#ff4d00]"
+                      >
+                        @{row.username}
+                      </Link>
+                      <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] uppercase text-sky-300">
+                        {row.status}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <dl className="mt-3 space-y-2 border-t border-white/[0.05] pt-3 text-xs">
               <div className="flex justify-between gap-3">
                 <dt className="text-zinc-500">Last sync</dt>
-                <dd>
-                  {yt?.last_sync ? new Date(yt.last_sync).toLocaleString() : "—"}
-                </dd>
+                <dd>{yt?.last_sync ? new Date(yt.last_sync).toLocaleString() : "—"}</dd>
               </div>
               <div className="flex justify-between gap-3">
                 <dt className="text-zinc-500">Next</dt>
@@ -313,7 +318,7 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
             </dl>
           </div>
 
-          <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+          <div className="shrink-0 rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
             <h2 className="text-sm font-semibold">Why channels aren’t scraped</h2>
             <ul className="mt-4 space-y-3 text-sm">
               <li className="flex items-center justify-between gap-3">
@@ -326,7 +331,9 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
                 <span className="flex items-center gap-2 text-zinc-300">
                   <Clock size={14} className="text-amber-300" /> Connected, waiting sync
                 </span>
-                <span className="font-semibold tabular">{formatNumber(yt?.pending_sync ?? notScraped)}</span>
+                <span className="font-semibold tabular">
+                  {formatNumber(yt?.pending_sync ?? notScraped)}
+                </span>
               </li>
               <li className="flex items-center justify-between gap-3">
                 <span className="flex items-center gap-2 text-zinc-300">
@@ -345,34 +352,39 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
             </ul>
           </div>
 
-          <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
-            <h2 className="mb-3 text-sm font-semibold">Recent syncs</h2>
-            {!history.length ? (
-              <p className="text-sm text-zinc-500">No completed YouTube jobs yet.</p>
-            ) : (
-              <ul className="space-y-2 text-xs">
-                {history.map((row, i) => (
-                  <li
-                    key={`${row.profile_id}-${row.finished_at || i}`}
-                    className="flex items-center justify-between gap-2 border-b border-white/[0.04] pb-2 last:border-0"
-                  >
-                    <Link href={`/admin-scraping/${row.profile_id}`} className="font-medium hover:text-[#ff4d00]">
-                      @{row.username}
-                    </Link>
-                    <span
-                      className={cn(
-                        "rounded-full px-2 py-0.5 text-[10px] uppercase",
-                        row.status === "success"
-                          ? "bg-lime-500/15 text-lime-400"
-                          : "bg-rose-500/15 text-rose-300"
-                      )}
+          <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+            <h2 className="mb-3 shrink-0 text-sm font-semibold">Recent syncs</h2>
+            <div className="thin-scroll min-h-0 flex-1 overflow-y-auto">
+              {!history.length ? (
+                <p className="text-sm text-zinc-500">No completed YouTube jobs yet.</p>
+              ) : (
+                <ul className="space-y-2 text-xs">
+                  {history.map((row, i) => (
+                    <li
+                      key={`${row.profile_id}-${row.finished_at || i}`}
+                      className="flex items-center justify-between gap-2 border-b border-white/[0.04] pb-2 last:border-0"
                     >
-                      {row.status || "—"}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
+                      <Link
+                        href={`/admin-scraping/${row.profile_id}`}
+                        className="font-medium hover:text-[#ff4d00]"
+                      >
+                        @{row.username}
+                      </Link>
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[10px] uppercase",
+                          row.status === "success"
+                            ? "bg-lime-500/15 text-lime-400"
+                            : "bg-rose-500/15 text-rose-300"
+                        )}
+                      >
+                        {row.status || "—"}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         </div>
       </div>
