@@ -3,8 +3,26 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, Download, Plus, RefreshCw, Search } from "lucide-react";
+import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
+import {
+  AlertCircle,
+  BadgeCheck,
+  Ban,
+  CheckCircle2,
+  CircleDashed,
+  Download,
+  Gauge,
+  LayoutGrid,
+  Link2,
+  Loader,
+  Lock,
+  Pause,
+  Plus,
+  RefreshCw,
+  Search,
+  Unlink,
+  XCircle,
+} from "lucide-react";
 import { api, type Profile } from "@/lib/api";
 import { cn, formatBaselineDay, formatNumber, formatPct, formatSignedNumber } from "@/lib/utils";
 import { SparkAvatar } from "@/components/spark/ui";
@@ -25,14 +43,91 @@ export type ScrapingBoardView = "overall" | "instagram" | "youtube";
 
 type ListResponse = { items: Profile[]; total: number; page: number; page_size: number };
 
-const STATUS_FILTERS = [
-  { id: "", label: "All" },
-  { id: "active", label: "Active" },
-  { id: "private", label: "Private" },
-  { id: "failed", label: "Failed" },
-  { id: "paused", label: "Paused" },
-  { id: "unavailable", label: "Unavailable" },
-] as const;
+type FilterChip = {
+  id: string;
+  label: string;
+  icon: ComponentType<{ size?: number; className?: string }>;
+  title?: string;
+};
+
+const STATUS_FILTERS: FilterChip[] = [
+  { id: "", label: "All", icon: LayoutGrid },
+  {
+    id: "active",
+    label: "Active",
+    icon: BadgeCheck,
+    title: "Public accounts currently tracked (excludes private)",
+  },
+  { id: "private", label: "Private", icon: Lock, title: "All Instagram-private accounts" },
+  { id: "failed", label: "Failed", icon: XCircle },
+  { id: "paused", label: "Paused", icon: Pause },
+  { id: "unavailable", label: "Missing", icon: Ban },
+];
+
+const YT_STATUS_FILTERS: FilterChip[] = [
+  { id: "", label: "All", icon: LayoutGrid },
+  { id: "scraped", label: "Scraped", icon: CheckCircle2 },
+  { id: "not_scraped", label: "Not scraped", icon: CircleDashed },
+  { id: "syncing", label: "Syncing", icon: Loader },
+  { id: "connected", label: "Connected", icon: Link2 },
+  { id: "no_youtube", label: "No link", icon: Unlink },
+  { id: "failed", label: "Failed", icon: XCircle },
+  { id: "quota_exceeded", label: "Quota", icon: Gauge },
+];
+
+function BoardFilterBar({
+  filters,
+  value,
+  onChange,
+  columnsClassName,
+}: {
+  filters: FilterChip[];
+  value: string;
+  onChange: (id: string) => void;
+  columnsClassName: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "grid gap-1.5 rounded-2xl border border-white/[0.06] bg-black/35 p-1.5",
+        columnsClassName
+      )}
+      role="tablist"
+      aria-label="Status filters"
+    >
+      {filters.map((f) => {
+        const Icon = f.icon;
+        const active = value === f.id;
+        return (
+          <button
+            key={f.id || "all"}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            title={f.title || f.label}
+            onClick={() => onChange(f.id)}
+            className={cn(
+              "group flex min-h-[40px] items-center justify-center gap-1.5 rounded-xl px-2.5 py-2 text-[11px] font-medium tracking-wide transition",
+              active
+                ? "bg-white text-black shadow-sm"
+                : "text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200"
+            )}
+          >
+            <Icon
+              size={13}
+              className={cn(
+                "shrink-0",
+                active ? "text-black" : "text-zinc-500 group-hover:text-zinc-300",
+                f.id === "syncing" && active && "animate-spin"
+              )}
+            />
+            <span className="truncate">{f.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 
 const VIEW_COPY: Record<
   ScrapingBoardView,
@@ -173,7 +268,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
       qc.setQueryData(["settings", "daily-youtube-sync"], data);
       setBulkNote(
         data.enabled
-          ? "YouTube sync ON — connected channels queued now. Watch the YouTube queue below."
+          ? "YouTube sync ON — unfinished channels resume now. Already-synced stay as-is until 08:00 IST."
           : "Daily YouTube sync is OFF — Instagram scrape is unchanged."
       );
       void qc.invalidateQueries({ queryKey: ["youtube", "sync-status"] });
@@ -224,17 +319,6 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
     scraped_total?: number;
     not_scraped_total?: number;
   };
-
-  const YT_STATUS_FILTERS = [
-    { id: "", label: "All" },
-    { id: "scraped", label: "Scraped" },
-    { id: "not_scraped", label: "Not scraped" },
-    { id: "syncing", label: "Syncing" },
-    { id: "connected", label: "Connected" },
-    { id: "no_youtube", label: "No YT link" },
-    { id: "failed", label: "Failed" },
-    { id: "quota_exceeded", label: "Quota" },
-  ] as const;
 
   const [ytQInput, setYtQInput] = useState("");
   const [ytStatusFilter, setYtStatusFilter] = useState("");
@@ -289,15 +373,31 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
 
   const youtubeSyncAll = useMutation({
     mutationFn: () =>
-      api<{ enqueued: number; skipped_pending: number; connected_total: number; dispatched: number }>(
+      api<{
+        enqueued: number;
+        skipped_pending: number;
+        skipped_synced?: number;
+        resumed?: number;
+        connected_total: number;
+        dispatched: number;
+      }>(
         "/youtube/sync-all",
         { method: "POST" }
       ),
     onSuccess: (data) => {
+      const leftover = data.enqueued || 0;
+      const resumed = data.resumed || 0;
+      const synced = data.skipped_synced || 0;
+      const queued = data.skipped_pending || 0;
       setBulkNote(
-        `YouTube sync queued ${data.enqueued} channel(s)` +
-          (data.skipped_pending ? ` (${data.skipped_pending} already in queue)` : "") +
-          ` · ${data.connected_total} connected`
+        leftover || resumed
+          ? `YouTube continuing from leftover — queued ${leftover}` +
+              (resumed ? ` · resumed ${resumed}` : "") +
+              (queued ? ` · ${queued} already in queue` : "") +
+              (synced ? ` · skipped ${synced} already synced` : "")
+          : synced
+            ? `All ${synced} connected channel(s) already synced. Morning run still refreshes them.`
+            : `YouTube sync queued ${leftover} · ${data.connected_total} connected`
       );
       void qc.invalidateQueries({ queryKey: ["youtube", "sync-status"] });
     },
@@ -569,7 +669,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
           <div>
             <div className="text-sm font-semibold text-zinc-100">YouTube sync queue</div>
             <p className="mt-0.5 text-xs text-zinc-500">
-              Live jobs + past syncs. Bulk import auto-connects YouTube from sheet links; daily 08:00 IST refreshes updates.
+              Already-synced channels stay listed. Sync remaining continues leftover jobs; daily 08:00 IST refreshes everyone.
             </p>
           </div>
           <button
@@ -579,7 +679,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
             className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-xs font-medium text-zinc-200 hover:border-[#ff3b30]/40 disabled:opacity-50"
           >
             <RefreshCw size={14} className={youtubeSyncAll.isPending ? "animate-spin" : undefined} />
-            {youtubeSyncAll.isPending ? "Queuing…" : "Sync all connected"}
+            {youtubeSyncAll.isPending ? "Queuing…" : "Sync remaining"}
           </button>
         </div>
 
@@ -686,65 +786,58 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
 
       {showYoutube ? (
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="min-w-0 flex-1 space-y-3">
-            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-              <h2 className="text-sm font-semibold tracking-tight text-zinc-100">YouTube creator board</h2>
-              <p className="text-[11px] text-zinc-500">
-                <span className="text-lime-400/90">{youtubeSyncQ.data?.scraped_total ?? 0} scraped</span>
-                <span className="mx-1.5 text-zinc-700">·</span>
-                <span className="text-zinc-400">{youtubeSyncQ.data?.not_scraped_total ?? 0} not scraped</span>
-                <span className="mx-1.5 text-zinc-700">·</span>
-                <span>{youtubeSyncQ.data?.connected_total || 0} connected</span>
-              </p>
-            </div>
-            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
-              <label className="relative w-full max-w-sm shrink">
-                <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
-                <input
-                  value={ytQInput}
-                  onChange={(e) => setYtQInput(e.target.value)}
-                  placeholder="Search name, student ID, campus, channel…"
-                  className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
-                />
-              </label>
-              <div className="thin-scroll flex max-w-full flex-wrap items-center gap-1">
-                {YT_STATUS_FILTERS.map((f) => (
-                  <button
-                    key={f.id || "all"}
-                    type="button"
-                    onClick={() => setYtStatusFilter(f.id)}
-                    className={cn(
-                      "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium",
-                      ytStatusFilter === f.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400"
-                    )}
-                  >
-                    {f.label}
-                  </button>
-                ))}
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                <h2 className="text-sm font-semibold tracking-tight text-zinc-100">YouTube creator board</h2>
+                <p className="text-[11px] text-zinc-500">
+                  <span className="text-lime-400/90">{youtubeSyncQ.data?.scraped_total ?? 0} scraped</span>
+                  <span className="mx-1.5 text-zinc-700">·</span>
+                  <span className="text-zinc-400">{youtubeSyncQ.data?.not_scraped_total ?? 0} not scraped</span>
+                  <span className="mx-1.5 text-zinc-700">·</span>
+                  <span>{youtubeSyncQ.data?.connected_total || 0} connected</span>
+                </p>
               </div>
             </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={!ytSelected.length || youtubeSyncSelected.isPending}
+                onClick={() => youtubeSyncSelected.mutate()}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 disabled:opacity-40 hover:border-white/20"
+              >
+                <RefreshCw size={14} className={youtubeSyncSelected.isPending ? "animate-spin" : undefined} />
+                Sync selected
+              </button>
+              <button
+                type="button"
+                disabled={youtubeSyncAll.isPending}
+                onClick={() => youtubeSyncAll.mutate()}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 disabled:opacity-40 hover:border-white/20"
+              >
+                <RefreshCw size={14} />
+                Sync remaining
+              </button>
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={!ytSelected.length || youtubeSyncSelected.isPending}
-              onClick={() => youtubeSyncSelected.mutate()}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 disabled:opacity-40 hover:border-white/20"
-            >
-              <RefreshCw size={14} className={youtubeSyncSelected.isPending ? "animate-spin" : undefined} />
-              Sync selected
-            </button>
-            <button
-              type="button"
-              disabled={youtubeSyncAll.isPending}
-              onClick={() => youtubeSyncAll.mutate()}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 disabled:opacity-40 hover:border-white/20"
-            >
-              <RefreshCw size={14} />
-              Sync all connected
-            </button>
-          </div>
+
+          <label className="relative block w-full">
+            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <input
+              value={ytQInput}
+              onChange={(e) => setYtQInput(e.target.value)}
+              placeholder="Search name, student ID, campus, channel…"
+              className="w-full rounded-xl border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
+            />
+          </label>
+
+          <BoardFilterBar
+            filters={YT_STATUS_FILTERS}
+            value={ytStatusFilter}
+            onChange={setYtStatusFilter}
+            columnsClassName="grid-cols-2 sm:grid-cols-4 xl:grid-cols-8"
+          />
         </div>
 
         <div className="mt-5">
@@ -987,69 +1080,61 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
       </form>
 
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <label className="relative w-full max-w-sm shrink">
-              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
-              <input
-                value={qInput}
-                onChange={(e) => setQInput(e.target.value)}
-                placeholder="Search name, student ID, campus, @handle…"
-                className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
-              />
-            </label>
-            <div className="thin-scroll flex max-w-full flex-wrap items-center gap-1" title="Active = public tracked accounts. Private = Instagram-private accounts (rechecked each morning).">
-              {STATUS_FILTERS.map((f) => (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold tracking-tight text-zinc-100">Instagram creator board</h2>
+              <p className="mt-0.5 text-[11px] text-zinc-500">
+                Search, filter by status, then run bulk scrape actions on selected rows.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  ["refresh", "Refresh / Scrape", RefreshCw],
+                  ["pause", "Pause", Pause],
+                  ["resume", "Resume", BadgeCheck],
+                  ["export", "Export CSV", Download],
+                ] as const
+              ).map(([action, label, Icon]) => (
                 <button
-                  key={f.id || "all"}
+                  key={action}
                   type="button"
-                  onClick={() => replaceListParams({ status: f.id, page: 1 })}
-                  title={
-                    f.id === "active"
-                      ? "Public accounts currently tracked (excludes private)"
-                      : f.id === "private"
-                        ? "All Instagram-private accounts"
-                        : undefined
-                  }
-                  className={cn(
-                    "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium",
-                    statusFilter === f.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400"
-                  )}
+                  disabled={!selected.length || bulk.isPending}
+                  onClick={() => bulk.mutate(action)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 disabled:opacity-40 hover:border-white/20"
                 >
-                  {f.label}
+                  <Icon size={14} />
+                  {label}
                 </button>
               ))}
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {(
-              [
-                ["refresh", "Refresh / Scrape", RefreshCw],
-                ["pause", "Pause", null],
-                ["resume", "Resume", null],
-                ["export", "Export CSV", Download],
-              ] as const
-            ).map(([action, label, Icon]) => (
               <button
-                key={action}
                 type="button"
                 disabled={!selected.length || bulk.isPending}
-                onClick={() => bulk.mutate(action)}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 disabled:opacity-40 hover:border-white/20"
+                onClick={() => bulk.mutate("delete")}
+                className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-300 disabled:opacity-40"
               >
-                {Icon ? <Icon size={14} /> : null}
-                {label}
+                Delete
               </button>
-            ))}
-            <button
-              type="button"
-              disabled={!selected.length || bulk.isPending}
-              onClick={() => bulk.mutate("delete")}
-              className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-300 disabled:opacity-40"
-            >
-              Delete
-            </button>
+            </div>
           </div>
+
+          <label className="relative block w-full">
+            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+            <input
+              value={qInput}
+              onChange={(e) => setQInput(e.target.value)}
+              placeholder="Search name, student ID, campus, @handle…"
+              className="w-full rounded-xl border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
+            />
+          </label>
+
+          <BoardFilterBar
+            filters={STATUS_FILTERS}
+            value={statusFilter}
+            onChange={(id) => replaceListParams({ status: id, page: 1 })}
+            columnsClassName="grid-cols-2 sm:grid-cols-3 xl:grid-cols-6"
+          />
         </div>
         {bulkNote ? <p className="mt-3 text-sm text-emerald-400/90">{bulkNote}</p> : null}
         {error && !add.isPending ? <p className="mt-2 text-sm text-rose-400">{error}</p> : null}
