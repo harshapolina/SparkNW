@@ -581,7 +581,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#ff3b30]">
             Scraping
@@ -589,74 +589,78 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">{VIEW_COPY[view].title}</h1>
           <p className="mt-1 max-w-2xl text-sm text-zinc-500">{VIEW_COPY[view].subtitle}</p>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
-          {showInstagram ? (
-          <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-[#121212] px-4 py-2.5">
-            <div className="min-w-0">
-              <div className="text-xs font-semibold text-zinc-200">Auto-scrape</div>
-              <div className="text-[11px] text-zinc-500">
-                {dailyScrapeQ.data?.enabled === false
-                  ? "Off — no morning/bulk auto (stays until you turn on)"
-                  : "On — mornings + unfinished bulk scrape without .env flips"}
-              </div>
+        <div className="flex w-full flex-col items-stretch gap-3 sm:w-auto sm:flex-row sm:items-stretch">
+          {showInstagram || showYoutube ? (
+            <div className="w-full min-w-[280px] max-w-md divide-y divide-white/10 rounded-xl border border-white/10 bg-[#121212] sm:w-[22.5rem]">
+              {showInstagram ? (
+                <div className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-center gap-x-3 px-4 py-2.5">
+                  <div className="min-w-0 pr-1">
+                    <div className="text-xs font-semibold text-zinc-200">Auto-scrape</div>
+                    <div className="text-[11px] leading-snug text-zinc-500">
+                      {dailyScrapeQ.data?.enabled === false
+                        ? "Off — no morning/bulk auto (stays until you turn on)"
+                        : "On — mornings + unfinished bulk scrape without .env flips"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={dailyScrapeQ.data?.enabled !== false}
+                    disabled={dailyScrapeQ.isLoading || dailyScrapeToggle.isPending}
+                    onClick={() =>
+                      dailyScrapeToggle.mutate(!(dailyScrapeQ.data?.enabled !== false))
+                    }
+                    className={cn(
+                      "relative h-6 w-11 justify-self-end rounded-full transition-colors disabled:opacity-50",
+                      dailyScrapeQ.data?.enabled === false ? "bg-zinc-700" : "bg-[#ff3b30]"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
+                        dailyScrapeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
+                      )}
+                    />
+                  </button>
+                </div>
+              ) : null}
+              {showYoutube ? (
+                <div className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-center gap-x-3 px-4 py-2.5">
+                  <div className="min-w-0 pr-1">
+                    <div className="text-xs font-semibold text-zinc-200">Daily YouTube sync</div>
+                    <div className="text-[11px] leading-snug text-zinc-500">
+                      {dailyYoutubeQ.data?.enabled !== false
+                        ? "On — bulk import auto-connects + daily 08:00 IST updates"
+                        : "Off — no morning YouTube sync"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={dailyYoutubeQ.data?.enabled !== false}
+                    disabled={dailyYoutubeQ.isLoading || dailyYoutubeToggle.isPending}
+                    onClick={() =>
+                      dailyYoutubeToggle.mutate(!(dailyYoutubeQ.data?.enabled !== false))
+                    }
+                    className={cn(
+                      "relative h-6 w-11 justify-self-end rounded-full transition-colors disabled:opacity-50",
+                      dailyYoutubeQ.data?.enabled === false ? "bg-zinc-700" : "bg-[#ff3b30]"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
+                        dailyYoutubeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
+                      )}
+                    />
+                  </button>
+                </div>
+              ) : null}
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={dailyScrapeQ.data?.enabled !== false}
-              disabled={dailyScrapeQ.isLoading || dailyScrapeToggle.isPending}
-              onClick={() =>
-                dailyScrapeToggle.mutate(!(dailyScrapeQ.data?.enabled !== false))
-              }
-              className={cn(
-                "relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50",
-                dailyScrapeQ.data?.enabled === false ? "bg-zinc-700" : "bg-[#ff3b30]"
-              )}
-            >
-              <span
-                className={cn(
-                  "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
-                  dailyScrapeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
-                )}
-              />
-            </button>
-          </div>
-          ) : null}
-          {showYoutube ? (
-          <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-[#121212] px-4 py-2.5">
-            <div className="min-w-0">
-              <div className="text-xs font-semibold text-zinc-200">Daily YouTube sync</div>
-              <div className="text-[11px] text-zinc-500">
-                {dailyYoutubeQ.data?.enabled !== false
-                  ? "On — bulk import auto-connects + daily 08:00 IST updates"
-                  : "Off — no morning YouTube sync"}
-              </div>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={dailyYoutubeQ.data?.enabled !== false}
-              disabled={dailyYoutubeQ.isLoading || dailyYoutubeToggle.isPending}
-              onClick={() =>
-                dailyYoutubeToggle.mutate(!(dailyYoutubeQ.data?.enabled !== false))
-              }
-              className={cn(
-                "relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50",
-                dailyYoutubeQ.data?.enabled === false ? "bg-zinc-700" : "bg-[#ff3b30]"
-              )}
-            >
-              <span
-                className={cn(
-                  "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
-                  dailyYoutubeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
-                )}
-              />
-            </button>
-          </div>
           ) : null}
           <Link
             href="/admin-import"
-            className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-[#121212] px-4 py-2 text-sm text-zinc-300 hover:border-[#ff3b30]/40 hover:text-white"
+            className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-[#121212] px-4 py-2 text-sm text-zinc-300 hover:border-[#ff3b30]/40 hover:text-white sm:self-center"
           >
             Bulk roster import →
           </Link>
