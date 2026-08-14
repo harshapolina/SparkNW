@@ -22,6 +22,7 @@ import {
   RefreshCw,
   Search,
   Unlink,
+  Upload,
   Video,
   XCircle,
 } from "lucide-react";
@@ -581,91 +582,107 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-        <div>
+      <section className="overflow-hidden rounded-2xl border border-white/[0.08] bg-[#121212] shadow-[0_0_0_1px_rgba(255,255,255,0.02)]">
+        <div className="border-b border-white/[0.06] px-5 py-4">
           <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-[#ff3b30]">
             Scraping
           </p>
           <h1 className="mt-1 text-2xl font-semibold tracking-tight">{VIEW_COPY[view].title}</h1>
-          <p className="mt-1 max-w-2xl text-sm text-zinc-500">{VIEW_COPY[view].subtitle}</p>
+          <p className="mt-1 max-w-3xl text-sm text-zinc-500">{VIEW_COPY[view].subtitle}</p>
         </div>
-        <div className="flex w-full flex-col items-stretch gap-3 sm:w-auto sm:flex-row sm:items-stretch">
-          {showInstagram || showYoutube ? (
-            <div className="w-full min-w-[280px] max-w-md divide-y divide-white/10 rounded-xl border border-white/10 bg-[#121212] sm:w-[22.5rem]">
-              {showInstagram ? (
-                <div className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-center gap-x-3 px-4 py-2.5">
-                  <div className="min-w-0 pr-1">
-                    <div className="text-xs font-semibold text-zinc-200">Auto-scrape</div>
-                    <div className="text-[11px] leading-snug text-zinc-500">
-                      {dailyScrapeQ.data?.enabled === false
-                        ? "Off — no morning/bulk auto (stays until you turn on)"
-                        : "On — mornings + unfinished bulk scrape without .env flips"}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={dailyScrapeQ.data?.enabled !== false}
-                    disabled={dailyScrapeQ.isLoading || dailyScrapeToggle.isPending}
-                    onClick={() =>
-                      dailyScrapeToggle.mutate(!(dailyScrapeQ.data?.enabled !== false))
-                    }
-                    className={cn(
-                      "relative h-6 w-11 justify-self-end rounded-full transition-colors disabled:opacity-50",
-                      dailyScrapeQ.data?.enabled === false ? "bg-zinc-700" : "bg-[#ff3b30]"
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
-                        dailyScrapeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
-                      )}
-                    />
-                  </button>
+        <div
+          className={cn(
+            "grid divide-y divide-white/[0.06] lg:divide-y-0 lg:divide-x lg:divide-white/[0.06]",
+            showInstagram && showYoutube ? "lg:grid-cols-3" : "lg:grid-cols-2"
+          )}
+        >
+          {showInstagram ? (
+            <div className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-center gap-x-3 px-5 py-4">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                  Instagram
                 </div>
-              ) : null}
-              {showYoutube ? (
-                <div className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-center gap-x-3 px-4 py-2.5">
-                  <div className="min-w-0 pr-1">
-                    <div className="text-xs font-semibold text-zinc-200">Daily YouTube sync</div>
-                    <div className="text-[11px] leading-snug text-zinc-500">
-                      {dailyYoutubeQ.data?.enabled !== false
-                        ? "On — bulk import auto-connects + daily 08:00 IST updates"
-                        : "Off — no morning YouTube sync"}
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={dailyYoutubeQ.data?.enabled !== false}
-                    disabled={dailyYoutubeQ.isLoading || dailyYoutubeToggle.isPending}
-                    onClick={() =>
-                      dailyYoutubeToggle.mutate(!(dailyYoutubeQ.data?.enabled !== false))
-                    }
-                    className={cn(
-                      "relative h-6 w-11 justify-self-end rounded-full transition-colors disabled:opacity-50",
-                      dailyYoutubeQ.data?.enabled === false ? "bg-zinc-700" : "bg-[#ff3b30]"
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
-                        dailyYoutubeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
-                      )}
-                    />
-                  </button>
+                <div className="mt-1 text-sm font-semibold text-zinc-100">Auto-scrape</div>
+                <div className="mt-0.5 text-[11px] leading-snug text-zinc-500">
+                  {dailyScrapeQ.data?.enabled === false
+                    ? "Off — no morning/bulk auto until you turn it on"
+                    : "On — mornings + unfinished bulk resume"}
                 </div>
-              ) : null}
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={dailyScrapeQ.data?.enabled !== false}
+                disabled={dailyScrapeQ.isLoading || dailyScrapeToggle.isPending}
+                onClick={() => dailyScrapeToggle.mutate(!(dailyScrapeQ.data?.enabled !== false))}
+                className={cn(
+                  "relative h-6 w-11 justify-self-end rounded-full transition-colors disabled:opacity-50",
+                  dailyScrapeQ.data?.enabled === false ? "bg-zinc-700" : "bg-[#ff3b30]"
+                )}
+              >
+                <span
+                  className={cn(
+                    "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
+                    dailyScrapeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
+                  )}
+                />
+              </button>
+            </div>
+          ) : null}
+          {showYoutube ? (
+            <div className="grid grid-cols-[minmax(0,1fr)_2.75rem] items-center gap-x-3 px-5 py-4">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                  YouTube
+                </div>
+                <div className="mt-1 text-sm font-semibold text-zinc-100">Daily sync</div>
+                <div className="mt-0.5 text-[11px] leading-snug text-zinc-500">
+                  {dailyYoutubeQ.data?.enabled !== false
+                    ? "On — auto-connect on import · 08:00 IST"
+                    : "Off — no morning YouTube sync"}
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={dailyYoutubeQ.data?.enabled !== false}
+                disabled={dailyYoutubeQ.isLoading || dailyYoutubeToggle.isPending}
+                onClick={() => dailyYoutubeToggle.mutate(!(dailyYoutubeQ.data?.enabled !== false))}
+                className={cn(
+                  "relative h-6 w-11 justify-self-end rounded-full transition-colors disabled:opacity-50",
+                  dailyYoutubeQ.data?.enabled === false ? "bg-zinc-700" : "bg-[#ff3b30]"
+                )}
+              >
+                <span
+                  className={cn(
+                    "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white transition-transform",
+                    dailyYoutubeQ.data?.enabled === false ? "translate-x-0" : "translate-x-5"
+                  )}
+                />
+              </button>
             </div>
           ) : null}
           <Link
             href="/admin-import"
-            className="inline-flex items-center justify-center rounded-xl border border-white/10 bg-[#121212] px-4 py-2 text-sm text-zinc-300 hover:border-[#ff3b30]/40 hover:text-white sm:self-center"
+            className="group flex items-center justify-between gap-3 px-5 py-4 transition hover:bg-white/[0.03]"
           >
-            Bulk roster import →
+            <div className="min-w-0">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-500">
+                Roster
+              </div>
+              <div className="mt-1 text-sm font-semibold text-zinc-100 group-hover:text-white">
+                Bulk import
+              </div>
+              <div className="mt-0.5 text-[11px] leading-snug text-zinc-500">
+                Sheet upload — Instagram scrape + YouTube connect
+              </div>
+            </div>
+            <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-black/40 text-zinc-300 transition group-hover:border-[#ff3b30]/40 group-hover:text-[#ff3b30]">
+              <Upload size={16} />
+            </span>
           </Link>
         </div>
-      </div>
+      </section>
 
       {showYoutube ? (
       <div className="space-y-4">
@@ -730,7 +747,12 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                   : "Idle"}
               </span>
             </div>
-            <div className="thin-scroll h-[220px] overflow-y-auto">
+            <div
+              className={cn(
+                "thin-scroll overflow-y-auto",
+                (youtubeSyncQ.data?.active_count || 0) > 0 ? "h-[220px]" : "flex min-h-[88px] items-center"
+              )}
+            >
               {(youtubeSyncQ.data?.active_count || 0) > 0 ? (
                 <ul className="space-y-1.5 text-xs">
                   {(youtubeSyncQ.data?.queue || []).map((row) => (
@@ -772,7 +794,12 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                 {(youtubeSyncQ.data?.history || []).length} recent
               </span>
             </div>
-            <div className="thin-scroll h-[220px] overflow-y-auto">
+            <div
+              className={cn(
+                "thin-scroll overflow-y-auto",
+                (youtubeSyncQ.data?.history || []).length ? "h-[220px]" : "flex min-h-[88px] items-center"
+              )}
+            >
               {(youtubeSyncQ.data?.history || []).length ? (
                 <ul className="space-y-1.5 text-xs">
                   {youtubeSyncQ.data!.history.map((row) => (
