@@ -992,6 +992,7 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
                 {
                     "id": f"fail-{p.id}",
                     "type": "scrape_failed",
+                    "category": "operations",
                     "severity": "high",
                     "title": f"Scrape failed for @{p.username}",
                     "body": (p.last_error or "Unknown scrape error")[:220],
@@ -1005,6 +1006,7 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
                 {
                     "id": f"priv-{p.id}",
                     "type": "profile_private",
+                    "category": "operations",
                     "severity": "medium",
                     "title": f"@{p.username} is private",
                     "body": "Private accounts block full post pagination and metrics.",
@@ -1019,6 +1021,7 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
                 {
                     "id": f"growth-{p.id}",
                     "type": "followers_up" if g > 0 else "followers_down",
+                    "category": "growth_anomaly",
                     "severity": "medium",
                     "title": f"@{p.username} {'grew' if g > 0 else 'dropped'} {g:+.2f}%",
                     "body": f"Follower change vs previous scrape · {int(p.followers):,} followers now.",
@@ -1028,12 +1031,17 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
                 }
             )
     alerts.sort(key=lambda a: a["created_at"], reverse=True)
-    alerts = alerts[:25]
 
     # YouTube portfolio summary (separate from Instagram scrape health)
     yt_channels = await YouTubeChannel.find(
         {"profile_id": {"$in": profile_ids}} if profile_ids else {}
     ).to_list() if profile_ids else []
+    from instascope_shared.services.spark_alerts import build_integrity_alerts
+
+    integrity = await build_integrity_alerts(profiles, yt_channels)
+    alerts = integrity + alerts
+    alerts = alerts[:120]
+
     from instascope_shared.services.app_config import is_daily_youtube_sync_enabled
 
     yt_connected = [c for c in yt_channels if c.connected]

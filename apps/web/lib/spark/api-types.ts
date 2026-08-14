@@ -105,12 +105,21 @@ export type Top10Response = {
 export type AdminAlert = {
   id: string;
   type: string;
+  category?: string;
   severity: string;
   title: string;
   body: string;
   profile_id: string;
   username: string;
+  full_name?: string | null;
   created_at: string;
+  followers?: number;
+  engagement_rate?: number;
+  avg_views?: number;
+  action?: string;
+  milestone?: number;
+  penalty_points?: number;
+  platform?: string;
 };
 
 export type AdminRecentProfile = {

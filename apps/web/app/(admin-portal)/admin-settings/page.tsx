@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { Bell, Clock, Moon, Save, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
+import { applyDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 
 type Settings = {
@@ -78,7 +79,7 @@ export default function AdminSettingsPage() {
 
   useEffect(() => {
     if (data && typeof data.dark_mode === "boolean" && draft.dark_mode === undefined) {
-      document.documentElement.classList.toggle("dark", data.dark_mode);
+      applyDarkMode(data.dark_mode);
     }
   }, [data, draft.dark_mode]);
 
@@ -104,7 +105,7 @@ export default function AdminSettingsPage() {
     onSuccess: (saved) => {
       setDraft({});
       setMessage({ type: "ok", text: "Settings saved." });
-      document.documentElement.classList.toggle("dark", saved.dark_mode);
+      applyDarkMode(saved.dark_mode);
       qc.setQueryData(["settings"], saved);
     },
     onError: (e: Error) => setMessage({ type: "err", text: e.message || "Could not save." }),
@@ -113,7 +114,7 @@ export default function AdminSettingsPage() {
   function setField<K extends keyof Settings>(key: K, v: Settings[K]) {
     setMessage(null);
     setDraft((d) => ({ ...d, [key]: v }));
-    if (key === "dark_mode") document.documentElement.classList.toggle("dark", Boolean(v));
+    if (key === "dark_mode") applyDarkMode(Boolean(v));
   }
 
   if (isLoading) return <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />;

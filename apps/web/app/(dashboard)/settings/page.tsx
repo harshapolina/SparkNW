@@ -6,6 +6,7 @@ import { Bell, Check, Clock, Moon, Save, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
+import { applyDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 
 type Settings = {
@@ -63,12 +64,6 @@ function Toggle({
       />
     </button>
   );
-}
-
-function applyDarkMode(on: boolean) {
-  if (typeof document === "undefined") return;
-  document.documentElement.classList.toggle("dark", on);
-  document.documentElement.dataset.theme = on ? "dark" : "light";
 }
 
 export default function SettingsPage() {

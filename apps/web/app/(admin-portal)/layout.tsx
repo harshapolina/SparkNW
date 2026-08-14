@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
   BookOpen,
@@ -14,17 +15,20 @@ import {
   Layers,
   LayoutDashboard,
   Medal,
+  Moon,
   RefreshCw,
   Settings,
+  Sun,
   BarChart3,
   Trophy,
   Upload,
   Video,
 } from "lucide-react";
-import { clearTokens, getStoredUser, type User } from "@/lib/api";
+import { clearTokens, getStoredUser, type User, api } from "@/lib/api";
 import { BrandLogo } from "@/components/brand-logo";
 import { useRequireRole } from "@/lib/spark/auth-guard";
 import { adminScrapingListHref } from "@/lib/admin-scraping-list-state";
+import { applyDarkMode } from "@/lib/dark-mode";
 import { cn } from "@/lib/utils";
 
 const scrapingChildren = [
@@ -92,15 +96,44 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
   const ready = useRequireRole("admin", "/admin-login");
   const pathname = usePathname();
   const router = useRouter();
+  const qc = useQueryClient();
   const [user, setUser] = useState<User | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({
     "/admin-dashboard": pathname.startsWith("/admin-dashboard"),
     "/admin-scraping": pathname.startsWith("/admin-scraping"),
   });
 
+  const settingsQ = useQuery({
+    queryKey: ["settings"],
+    queryFn: () => api<{ dark_mode: boolean }>("/settings"),
+    enabled: ready,
+  });
+  const darkOn = settingsQ.data?.dark_mode !== false;
+
+  const darkToggle = useMutation({
+    mutationFn: (dark_mode: boolean) =>
+      api<{ dark_mode: boolean }>("/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ dark_mode }),
+      }),
+    onSuccess: (data) => {
+      qc.setQueryData(["settings"], (prev: { dark_mode?: boolean } | undefined) => ({
+        ...(prev || {}),
+        ...data,
+      }));
+      applyDarkMode(data.dark_mode);
+    },
+  });
+
   useEffect(() => {
     setUser(getStoredUser());
   }, [ready]);
+
+  useEffect(() => {
+    if (typeof settingsQ.data?.dark_mode === "boolean") {
+      applyDarkMode(settingsQ.data.dark_mode);
+    }
+  }, [settingsQ.data?.dark_mode]);
 
   useEffect(() => {
     setExpanded((prev) => {
@@ -120,8 +153,20 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
   }
 
   return (
-    <div className="flex min-h-screen bg-black text-white">
-      <aside className="sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col border-r border-white/[0.06] bg-[#0a0a0a] lg:flex">
+    <div
+      className={cn(
+        "flex min-h-screen text-white transition-colors",
+        darkOn
+          ? "bg-[#050505] [background-image:radial-gradient(1200px_500px_at_10%_-10%,rgba(255,59,48,0.12),transparent),radial-gradient(800px_400px_at_100%_0%,rgba(88,28,135,0.12),transparent)]"
+          : "bg-zinc-100 text-zinc-900"
+      )}
+    >
+      <aside
+        className={cn(
+          "sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col border-r lg:flex",
+          darkOn ? "border-white/[0.06] bg-[#0a0a0a]/90 backdrop-blur-xl" : "border-zinc-200 bg-white"
+        )}
+      >
         <div className="px-4 py-5">
           <Link href="/admin-dashboard" className="inline-flex items-center">
             <BrandLogo height={26} priority />
@@ -231,7 +276,22 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
             );
           })}
         </nav>
-        <div className="space-y-2 border-t border-white/[0.06] p-4 text-[11px] text-zinc-500">
+        <div className={cn("space-y-2 border-t p-4 text-[11px]", darkOn ? "border-white/[0.06] text-zinc-500" : "border-zinc-200 text-zinc-500")}>
+          <button
+            type="button"
+            disabled={darkToggle.isPending}
+            onClick={() => darkToggle.mutate(!darkOn)}
+            className={cn(
+              "mb-2 flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-[12px] transition",
+              darkOn ? "bg-white/[0.04] text-zinc-200 hover:bg-white/[0.07]" : "bg-zinc-100 text-zinc-800"
+            )}
+          >
+            <span className="inline-flex items-center gap-2">
+              {darkOn ? <Moon size={13} className="text-[#ff3b30]" /> : <Sun size={13} />}
+              {darkOn ? "Void dark" : "Light desk"}
+            </span>
+            <span className="text-[10px] uppercase tracking-wide text-zinc-500">{darkOn ? "On" : "Off"}</span>
+          </button>
           <div className="flex items-center gap-2 text-zinc-400">
             <Database size={12} /> Shared cohort scrapes
           </div>
