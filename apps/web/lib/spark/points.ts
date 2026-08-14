@@ -1,7 +1,7 @@
 /**
  * SPARK Point System — ranking & tier helpers.
  * Overall leaderboard rank = total SPARK points (desc).
- * Sub-boards sort by followers / views / engagement from scraped metrics.
+ * Formula mirrors backend `spark_points.py` (source of truth).
  */
 
 import type { LeaderboardSort, SparkCreator, Tier } from "./types";
@@ -12,7 +12,7 @@ export const TIER_THRESHOLDS: { tier: Tier; min: number }[] = [
   { tier: "GOLD", min: 2500 },
 ];
 
-/** Short-form performance bands (views → pts) */
+/** Short-form performance bands (views → pts) — Reels / YT Shorts */
 export const SHORT_FORM_BANDS = [
   { min: 1_000, max: 10_000, pts: 5 },
   { min: 10_000, max: 50_000, pts: 15 },
@@ -20,24 +20,34 @@ export const SHORT_FORM_BANDS = [
   { min: 100_000, max: 500_000, pts: 60 },
 ] as const;
 
-/** Long-form performance bands */
+/** Long-form performance bands — ≥3 min YT or IG carousel */
 export const LONG_FORM_BANDS = [
   { min: 500, max: 2_000, pts: 10 },
   { min: 2_000, max: 10_000, pts: 25 },
   { min: 10_000, max: 50_000, pts: 50 },
 ] as const;
 
-/** Audience growth milestones (once each) */
+/** Audience growth milestones (combined IG+YT for 1k–30k; 50k = single platform) */
 export const GROWTH_MILESTONES = [
   { followers: 1_000, pts: 25 },
   { followers: 5_000, pts: 75 },
   { followers: 10_000, pts: 150 },
   { followers: 20_000, pts: 300 },
   { followers: 30_000, pts: 500 },
-  { followers: 50_000, pts: 1000 }, // + GRIT qualification
+  { followers: 50_000, pts: 1000 }, // single platform + GRIT
 ] as const;
 
-export const WEEKLY_CONSISTENCY_PTS = 10; // 2 shorts + 1 long-form
+export const WEEKLY_CONSISTENCY_PTS = 10; // 2 shorts + 1 long-form per week
+export const CONSISTENCY_CAP = 660;
+export const PERFORMANCE_CAP = 3000;
+
+export const CATEGORY_CAPS = {
+  collaborations: 850,
+  revenue: 3000,
+  recognition: 500,
+  participation: 470,
+  monthly_bonuses: 1350,
+} as const;
 
 export function tierFromPoints(points: number): Tier {
   if (points >= 2500) return "GOLD";

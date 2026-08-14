@@ -154,9 +154,9 @@ export default function AdminHowItWorksPage() {
             <h2 className="text-xl font-semibold text-white">Overview</h2>
           </div>
           <p className="text-sm leading-relaxed text-zinc-400">
-            SPARK is a cohort Instagram tracker for student creators. Admins import a roster, the
-            system scrapes each Instagram profile, computes metrics from the scraped posts, then
-            ranks creators with SPARK points.
+            SPARK is a cohort creator tracker (Instagram + YouTube). Admins import a roster, the
+            system scrapes / syncs public metrics, then ranks creators on the overall leaderboard
+            with SPARK points.
           </p>
           <ol className="space-y-2 text-sm text-zinc-300">
             <li className="flex gap-3">
@@ -386,34 +386,37 @@ export default function AdminHowItWorksPage() {
             <h2 className="text-xl font-semibold text-white">SPARK points</h2>
           </div>
           <p className="text-sm leading-relaxed text-zinc-400">
-            Leaderboard “overall” score is SPARK points from scraped posts + follower milestones.{" "}
+            Leaderboard “overall” score is SPARK points from Instagram + YouTube content, combined
+            audience growth, and judged/manual categories.{" "}
             <strong className="font-medium text-zinc-200">
               Data and points are calculated from {PROGRAMME_STARTED_LABEL} (programme start) through the selected /
               current date.
             </strong>{" "}
-            Posts and milestones outside that window do not count.
+            Posts and milestones outside that window do not count. Crossposted Reels ↔ Shorts on the
+            same day count once.
           </p>
           <ProgrammeWindowNote className="!text-xs" />
-          <Formula>SPARK points = consistency + min(performance, 3000) + growth_milestones</Formula>
+          <Formula>
+            SPARK = consistency + min(performance, 3000) + growth + collabs + revenue + recognition +
+            participation + monthly_bonuses
+          </Formula>
 
-          <h3 className="pt-2 text-sm font-semibold text-zinc-200">1) Consistency (0 or +10)</h3>
-          <p className="text-sm text-zinc-400">In the last 7 days (by post date):</p>
-          <ul className="list-disc space-y-1 pl-5 text-sm text-zinc-300">
-            <li>≥ 2 short posts and ≥ 1 long/carousel, <em>or</em></li>
-            <li>≥ 3 posts total</li>
-          </ul>
-          <p className="text-sm text-zinc-400">→ award <strong className="text-zinc-200">+10</strong>, else 0.</p>
-          <p className="text-sm text-zinc-500">
-            Long-form = carousel, or video with caption longer than 280 characters. Everything else
-            uses short-form view bands.
+          <h3 className="pt-2 text-sm font-semibold text-zinc-200">1) Weekly consistency (floor)</h3>
+          <p className="text-sm text-zinc-400">
+            <strong className="text-zinc-200">+10 pts per ISO week</strong> that meets the minimum
+            (summed across the programme; capped at 660):
           </p>
+          <ul className="list-disc space-y-1 pl-5 text-sm text-zinc-300">
+            <li>≥ 2 short-form pieces (Reels or YT Shorts ≤90s; crosspost counts once)</li>
+            <li>≥ 1 long-form (≥3 min YouTube, or Instagram carousel)</li>
+          </ul>
 
-          <h3 className="pt-2 text-sm font-semibold text-zinc-200">2) Performance (sum per post, capped at 3000)</h3>
-          <p className="text-sm text-zinc-400">Each post scores from its view count:</p>
+          <h3 className="pt-2 text-sm font-semibold text-zinc-200">2) Content performance (multiplier)</h3>
+          <p className="text-sm text-zinc-400">Each piece scores from its view count (IG + YouTube):</p>
           <div className="grid gap-3 sm:grid-cols-2">
             <div>
               <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                Short / reel bands
+                Short / reel / Shorts bands
               </div>
               <DataTable
                 headers={["Views ≥", "Points"]}
@@ -428,7 +431,7 @@ export default function AdminHowItWorksPage() {
             </div>
             <div>
               <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
-                Long / carousel bands
+                Long-form / carousel bands
               </div>
               <DataTable
                 headers={["Views ≥", "Points"]}
@@ -442,30 +445,48 @@ export default function AdminHowItWorksPage() {
             </div>
           </div>
           <p className="text-sm text-zinc-400">
-            Only the highest matching band applies per post (not stacked). All post points are
+            Only the highest matching band applies per piece (not stacked). All piece points are
             summed, then capped at <strong className="text-zinc-200">3000</strong>.
           </p>
 
-          <h3 className="pt-2 text-sm font-semibold text-zinc-200">3) Growth milestones (followers)</h3>
+          <h3 className="pt-2 text-sm font-semibold text-zinc-200">3) Audience growth (milestones)</h3>
           <p className="text-sm text-zinc-400">
-            Points are the <strong className="text-zinc-200">sum of all unlocked</strong> milestones
-            (not only the highest):
+            Points for milestones <strong className="text-zinc-200">crossed inside the programme window</strong>.
+            1k–30k use <strong className="text-zinc-200">combined IG + YouTube</strong> followers.
+            50k requires a <strong className="text-zinc-200">single platform</strong> (+ GRIT).
           </p>
           <DataTable
             headers={["Followers ≥", "Points added"]}
             rows={[
-              ["1,000", "25"],
-              ["5,000", "75"],
-              ["10,000", "150"],
-              ["20,000", "300"],
-              ["30,000", "500"],
-              ["50,000", "1,000"],
+              ["1,000 (combined)", "25"],
+              ["5,000 (combined)", "75"],
+              ["10,000 (combined)", "150"],
+              ["20,000 (combined)", "300"],
+              ["30,000 (combined)", "500"],
+              ["50,000 (single platform)", "1,000 + GRIT"],
             ]}
           />
           <Example title="Example">
-            12_000 followers unlocks 1k + 5k + 10k → 25 + 75 + 150 = <strong>250</strong> growth
-            points.
+            Baseline 800 combined → end 12_000 combined unlocks 1k + 5k + 10k →{" "}
+            <strong>250</strong> growth points.
           </Example>
+
+          <h3 className="pt-2 text-sm font-semibold text-zinc-200">4–8) Judged / manual categories</h3>
+          <p className="text-sm text-zinc-400">
+            Collaborations, revenue, recognition, program participation, and monthly bonus challenges
+            are awarded via admin insights (<code className="text-zinc-300">spark_points.*</code> or
+            legacy <code className="text-zinc-300">spark_bonus_points</code>) and capped:
+          </p>
+          <DataTable
+            headers={["Category", "Cap"]}
+            rows={[
+              ["Collaborations", "850"],
+              ["Revenue", "3,000"],
+              ["Recognition / features", "500"],
+              ["Program participation", "470"],
+              ["Monthly bonuses", "1,350"],
+            ]}
+          />
 
           <h3 className="pt-2 text-sm font-semibold text-zinc-200">Tiers</h3>
           <DataTable

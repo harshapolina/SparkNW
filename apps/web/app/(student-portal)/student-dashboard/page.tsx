@@ -226,10 +226,28 @@ export default function StudentDashboardPage() {
           <p className="mt-3 text-sm font-medium text-white">Streak: {creator.streak_weeks}</p>
           <p className="mt-1 text-xs text-zinc-500">{creator.posts_7d} posts in the last 7 days</p>
           {creator.points_breakdown && (
-            <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-zinc-400">
-              <div>Consis. {creator.points_breakdown.consistency}</div>
-              <div>Perf. {creator.points_breakdown.performance}</div>
-              <div>Growth {creator.points_breakdown.growth}</div>
+            <div className="mt-3 grid grid-cols-3 gap-2 text-[11px] text-zinc-400 sm:grid-cols-4">
+              <div>Consis. {creator.points_breakdown.consistency ?? 0}</div>
+              <div>Perf. {creator.points_breakdown.performance ?? 0}</div>
+              <div>Growth {creator.points_breakdown.growth ?? 0}</div>
+              {(creator.points_breakdown.collaborations ?? 0) > 0 && (
+                <div>Collab {creator.points_breakdown.collaborations}</div>
+              )}
+              {(creator.points_breakdown.revenue ?? 0) > 0 && (
+                <div>Rev {creator.points_breakdown.revenue}</div>
+              )}
+              {(creator.points_breakdown.recognition ?? 0) > 0 && (
+                <div>Recog {creator.points_breakdown.recognition}</div>
+              )}
+              {(creator.points_breakdown.participation ?? 0) > 0 && (
+                <div>Part. {creator.points_breakdown.participation}</div>
+              )}
+              {(creator.points_breakdown.monthly_bonuses ?? 0) > 0 && (
+                <div>Bonus {creator.points_breakdown.monthly_bonuses}</div>
+              )}
+              {(creator.points_breakdown.bonus ?? 0) > 0 && (
+                <div>Manual {creator.points_breakdown.bonus}</div>
+              )}
             </div>
           )}
         </div>

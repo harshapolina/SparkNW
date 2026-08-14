@@ -1,4 +1,8 @@
-"""SPARK rankings from real scraped Instagram profiles + posts."""
+"""SPARK rankings from real scraped Instagram + YouTube metrics.
+
+Overall leaderboard points come from ``spark_points`` (consistency floor,
+performance multiplier, audience growth, plus judged/manual categories).
+"""
 
 from __future__ import annotations
 
@@ -19,31 +23,29 @@ from instascope_shared.models import (
     YouTubeChannel,
     YouTubeSnapshot,
     YouTubeSyncStatus,
+    YouTubeVideo,
+)
+from instascope_shared.services.spark_points import (
+    GROWTH_MILESTONES,
+    LONG_BANDS,
+    PERFORMANCE_CAP,
+    SHORT_BANDS,
+    compute_points_breakdown,
+    growth_points_for_window,
+    growth_pts_absolute,
+    long_form_points,
+    package_leaderboard_row,
+    post_performance_pts,
+    short_form_points,
 )
 
 SortKey = Literal["overall", "points", "followers", "views", "engagement"]
 
-GROWTH_MILESTONES = [
-    (1_000, 25),
-    (5_000, 75),
-    (10_000, 150),
-    (20_000, 300),
-    (30_000, 500),
-    (50_000, 1_000),
-]
-
-SHORT_BANDS = [
-    (100_000, 60),
-    (50_000, 30),
-    (10_000, 15),
-    (1_000, 5),
-]
-
-LONG_BANDS = [
-    (10_000, 50),
-    (2_000, 25),
-    (500, 10),
-]
+# Re-export scoring constants for older imports / docs
+_growth_pts = growth_pts_absolute
+_short_pts = short_form_points
+_long_pts = long_form_points
+_post_performance_pts = post_performance_pts
 
 
 def _tier(points: int) -> str:
@@ -64,29 +66,11 @@ def _points_to_next(points: int) -> tuple[str | None, int]:
     return None, 0
 
 
-def _growth_pts(followers: int) -> int:
-    return sum(pts for need, pts in GROWTH_MILESTONES if followers >= need)
-
-
-def _short_pts(views: int) -> int:
-    for minimum, pts in SHORT_BANDS:
-        if views >= minimum:
-            return pts
-    return 0
-
-
-def _long_pts(views: int) -> int:
-    for minimum, pts in LONG_BANDS:
-        if views >= minimum:
-            return pts
-    return 0
-
-
 def _is_long_form(media_type: str, caption: str | None) -> bool:
     mt = (media_type or "").lower()
     if mt == "carousel":
         return True
-    if mt in {"video"} and caption and len(caption) > 280:
+    if mt in {"video", "reel", "clip"} and caption and len(caption) > 280:
         return True
     return False
 
@@ -122,18 +106,8 @@ def _campus(profile: Profile) -> str:
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
 
-    # Stable assignment so the same handle always keeps the same campus
     key = (profile.username or str(profile.id) or "spark").lower().encode("utf-8")
     return SPARK_CAMPUSES[sum(key) % len(SPARK_CAMPUSES)]
-
-
-def _post_performance_pts(post: Post) -> tuple[int, bool, str]:
-    """Return (points, is_long_form, media_type) for a post."""
-    views = int(post.views or 0)
-    mt = str(post.media_type.value if hasattr(post.media_type, "value") else post.media_type)
-    long_form = _is_long_form(mt, post.caption)
-    pts = _long_pts(views) if long_form else _short_pts(views)
-    return pts, long_form, mt
 
 
 def _naive_dt(value: datetime | None) -> datetime | None:
@@ -148,42 +122,25 @@ def compute_spark_points(
     *,
     as_of: datetime | None = None,
     from_date: datetime | None = None,
+    videos: list[YouTubeVideo] | None = None,
+    yt_subscribers: int = 0,
+    start_followers: int = 0,
+    start_yt_subscribers: int = 0,
+    include_youtube: bool = True,
 ) -> int:
-    """Raw SPARK points (consistency + capped performance + growth) as of a timestamp.
-
-    Always floors at SPARK_COHORT_START — never scores lifetime / pre-programme posts.
-    """
-    now = _naive_dt(as_of) or datetime.utcnow()
-    window_start, window_end = clamp_scoring_window(from_date, as_of or now)
-    window_start = _naive_dt(window_start) or window_start
-    now = min(now, _naive_dt(window_end) or now)
-    week_ago = now - timedelta(days=7)
-    consistency = 0
-    posts_7d = 0
-    shorts_7d = 0
-    longs_7d = 0
-    performance = 0
-
-    for post in posts:
-        posted = post.posted_at
-        posted_naive = _naive_dt(posted)
-        if posted_naive is None or posted_naive < window_start:
-            continue
-        if posted_naive > now:
-            continue
-        pts, long_form, mt = _post_performance_pts(post)
-        performance += pts
-        if posted_naive >= week_ago:
-            posts_7d += 1
-            if long_form or mt == "carousel":
-                longs_7d += 1
-            else:
-                shorts_7d += 1
-
-    if (shorts_7d >= 2 and longs_7d >= 1) or posts_7d >= 3:
-        consistency = 10
-
-    return consistency + min(performance, 3000) + _growth_pts(int(followers or 0))
+    """Raw SPARK points (programme window). Always floors at SPARK_COHORT_START."""
+    scored = compute_points_breakdown(
+        posts=posts,
+        videos=videos or [],
+        followers=int(followers or 0),
+        yt_subscribers=int(yt_subscribers or 0),
+        start_followers=int(start_followers or 0),
+        start_yt_subscribers=int(start_yt_subscribers or 0),
+        as_of=as_of,
+        from_date=from_date,
+        include_youtube=include_youtube,
+    )
+    return int(scored["points"])
 
 
 def score_profile(
@@ -194,239 +151,30 @@ def score_profile(
     from_date: datetime | None = None,
     followers_override: int | None = None,
     growth_pts_override: int | None = None,
+    videos: list[YouTubeVideo] | None = None,
+    yt_subscribers: int = 0,
+    start_followers: int = 0,
+    start_yt_subscribers: int = 0,
+    include_youtube: bool | None = None,
 ) -> dict[str, Any]:
-    """Compute SPARK points from real scrape metrics.
-
-    Always floors at SPARK_COHORT_START (15 Jul 2026) — never scores lifetime posts.
-    """
-    now = _naive_dt(as_of) or datetime.utcnow()
-    # Always programme-window: caller dates are clamped to cohort → today.
-    window_start, window_end = clamp_scoring_window(from_date, as_of or now)
-    window_start = _naive_dt(window_start) or window_start
-    now = min(now, _naive_dt(window_end) or now)
-    week_ago = now - timedelta(days=7)
-    follower_count = int(followers_override if followers_override is not None else (profile.followers or 0))
-
-    consistency = 0
-    posts_7d = 0
-    shorts_7d = 0
-    longs_7d = 0
-    performance = 0
-    total_views = 0
-    total_likes = 0
-    total_comments = 0
-    programme_posts = 0
-    task_history: list[dict[str, Any]] = []
-
-    for post in posts:
-        posted = post.posted_at
-        posted_naive = _naive_dt(posted)
-        # Period mode: posts without posted_at cannot be attributed to the window.
-        if posted_naive is None or posted_naive < window_start:
-            continue
-        if posted_naive > now:
-            continue
-
-        programme_posts += 1
-        views = int(post.views or 0)
-        likes = int(post.likes or 0)
-        comments = int(post.comments or 0)
-        total_views += views
-        total_likes += likes
-        total_comments += comments
-
-        pts, long_form, mt = _post_performance_pts(post)
-        performance += pts
-
-        if posted_naive >= week_ago:
-            posts_7d += 1
-            if long_form or mt == "carousel":
-                longs_7d += 1
-            else:
-                shorts_7d += 1
-
-        if pts > 0:
-            task_history.append(
-                {
-                    "id": str(post.id),
-                    "week": posted.isocalendar()[1] if posted else 0,
-                    "title": f"{'Long-form' if long_form else 'Short-form'} performance — {views:,} views",
-                    "category": "Performance",
-                    "points": pts,
-                    "status": "approved",
-                    "date": posted.strftime("%Y-%m-%d") if posted else "",
-                    "profile_id": str(profile.id),
-                    "shortcode": post.shortcode,
-                }
-            )
-
-    # Weekly consistency: 2 shorts + 1 long ≈ 3 posts with mix, or 3+ posts in week
-    if shorts_7d >= 2 and longs_7d >= 1:
-        consistency = 10
-        task_history.append(
-            {
-                "id": f"cons-{profile.id}",
-                "week": now.isocalendar()[1],
-                "title": "Weekly minimum — 2 shorts + 1 long-form",
-                "category": "Consistency",
-                "points": 10,
-                "status": "approved",
-                "date": now.strftime("%Y-%m-%d"),
-                "profile_id": str(profile.id),
-                "shortcode": None,
-            }
-        )
-    elif posts_7d >= 3:
-        consistency = 10
-        task_history.append(
-            {
-                "id": f"cons-{profile.id}",
-                "week": now.isocalendar()[1],
-                "title": "Weekly minimum met (3+ posts this week)",
-                "category": "Consistency",
-                "points": 10,
-                "status": "approved",
-                "date": now.strftime("%Y-%m-%d"),
-                "profile_id": str(profile.id),
-                "shortcode": None,
-            }
-        )
-    elif posts_7d > 0:
-        task_history.append(
-            {
-                "id": f"cons-miss-{profile.id}",
-                "week": now.isocalendar()[1],
-                "title": f"Weekly minimum incomplete ({posts_7d} posts)",
-                "category": "Consistency",
-                "points": 0,
-                "status": "missed",
-                "date": now.strftime("%Y-%m-%d"),
-                "profile_id": str(profile.id),
-                "shortcode": None,
-            }
-        )
-
-    growth = (
-        int(growth_pts_override)
-        if growth_pts_override is not None
-        else _growth_pts(follower_count)
+    """Compute SPARK points from scraped IG (+ YouTube) metrics."""
+    if include_youtube is None:
+        include_youtube = True
+    return package_leaderboard_row(
+        profile,
+        posts,
+        videos=videos or [],
+        as_of=as_of,
+        from_date=from_date,
+        followers_override=followers_override,
+        yt_subscribers=yt_subscribers,
+        start_followers=start_followers,
+        start_yt_subscribers=start_yt_subscribers,
+        growth_pts_override=growth_pts_override,
+        include_youtube=include_youtube,
+        campus=_campus(profile),
+        initials=_initials(profile.full_name or "", profile.username),
     )
-    if growth:
-        task_history.append(
-            {
-                "id": f"growth-{profile.id}",
-                "week": now.isocalendar()[1],
-                "title": f"Audience growth milestones — {follower_count:,} followers",
-                "category": "Growth",
-                "points": growth,
-                "status": "approved",
-                "date": now.strftime("%Y-%m-%d"),
-                "profile_id": str(profile.id),
-                "shortcode": None,
-            }
-        )
-
-    # Cap performance contribution for fairness (theoretical unbounded otherwise)
-    performance_capped = min(performance, 3000)
-    bonus = 0
-    try:
-        bonus = int((profile.insights or {}).get("spark_bonus_points") or 0)
-    except (TypeError, ValueError):
-        bonus = 0
-    points = consistency + performance_capped + growth + max(0, bonus)
-
-    # Consistency score 0-100 from recent posting (programme window only)
-    posts_30 = sum(
-        1
-        for p in posts
-        if p.posted_at
-        and _naive_dt(p.posted_at) is not None
-        and _naive_dt(p.posted_at) >= window_start
-        and _naive_dt(p.posted_at) >= now - timedelta(days=30)
-        and _naive_dt(p.posted_at) <= now
-    )
-    consistency_score = min(100, int((posts_7d / 3) * 40 + min(posts_30, 12) / 12 * 60))
-
-    engagement = float(profile.engagement_rate or 0)
-    # Period board: rate from posts in the programme window only.
-    if follower_count > 0 and programme_posts > 0:
-        avg_eng = (total_likes + total_comments) / programme_posts
-        engagement = round((avg_eng / follower_count) * 100, 2)
-    else:
-        engagement = 0.0
-
-    grit = "not_eligible"
-    if follower_count >= 50_000:
-        grit = "qualified"
-    elif follower_count >= 30_000 or points >= 2000:
-        grit = "striking"
-    elif profile.status == ProfileStatus.FAILED or posts_7d == 0:
-        grit = "at_risk"
-    else:
-        grit = "at_risk" if points < 500 else "striking"
-
-    weeks_inactive = 0
-    if profile.last_success_at:
-        weeks_inactive = max(0, (now - profile.last_success_at.replace(tzinfo=None)).days // 7)
-    elif posts_7d == 0:
-        weeks_inactive = 1
-
-    next_tier, remaining = _points_to_next(points)
-
-    insights = dict(getattr(profile, "insights", None) or {})
-    use_period_totals = window_start is not None
-    return {
-        "id": str(profile.id),
-        "profile_id": str(profile.id),
-        "name": profile.full_name or profile.username,
-        "handle": f"@{profile.username}",
-        "username": profile.username,
-        "initials": _initials(profile.full_name or "", profile.username),
-        "campus": _campus(profile),
-        "team": (insights.get("team") if isinstance(insights.get("team"), str) else None),
-        "tier": _tier(points),
-        "points": points,
-        "points_breakdown": {
-            "consistency": consistency,
-            "performance": performance_capped,
-            "growth": growth,
-            "bonus": max(0, bonus),
-        },
-        "followers": follower_count,
-        "views": int(total_views if use_period_totals else (total_views or insights.get("total_views_sampled") or 0)),
-        "likes": int(total_likes if use_period_totals else (total_likes or insights.get("total_likes_sampled") or 0)),
-        "comments": int(
-            total_comments if use_period_totals else (total_comments or insights.get("total_comments_sampled") or 0)
-        ),
-        "engagement": engagement,
-        "avg_likes": float(profile.avg_likes or 0),
-        "avg_views": float(profile.avg_views or 0),
-        "avg_comments": float(profile.avg_comments or 0),
-        "posts_count": programme_posts,
-        "programme_posts": programme_posts,
-        "ig_posts_count": int(profile.posts_count or 0),
-        "posts_7d": posts_7d,
-        "growth_pct_today": float(profile.growth_pct_today or 0),
-        "consistency_score": consistency_score,
-        "streak_weeks": f"{max(1, posts_30 // 3)} wks" if posts_30 else "0 wks",
-        "grit_status": grit,
-        "weeks_inactive": weeks_inactive,
-        "status": profile.status.value if hasattr(profile.status, "value") else str(profile.status),
-        "last_scraped_at": profile.last_scraped_at.isoformat() if profile.last_scraped_at else None,
-        "avatar_url": profile.avatar_url,
-        "next_tier": next_tier,
-        "points_to_next_tier": remaining,
-        "task_history": sorted(task_history, key=lambda t: t.get("date") or "", reverse=True)[:20],
-        "is_private": bool(profile.is_private),
-        # YouTube metrics (display only — not included in SPARK points yet)
-        "youtube_connected": bool(getattr(profile, "youtube_connected", False)),
-        "youtube_channel_id": getattr(profile, "youtube_channel_id", None),
-        "youtube_subscribers": None,
-        "youtube_views": None,
-        "youtube_likes": None,
-        "youtube_comments": None,
-        "youtube_video_count": None,
-    }
 
 
 async def _profiles_for_org(org_id: str | None = None) -> list[Profile]:
@@ -490,7 +238,7 @@ def _empty_youtube_metrics() -> dict[str, Any]:
         "last_error": None,
         "subscribers_delta": None,
         "views_delta": None,
-        "scoring_enabled": bool(get_settings().youtube_scoring_enabled),
+        "scoring_enabled": True,
     }
 
 
@@ -499,6 +247,55 @@ async def _youtube_channels_by_profile(profile_ids: list[str]) -> dict[str, YouT
         return {}
     rows = await YouTubeChannel.find({"profile_id": {"$in": profile_ids}}).to_list()
     return {r.profile_id: r for r in rows}
+
+
+async def _youtube_videos_by_profile(profile_ids: list[str]) -> dict[str, list[YouTubeVideo]]:
+    by: dict[str, list[YouTubeVideo]] = defaultdict(list)
+    if not profile_ids:
+        return by
+    rows = await YouTubeVideo.find({"profile_id": {"$in": profile_ids}}).to_list()
+    for v in rows:
+        by[v.profile_id].append(v)
+    return by
+
+
+def _yt_subscribers_at_cutoffs(
+    snaps: list[YouTubeSnapshot],
+    *,
+    start_ymd: str,
+    end_ymd: str,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Return (subs_at_start, subs_at_end) from YouTube daily snapshots."""
+    start_map: dict[str, YouTubeSnapshot] = {}
+    end_map: dict[str, YouTubeSnapshot] = {}
+    for s in snaps:
+        if s.snapshot_date <= start_ymd:
+            cur = start_map.get(s.profile_id)
+            if not cur or s.snapshot_date > cur.snapshot_date:
+                start_map[s.profile_id] = s
+        if s.snapshot_date <= end_ymd:
+            cur = end_map.get(s.profile_id)
+            if not cur or s.snapshot_date > cur.snapshot_date:
+                end_map[s.profile_id] = s
+    # If no snapshot on/before start, use earliest in window as baseline
+    earliest: dict[str, YouTubeSnapshot] = {}
+    for s in snaps:
+        if start_ymd <= s.snapshot_date <= end_ymd:
+            cur = earliest.get(s.profile_id)
+            if not cur or s.snapshot_date < cur.snapshot_date:
+                earliest[s.profile_id] = s
+    for pid, s in earliest.items():
+        if pid not in start_map:
+            start_map[pid] = s
+
+    def _subs(m: dict[str, YouTubeSnapshot]) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for pid, snap in m.items():
+            if snap.subscribers is not None:
+                out[pid] = int(snap.subscribers)
+        return out
+
+    return _subs(start_map), _subs(end_map)
 
 
 async def _latest_youtube_snaps(profile_ids: list[str]) -> dict[str, YouTubeSnapshot]:
@@ -570,8 +367,8 @@ def _apply_youtube_to_row(
     row["youtube_likes"] = metrics["likes"]
     row["youtube_comments"] = metrics["comments"]
     row["youtube_video_count"] = metrics["video_count"]
-    # SPARK points unchanged — youtube_scoring_enabled reserved for a future formula.
-    _ = get_settings().youtube_scoring_enabled
+    # Display metrics; points already include YT via spark_points when scored.
+    row["scoring_includes_youtube"] = True
 
 
 async def _enrich_leaderboard_youtube(rows: list[dict[str, Any]]) -> None:
@@ -641,23 +438,54 @@ async def build_leaderboard(
             for pid, snap in _earliest_snap_by_profile(window_snaps).items():
                 followers_at_start[pid] = int(snap.followers or 0)
 
+    # YouTube videos + subscriber baselines for overall SPARK points
+    videos_map = await _youtube_videos_by_profile(profile_ids)
+    channels = await _youtube_channels_by_profile(profile_ids)
+    yt_snaps_all = (
+        await YouTubeSnapshot.find({"profile_id": {"$in": profile_ids}}).to_list()
+        if profile_ids
+        else []
+    )
+    yt_start, yt_end = _yt_subscribers_at_cutoffs(
+        yt_snaps_all, start_ymd=prev_cutoff, end_ymd=end_cutoff
+    )
+    for pid, ch in channels.items():
+        if pid not in yt_end and ch.subscriber_count is not None:
+            yt_end[pid] = int(ch.subscriber_count)
+        if pid not in yt_start and ch.subscriber_count is not None:
+            # No history → baseline = current (no unearned growth milestones)
+            yt_start[pid] = int(ch.subscriber_count)
+
     rows: list[dict[str, Any]] = []
+    include_yt = bool(get_settings().youtube_scoring_enabled)
     for p in profiles:
         pid = str(p.id)
-        score_kwargs: dict[str, Any] = {
-            "from_date": window_start,
-            "as_of": window_end,
-        }
         end_fol = followers_at_end.get(pid)
-        if end_fol is not None:
-            score_kwargs["followers_override"] = end_fol
-        # Growth points only for milestones crossed inside the cohort window.
         start_fol = int(followers_at_start.get(pid, 0) or 0)
-        end_for_growth = int(end_fol if end_fol is not None else (p.followers or 0))
-        score_kwargs["growth_pts_override"] = max(
-            0, _growth_pts(end_for_growth) - _growth_pts(start_fol)
+        end_ig = int(end_fol if end_fol is not None else (p.followers or 0))
+        end_yt = int(yt_end.get(pid, 0) or 0) if include_yt else 0
+        start_yt = int(yt_start.get(pid, 0) or 0) if include_yt else 0
+        growth_override = growth_points_for_window(
+            end_ig=end_ig,
+            end_yt=end_yt,
+            start_ig=start_fol,
+            start_yt=start_yt,
         )
-        rows.append(score_profile(p, posts_map.get(pid, []), **score_kwargs))
+        rows.append(
+            score_profile(
+                p,
+                posts_map.get(pid, []),
+                from_date=window_start,
+                as_of=window_end,
+                followers_override=end_ig,
+                growth_pts_override=growth_override,
+                videos=videos_map.get(pid, []) if include_yt else [],
+                yt_subscribers=end_yt,
+                start_followers=start_fol,
+                start_yt_subscribers=start_yt,
+                include_youtube=include_yt,
+            )
+        )
 
     def sort_key(r: dict[str, Any]) -> tuple:
         if sort == "followers":

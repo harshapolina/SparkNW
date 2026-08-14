@@ -11,7 +11,17 @@ export type SparkCreatorRow = {
   team?: string | null;
   tier: "BRONZE" | "SILVER" | "GOLD";
   points: number;
-  points_breakdown?: { consistency: number; performance: number; growth: number; bonus?: number };
+  points_breakdown?: {
+    consistency: number;
+    performance: number;
+    growth: number;
+    collaborations?: number;
+    revenue?: number;
+    recognition?: number;
+    participation?: number;
+    monthly_bonuses?: number;
+    bonus?: number;
+  };
   followers: number;
   views: number;
   likes: number;

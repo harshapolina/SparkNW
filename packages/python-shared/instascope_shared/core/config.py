@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     engagement_spike_notify_pct: float = 50.0
 
     # YouTube Data API — scoring stays off until SPARK rules are provided.
-    youtube_scoring_enabled: bool = False
+    youtube_scoring_enabled: bool = True
     youtube_api_key: str | None = None
     # Daily YouTube sync (Celery Beat) — own toggle in Mongo later; schedule defaults.
     daily_youtube_sync_hour_ist: int = 8
