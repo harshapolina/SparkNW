@@ -127,6 +127,7 @@ export default function LoginPage() {
 
           <div className="mt-6 flex items-center justify-between text-sm text-muted">
             <Link href="/forgot-password" className="transition hover:text-fg">Forgot password</Link>
+            <Link href="/signup" className="font-medium text-accent hover:underline">Create account</Link>
           </div>
         </motion.form>
       </div>

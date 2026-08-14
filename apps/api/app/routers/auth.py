@@ -1,6 +1,5 @@
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, status
 
-from app.auth_rate_limit import enforce_auth_rate_limit
 from app.deps import get_current_user
 from instascope_shared.models import User
 from instascope_shared.schemas import (
@@ -19,20 +18,17 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def signup(payload: SignupRequest, request: Request):
-    enforce_auth_rate_limit(request, limit=5)
+async def signup(payload: SignupRequest):
     return await auth_service.signup(payload)
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(payload: LoginRequest, request: Request):
-    enforce_auth_rate_limit(request)
+async def login(payload: LoginRequest):
     return await auth_service.login(payload)
 
 
 @router.post("/student-login", response_model=AuthResponse)
-async def student_login(payload: StudentLoginRequest, request: Request):
-    enforce_auth_rate_limit(request)
+async def student_login(payload: StudentLoginRequest):
     return await auth_service.student_login(payload)
 
 

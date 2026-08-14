@@ -60,8 +60,6 @@ export default function StudentLoginPage() {
               value={studentId}
               onChange={(e) => setStudentId(e.target.value)}
               required
-              maxLength={64}
-              autoComplete="username"
               className="w-full rounded-xl border border-white/10 bg-black px-3 py-2.5 text-sm outline-none focus:border-[#ff3b30]"
               placeholder="e.g. NIAT24XXXX"
             />
@@ -72,8 +70,6 @@ export default function StudentLoginPage() {
               value={instagram}
               onChange={(e) => setInstagram(e.target.value)}
               required
-              maxLength={64}
-              autoComplete="off"
               className="w-full rounded-xl border border-white/10 bg-black px-3 py-2.5 text-sm outline-none focus:border-[#ff3b30]"
               placeholder="@yourhandle"
             />
@@ -91,6 +87,9 @@ export default function StudentLoginPage() {
         <div className="mt-6 flex flex-wrap gap-4 text-xs text-zinc-500">
           <Link href="/top-10" className="hover:text-zinc-300">
             Public Top 10
+          </Link>
+          <Link href="/admin-login" className="hover:text-zinc-300">
+            Admin login
           </Link>
         </div>
       </div>

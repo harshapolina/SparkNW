@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, EmailStr, Field, HttpUrl, field_validator
+from pydantic import BaseModel, EmailStr, Field, HttpUrl
 
 
 # ── Auth ──────────────────────────────────────────────
@@ -17,29 +17,12 @@ class SignupRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=1, max_length=128)
-
-    @field_validator("email", "password", mode="before")
-    @classmethod
-    def _reject_operator_payloads(cls, v: Any) -> Any:
-        if isinstance(v, dict) or isinstance(v, list):
-            raise ValueError("Invalid credentials")
-        return v
+    password: str
 
 
 class StudentLoginRequest(BaseModel):
     student_id: str = Field(min_length=1, max_length=64)
     instagram_username: str = Field(min_length=1, max_length=64)
-
-    @field_validator("student_id", "instagram_username", mode="before")
-    @classmethod
-    def _plain_string(cls, v: Any) -> str:
-        if isinstance(v, dict) or isinstance(v, list):
-            raise ValueError("Invalid credentials")
-        text = str(v or "").strip()
-        if any(tok in text for tok in ("$", "{", "}", "\x00")):
-            raise ValueError("Invalid credentials")
-        return text
 
 
 class ForgotPasswordRequest(BaseModel):
