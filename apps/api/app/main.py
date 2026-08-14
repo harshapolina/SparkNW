@@ -65,6 +65,29 @@ async def lifespan(_app: FastAPI):
                 )
     except Exception:
         logging.getLogger("instascope.api").exception("startup scrape cleanup failed")
+    try:
+        from app.worker_client import dispatch_youtube_job_payloads
+        from instascope_shared.services.app_config import is_daily_youtube_sync_enabled
+        from instascope_shared.services.youtube_jobs import resume_unfinished_youtube_syncs
+
+        yt_on = await is_daily_youtube_sync_enabled()
+        summary = await resume_unfinished_youtube_syncs(
+            reset_stale_running=True,
+            skip_successful=True,
+            enqueue_unfinished=yt_on,
+        )
+        jobs = list(summary.get("resumed_jobs") or []) + list(summary.get("jobs") or [])
+        dispatched = dispatch_youtube_job_payloads(jobs)
+        if dispatched:
+            logging.getLogger("instascope.api").warning(
+                "startup resumed YouTube jobs dispatched=%s resumed=%s enqueued=%s skipped_synced=%s",
+                dispatched,
+                summary.get("resumed"),
+                summary.get("enqueued"),
+                summary.get("skipped_synced"),
+            )
+    except Exception:
+        logging.getLogger("instascope.api").exception("startup YouTube resume failed")
     yield
     await close_db()
 

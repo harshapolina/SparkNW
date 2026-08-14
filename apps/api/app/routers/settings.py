@@ -106,28 +106,22 @@ async def update_daily_youtube_sync_settings(
 ):
     """Admin: turn daily YouTube sync on/off.
 
-    ON — immediately enqueue sync jobs for all connected channels (shows on Scraping
-    queue) and keep the morning Beat schedule enabled.
+    ON — resume unfinished YouTube jobs (already-synced channels are skipped).
+    Morning Beat still refreshes every connected channel.
     """
     enabled = await set_daily_youtube_sync_enabled(payload.enabled)
     if enabled:
-        from app.worker_client import dispatch_fanout_youtube, dispatch_youtube_sync_job
-        from instascope_shared.services.youtube_jobs import enqueue_connected_youtube_syncs
+        from app.worker_client import dispatch_fanout_youtube, dispatch_youtube_job_payloads
+        from instascope_shared.services.youtube_jobs import resume_unfinished_youtube_syncs
 
-        # Prefer creating jobs in-API then dispatching each task (visible immediately).
         try:
-            summary = await enqueue_connected_youtube_syncs()
-            dispatched = 0
-            for job in summary.get("jobs") or []:
-                tid = dispatch_youtube_sync_job(
-                    job["job_id"],
-                    job["profile_id"],
-                    countdown=int(job.get("countdown") or 0),
-                )
-                if tid:
-                    dispatched += 1
-            if dispatched == 0 and summary.get("enqueued", 0) > 0:
-                # Broker failed mid-way — still try Celery fanout as fallback
+            summary = await resume_unfinished_youtube_syncs(
+                reset_stale_running=True,
+                skip_successful=True,
+            )
+            jobs = list(summary.get("resumed_jobs") or []) + list(summary.get("jobs") or [])
+            dispatched = dispatch_youtube_job_payloads(jobs)
+            if dispatched == 0 and (summary.get("enqueued", 0) or summary.get("resumed", 0)):
                 dispatch_fanout_youtube()
         except Exception:
             dispatch_fanout_youtube()

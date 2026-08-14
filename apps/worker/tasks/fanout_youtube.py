@@ -47,11 +47,6 @@ async def _enqueue_missing_roster_connects() -> dict:
         return {"enqueued": 0, "jobs": []}
 
     summary = await enqueue_youtube_connects(items, source="daily_fanout_connect")
-    for job in summary.get("jobs") or []:
-        connect_youtube_task.apply_async(
-            args=(job["job_id"], job["profile_id"], job["url"]),
-            countdown=int(job.get("countdown") or 0),
-        )
     return summary
 
 
@@ -59,7 +54,6 @@ async def _fanout() -> dict:
     await connect_db()
     try:
         from instascope_shared.services.app_config import is_daily_youtube_sync_enabled
-        from instascope_shared.services.youtube_jobs import enqueue_connected_youtube_syncs
 
         if not await is_daily_youtube_sync_enabled():
             summary = {
@@ -71,15 +65,41 @@ async def _fanout() -> dict:
             return summary
 
         connect_summary = await _enqueue_missing_roster_connects()
-        result = await enqueue_connected_youtube_syncs()
-        for job in result.get("jobs") or []:
-            sync_youtube_task.apply_async(
-                args=(job["job_id"], job["profile_id"]),
-                countdown=int(job.get("countdown") or 0),
-            )
+        from instascope_shared.services.youtube_jobs import resume_unfinished_youtube_syncs
+
+        result = await resume_unfinished_youtube_syncs(
+            reset_stale_running=True,
+            skip_successful=False,
+            enqueue_unfinished=True,
+        )
+        seen: set[str] = set()
+        merged = (
+            list(connect_summary.get("jobs") or [])
+            + list(result.get("resumed_jobs") or [])
+            + list(result.get("jobs") or [])
+        )
+        for job in merged:
+            jid = str(job.get("job_id") or "")
+            if not jid or jid in seen:
+                continue
+            seen.add(jid)
+            action = str(job.get("action") or "sync")
+            countdown = int(job.get("countdown") or 0)
+            if action == "connect" and job.get("url"):
+                connect_youtube_task.apply_async(
+                    args=(job["job_id"], job["profile_id"], job["url"]),
+                    countdown=countdown,
+                )
+            else:
+                sync_youtube_task.apply_async(
+                    args=(job["job_id"], job["profile_id"]),
+                    countdown=countdown,
+                )
         out = {
             "enqueued": result.get("enqueued"),
+            "resumed": result.get("resumed"),
             "skipped_pending": result.get("skipped_pending"),
+            "skipped_synced": result.get("skipped_synced"),
             "connected_total": result.get("connected_total"),
             "connect_enqueued": connect_summary.get("enqueued"),
         }

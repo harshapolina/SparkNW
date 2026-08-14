@@ -8,7 +8,14 @@ from datetime import datetime
 from typing import Any, Iterable
 
 from instascope_shared.core.config import get_settings
-from instascope_shared.models import Job, JobStatus, JobType, Profile, YouTubeChannel
+from instascope_shared.models import (
+    Job,
+    JobStatus,
+    JobType,
+    Profile,
+    YouTubeChannel,
+    YouTubeSyncStatus,
+)
 
 logger = logging.getLogger("instascope.youtube.jobs")
 
@@ -36,6 +43,75 @@ def youtube_ref_from_student(student: dict[str, Any] | None) -> str | None:
             return raw if raw.startswith("@") else f"@{raw.lstrip('@')}"
         return raw
     return None
+
+
+def channel_already_synced(ch: Any) -> bool:
+    """True when this channel has a completed successful sync we can skip."""
+    if ch is None:
+        return False
+    last = getattr(ch, "last_synced_at", None)
+    if not last:
+        return False
+    sync = getattr(ch, "sync_status", None)
+    val = sync.value if hasattr(sync, "value") else str(sync or "")
+    return val == YouTubeSyncStatus.SUCCESS.value
+
+
+def _youtube_job_dispatch_row(job: Job, *, countdown: int = 0) -> dict[str, Any]:
+    meta = dict(job.meta or {})
+    action = str(meta.get("action") or "sync")
+    return {
+        "job_id": str(job.id),
+        "profile_id": str(job.profile_id or ""),
+        "channel_id": meta.get("channel_id"),
+        "url": meta.get("channel_url"),
+        "countdown": max(0, int(countdown)),
+        "action": action,
+        "status": job.status.value if hasattr(job.status, "value") else str(job.status),
+    }
+
+
+async def list_active_youtube_jobs_for_dispatch(
+    *,
+    reset_stale_running: bool = False,
+    stale_seconds: int = 180,
+) -> list[dict[str, Any]]:
+    """Pending/running YouTube jobs to re-send to Celery after a restart.
+
+    If the worker died mid-job, RUNNING rows never finish. On API startup we
+    reset those to PENDING so they pick up again instead of sitting forever.
+    """
+    active = await Job.find(
+        Job.job_type == JobType.SYNC_YOUTUBE,
+        {
+            "status": {
+                "$in": [
+                    JobStatus.PENDING,
+                    JobStatus.RUNNING,
+                    JobStatus.RETRYING,
+                ]
+            }
+        },
+    ).sort(+Job.created_at).to_list()
+
+    now = datetime.utcnow()
+    out: list[dict[str, Any]] = []
+    for i, job in enumerate(active):
+        status_val = job.status.value if hasattr(job.status, "value") else str(job.status)
+        if status_val == JobStatus.RUNNING.value:
+            started = job.started_at
+            if started is not None and getattr(started, "tzinfo", None) is not None:
+                started = started.replace(tzinfo=None)
+            age = (now - started).total_seconds() if started else None
+            stale = reset_stale_running or age is None or age > stale_seconds
+            if stale:
+                job.status = JobStatus.PENDING
+                await job.save()
+            elif not reset_stale_running:
+                # Live worker still owns it — don't double-dispatch.
+                continue
+        out.append(_youtube_job_dispatch_row(job, countdown=i))
+    return out
 
 
 async def enqueue_youtube_connects(
@@ -116,11 +192,17 @@ async def enqueue_youtube_connects(
     return summary
 
 
-async def enqueue_connected_youtube_syncs(*, stagger_seconds: float | None = None) -> dict[str, Any]:
-    """Create PENDING sync_youtube jobs for every connected channel.
+async def enqueue_connected_youtube_syncs(
+    *,
+    stagger_seconds: float | None = None,
+    skip_successful: bool = False,
+) -> dict[str, Any]:
+    """Create PENDING sync_youtube jobs for connected channels.
 
     Skips profiles that already have a pending/running YouTube job.
-    Returns job payloads for the API to dispatch via Celery (or empty if none).
+    When skip_successful=True (manual Sync / resume), channels that already
+    completed a successful sync are left alone so the queue continues from
+    unfinished accounts. Daily morning fan-out keeps skip_successful=False.
     """
     settings = get_settings()
     stagger = (
@@ -132,8 +214,12 @@ async def enqueue_connected_youtube_syncs(*, stagger_seconds: float | None = Non
 
     jobs_out: list[dict[str, Any]] = []
     skipped_pending = 0
+    skipped_synced = 0
     for i, ch in enumerate(channels):
         pid = ch.profile_id
+        if skip_successful and channel_already_synced(ch):
+            skipped_synced += 1
+            continue
         existing = await Job.find_one(
             Job.profile_id == pid,
             Job.job_type == JobType.SYNC_YOUTUBE,
@@ -168,18 +254,47 @@ async def enqueue_connected_youtube_syncs(*, stagger_seconds: float | None = Non
                 "profile_id": pid,
                 "channel_id": ch.channel_id,
                 "countdown": countdown,
+                "action": "sync",
             }
         )
 
     summary = {
         "enqueued": len(jobs_out),
         "skipped_pending": skipped_pending,
+        "skipped_synced": skipped_synced,
         "connected_total": len(channels),
         "stagger_seconds": stagger,
         "jobs": jobs_out,
     }
     logger.info("YouTube sync enqueue %s", {k: v for k, v in summary.items() if k != "jobs"})
     return summary
+
+
+async def resume_unfinished_youtube_syncs(
+    *,
+    reset_stale_running: bool = False,
+    skip_successful: bool = True,
+    enqueue_unfinished: bool = True,
+) -> dict[str, Any]:
+    """Re-dispatch leftover jobs and optionally enqueue channels that never finished."""
+    resumed_jobs = await list_active_youtube_jobs_for_dispatch(
+        reset_stale_running=reset_stale_running,
+    )
+    if enqueue_unfinished:
+        enqueued = await enqueue_connected_youtube_syncs(skip_successful=skip_successful)
+    else:
+        enqueued = {
+            "enqueued": 0,
+            "skipped_pending": 0,
+            "skipped_synced": 0,
+            "connected_total": 0,
+            "jobs": [],
+        }
+    return {
+        "resumed": len(resumed_jobs),
+        "resumed_jobs": resumed_jobs,
+        **enqueued,
+    }
 
 
 async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:

@@ -28,9 +28,26 @@ def test_youtube_model_collection_names():
     assert YouTubeSnapshot.Settings.name == "youtube_snapshots"
 
 
-def test_sync_status_values():
-    assert YouTubeSyncStatus.SUCCESS.value == "success"
-    assert YouTubeSyncStatus.QUOTA_EXCEEDED.value == "quota_exceeded"
+def test_channel_already_synced():
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from instascope_shared.services.youtube_jobs import channel_already_synced
+
+    done = SimpleNamespace(
+        last_synced_at=datetime(2026, 8, 14),
+        sync_status=YouTubeSyncStatus.SUCCESS,
+    )
+    assert channel_already_synced(done) is True
+
+    never = SimpleNamespace(last_synced_at=None, sync_status=YouTubeSyncStatus.PENDING)
+    assert channel_already_synced(never) is False
+
+    failed = SimpleNamespace(
+        last_synced_at=datetime(2026, 8, 14),
+        sync_status=YouTubeSyncStatus.FAILED,
+    )
+    assert channel_already_synced(failed) is False
 
 
 def test_parse_yt_datetime():

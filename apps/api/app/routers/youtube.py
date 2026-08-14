@@ -98,29 +98,25 @@ async def youtube_sync_status(_: User = Depends(require_admin)):
 
 @router.post("/sync-all")
 async def youtube_sync_all(_: User = Depends(require_admin)):
-    """Admin: enqueue YouTube sync for every connected channel now."""
-    from app.worker_client import dispatch_fanout_youtube, dispatch_youtube_sync_job
-    from instascope_shared.services.youtube_jobs import enqueue_connected_youtube_syncs
+    """Admin: resume leftover YouTube jobs; skip channels already synced successfully."""
+    from app.worker_client import dispatch_fanout_youtube, dispatch_youtube_job_payloads
+    from instascope_shared.services.youtube_jobs import resume_unfinished_youtube_syncs
 
-    summary = await enqueue_connected_youtube_syncs()
-    dispatched = 0
-    for job in summary.get("jobs") or []:
-        tid = dispatch_youtube_sync_job(
-            job["job_id"],
-            job["profile_id"],
-            countdown=int(job.get("countdown") or 0),
-        )
-        if tid:
-            dispatched += 1
-    if dispatched == 0 and int(summary.get("enqueued") or 0) > 0:
+    summary = await resume_unfinished_youtube_syncs(
+        reset_stale_running=False,
+        skip_successful=True,
+    )
+    jobs = list(summary.get("resumed_jobs") or []) + list(summary.get("jobs") or [])
+    dispatched = dispatch_youtube_job_payloads(jobs)
+    if dispatched == 0 and (int(summary.get("enqueued") or 0) + int(summary.get("resumed") or 0)) > 0:
         task_id = dispatch_fanout_youtube()
         return {
-            **{k: v for k, v in summary.items() if k != "jobs"},
+            **{k: v for k, v in summary.items() if k not in {"jobs", "resumed_jobs"}},
             "dispatched": 0,
             "fanout_task_id": task_id,
         }
     return {
-        **{k: v for k, v in summary.items() if k != "jobs"},
+        **{k: v for k, v in summary.items() if k not in {"jobs", "resumed_jobs"}},
         "dispatched": dispatched,
     }
 

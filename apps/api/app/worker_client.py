@@ -48,6 +48,33 @@ def dispatch_youtube_connect_job(
         return None
 
 
+def dispatch_youtube_job_payloads(jobs: list) -> int:
+    """Send sync/connect payloads to Celery. Returns dispatched count."""
+    dispatched = 0
+    for job in jobs or []:
+        action = str(job.get("action") or "sync")
+        countdown = int(job.get("countdown") or 0)
+        if action == "connect":
+            url = str(job.get("url") or "")
+            if not url:
+                continue
+            tid = dispatch_youtube_connect_job(
+                job["job_id"],
+                job["profile_id"],
+                url,
+                countdown=countdown,
+            )
+        else:
+            tid = dispatch_youtube_sync_job(
+                job["job_id"],
+                job["profile_id"],
+                countdown=countdown,
+            )
+        if tid:
+            dispatched += 1
+    return dispatched
+
+
 def dispatch_fanout_youtube() -> str | None:
     """Trigger Celery fan-out for all connected YouTube channels (respects toggle)."""
     try:
