@@ -277,6 +277,89 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
         str(j.profile_id): j for j in active_jobs if j.profile_id
     }
 
+    def _job_status_for(pid: str) -> str | None:
+        job = active_by_pid.get(pid)
+        if not job:
+            return None
+        return job.status.value if hasattr(job.status, "value") else str(job.status)
+
+    def _scrape_fields(
+        *,
+        ch: YouTubeChannel | None,
+        youtube_ref: str | None,
+        job_status: str | None,
+    ) -> dict[str, Any]:
+        """Human-readable scrape outcome for the admin board."""
+        if job_status in {
+            JobStatus.PENDING.value,
+            JobStatus.RUNNING.value,
+            JobStatus.RETRYING.value,
+            "pending",
+            "running",
+            "retrying",
+        }:
+            return {
+                "scraped": False,
+                "scrape_label": "Syncing",
+                "reason": "YouTube sync is in the queue or running now",
+            }
+
+        if ch and ch.connected:
+            sync = (
+                ch.sync_status.value
+                if hasattr(ch.sync_status, "value")
+                else str(ch.sync_status or "")
+            )
+            err = (ch.last_error or "").strip()
+            if ch.last_synced_at and sync == "success":
+                return {
+                    "scraped": True,
+                    "scrape_label": "Scraped",
+                    "reason": "YouTube channel synced successfully",
+                }
+            if sync == "quota_exceeded":
+                return {
+                    "scraped": False,
+                    "scrape_label": "Not scraped",
+                    "reason": err or "YouTube API quota exceeded — try again later",
+                }
+            if sync == "failed":
+                return {
+                    "scraped": False,
+                    "scrape_label": "Not scraped",
+                    "reason": err or "Last YouTube sync failed",
+                }
+            if sync == "unavailable":
+                return {
+                    "scraped": False,
+                    "scrape_label": "Not scraped",
+                    "reason": err or "YouTube channel unavailable or not found",
+                }
+            if not ch.last_synced_at:
+                return {
+                    "scraped": False,
+                    "scrape_label": "Not scraped",
+                    "reason": "Channel connected, but no successful sync yet",
+                }
+            return {
+                "scraped": False,
+                "scrape_label": "Not scraped",
+                "reason": err or f"Sync status: {sync or 'unknown'}",
+            }
+
+        if youtube_ref:
+            return {
+                "scraped": False,
+                "scrape_label": "Not scraped",
+                "reason": "YouTube link on roster — channel not connected yet",
+            }
+
+        return {
+            "scraped": False,
+            "scrape_label": "Not scraped",
+            "reason": "No YouTube link in roster",
+        }
+
     connected_rows = []
     for ch in sorted(
         channels,
@@ -285,6 +368,8 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
     ):
         p = profiles.get(ch.profile_id)
         student = getattr(p, "student", None) or {}
+        job_status = _job_status_for(ch.profile_id)
+        scrape = _scrape_fields(ch=ch, youtube_ref=None, job_status=job_status)
         connected_rows.append(
             {
                 "profile_id": ch.profile_id,
@@ -300,16 +385,7 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
                 "sync_status": ch.sync_status.value
                 if hasattr(ch.sync_status, "value")
                 else str(ch.sync_status),
-                "job_status": (
-                    active_by_pid[ch.profile_id].status.value
-                    if ch.profile_id in active_by_pid
-                    and hasattr(active_by_pid[ch.profile_id].status, "value")
-                    else (
-                        str(active_by_pid[ch.profile_id].status)
-                        if ch.profile_id in active_by_pid
-                        else None
-                    )
-                ),
+                "job_status": job_status,
                 "last_error": ch.last_error,
                 "last_synced_at": ch.last_synced_at.isoformat() + "Z"
                 if ch.last_synced_at
@@ -319,47 +395,103 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
                 "view_count": int(ch.view_count or 0),
                 "video_count": int(ch.video_count or 0),
                 "connected": True,
+                **scrape,
             }
         )
 
-    # Roster rows with a YouTube link that are not connected yet
-    pending_connect: list[dict[str, Any]] = []
-    candidates = await Profile.find({"youtube_connected": {"$ne": True}}).limit(2000).to_list()
-    for p in candidates:
+    # Full roster board: every profile, with why scraped / not scraped
+    all_profiles = await Profile.find_all().limit(5000).to_list()
+    for p in all_profiles:
+        profiles[str(p.id)] = p
+
+    board: list[dict[str, Any]] = []
+    seen_pids: set[str] = set()
+    for p in sorted(
+        all_profiles,
+        key=lambda x: (
+            0 if channels_by_profile.get(str(x.id)) else 1,
+            (getattr(x, "username", None) or "").lower(),
+        ),
+    ):
+        pid = str(p.id)
+        seen_pids.add(pid)
         student = dict(getattr(p, "student", None) or {})
         ref = youtube_ref_from_student(student)
-        if not ref:
-            continue
-        pid = str(p.id)
-        pending_connect.append(
+        ch = channels_by_profile.get(pid)
+        job_status = _job_status_for(pid)
+        scrape = _scrape_fields(ch=ch, youtube_ref=ref, job_status=job_status)
+        board.append(
             {
                 "profile_id": pid,
                 "username": getattr(p, "username", None) or "—",
                 "full_name": getattr(p, "full_name", None) or student.get("full_name"),
                 "student_id": student.get("student_id"),
                 "university": student.get("university"),
-                "channel_id": None,
-                "channel_name": None,
-                "handle": None,
-                "thumbnail_url": None,
-                "sync_status": "not_connected",
-                "job_status": (
-                    active_by_pid[pid].status.value
-                    if pid in active_by_pid and hasattr(active_by_pid[pid].status, "value")
-                    else (str(active_by_pid[pid].status) if pid in active_by_pid else None)
+                "channel_id": ch.channel_id if ch else None,
+                "channel_name": ch.channel_name if ch else None,
+                "handle": ch.handle if ch else None,
+                "thumbnail_url": ch.thumbnail_url if ch else None,
+                "sync_status": (
+                    (
+                        ch.sync_status.value
+                        if hasattr(ch.sync_status, "value")
+                        else str(ch.sync_status)
+                    )
+                    if ch
+                    else ("not_connected" if ref else "no_youtube")
                 ),
-                "last_error": None,
-                "last_synced_at": None,
-                "subscriber_count": None,
-                "hidden_subscriber_count": False,
-                "view_count": 0,
-                "video_count": 0,
-                "connected": False,
+                "job_status": job_status,
+                "last_error": ch.last_error if ch else None,
+                "last_synced_at": ch.last_synced_at.isoformat() + "Z"
+                if ch and ch.last_synced_at
+                else None,
+                "subscriber_count": ch.subscriber_count if ch else None,
+                "hidden_subscriber_count": bool(ch.hidden_subscriber_count) if ch else False,
+                "view_count": int(ch.view_count or 0) if ch else 0,
+                "video_count": int(ch.video_count or 0) if ch else 0,
+                "connected": bool(ch and ch.connected),
                 "youtube_ref": ref,
+                **scrape,
             }
         )
 
-    board = connected_rows + pending_connect
+    # Orphan channels without a profile doc (rare)
+    for ch in channels:
+        if ch.profile_id in seen_pids:
+            continue
+        job_status = _job_status_for(ch.profile_id)
+        scrape = _scrape_fields(ch=ch, youtube_ref=None, job_status=job_status)
+        board.append(
+            {
+                "profile_id": ch.profile_id,
+                "username": "—",
+                "full_name": None,
+                "student_id": None,
+                "university": None,
+                "channel_id": ch.channel_id,
+                "channel_name": ch.channel_name,
+                "handle": ch.handle,
+                "thumbnail_url": ch.thumbnail_url,
+                "sync_status": ch.sync_status.value
+                if hasattr(ch.sync_status, "value")
+                else str(ch.sync_status),
+                "job_status": job_status,
+                "last_error": ch.last_error,
+                "last_synced_at": ch.last_synced_at.isoformat() + "Z"
+                if ch.last_synced_at
+                else None,
+                "subscriber_count": ch.subscriber_count,
+                "hidden_subscriber_count": bool(ch.hidden_subscriber_count),
+                "view_count": int(ch.view_count or 0),
+                "video_count": int(ch.video_count or 0),
+                "connected": True,
+                "youtube_ref": None,
+                **scrape,
+            }
+        )
+
+    scraped_total = sum(1 for r in board if r.get("scraped"))
+    not_scraped_total = len(board) - scraped_total
 
     return {
         "running": running,
@@ -370,4 +502,6 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
         "connected_total": len(connected_rows),
         "board": board,
         "board_total": len(board),
+        "scraped_total": scraped_total,
+        "not_scraped_total": not_scraped_total,
     }

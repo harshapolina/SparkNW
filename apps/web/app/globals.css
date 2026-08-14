@@ -202,7 +202,26 @@ html.dark .table-premium td {
   box-shadow: 0 0 0 3px rgba(255, 77, 0, 0.28);
 }
 
-/* Dark native <select> menus (campus/tier filters) — readable options on Windows/Chrome */
+/* Thin scrollbars for admin tables / panels */
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+.thin-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+}
+.thin-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
 select[class*="color-scheme:dark"],
 select[class*="\[color-scheme\:dark\]"] {
   color-scheme: dark;

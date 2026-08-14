@@ -207,6 +207,9 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
     video_count?: number | null;
     connected?: boolean;
     youtube_ref?: string | null;
+    scraped?: boolean;
+    scrape_label?: string | null;
+    reason?: string | null;
   };
 
   type YtSyncStatus = {
@@ -218,15 +221,18 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
     connected_total: number;
     board?: YtSyncRow[];
     board_total?: number;
+    scraped_total?: number;
+    not_scraped_total?: number;
   };
 
   const YT_STATUS_FILTERS = [
     { id: "", label: "All" },
-    { id: "connected", label: "Connected" },
+    { id: "scraped", label: "Scraped" },
+    { id: "not_scraped", label: "Not scraped" },
     { id: "syncing", label: "Syncing" },
-    { id: "success", label: "Success" },
+    { id: "connected", label: "Connected" },
+    { id: "no_youtube", label: "No YT link" },
     { id: "failed", label: "Failed" },
-    { id: "not_connected", label: "Not connected" },
     { id: "quota_exceeded", label: "Quota" },
   ] as const;
 
@@ -244,19 +250,19 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
     const rows = youtubeSyncQ.data?.board || youtubeSyncQ.data?.connected || [];
     const qLower = ytQInput.trim().toLowerCase();
     return rows.filter((row) => {
-      const isConnected = row.connected !== false && row.sync_status !== "not_connected";
+      const isConnected = Boolean(row.connected);
       const displayStatus = row.job_status || row.sync_status || "";
+      const isScraped =
+        row.scraped === true ||
+        (row.scraped == null && row.sync_status === "success" && !!row.last_synced_at);
+
+      if (ytStatusFilter === "scraped" && !isScraped) return false;
+      if (ytStatusFilter === "not_scraped" && isScraped) return false;
       if (ytStatusFilter === "connected" && !isConnected) return false;
-      if (ytStatusFilter === "not_connected" && isConnected) return false;
+      if (ytStatusFilter === "no_youtube" && row.sync_status !== "no_youtube") return false;
       if (ytStatusFilter === "syncing") {
         if (!["pending", "running", "retrying"].includes(String(row.job_status || ""))) return false;
-      } else if (
-        ytStatusFilter === "success" ||
-        ytStatusFilter === "failed" ||
-        ytStatusFilter === "quota_exceeded"
-      ) {
-        if (displayStatus !== ytStatusFilter && row.sync_status !== ytStatusFilter) return false;
-      } else if (ytStatusFilter && ytStatusFilter !== "connected" && ytStatusFilter !== "not_connected") {
+      } else if (ytStatusFilter === "failed" || ytStatusFilter === "quota_exceeded") {
         if (displayStatus !== ytStatusFilter && row.sync_status !== ytStatusFilter) return false;
       }
       if (!qLower) return true;
@@ -269,6 +275,8 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
         row.handle,
         row.channel_id,
         row.youtube_ref,
+        row.reason,
+        row.scrape_label,
       ]
         .filter(Boolean)
         .join(" ")
@@ -586,7 +594,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                 · {youtubeSyncQ.data?.active_count} job(s)
               </span>
             </div>
-            <ul className="max-h-48 space-y-1.5 overflow-y-auto overscroll-contain pr-1 text-xs text-violet-100/90 sm:max-h-56">
+            <ul className="thin-scroll max-h-48 space-y-1.5 overflow-y-auto overscroll-contain pr-1 text-xs text-violet-100/90 sm:max-h-56">
               {(youtubeSyncQ.data?.queue || []).map((row) => (
                 <li key={row.job_id || row.profile_id} className="flex flex-wrap items-center gap-2">
                   <Link
@@ -621,7 +629,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
               Past YouTube syncs
             </div>
             {(youtubeSyncQ.data?.history || []).length ? (
-              <ul className="max-h-64 space-y-2 overflow-auto text-xs">
+              <ul className="thin-scroll max-h-64 space-y-2 overflow-y-auto text-xs">
                 {youtubeSyncQ.data!.history.map((row) => (
                   <li
                     key={row.job_id || `${row.profile_id}-${row.finished_at}`}
@@ -678,31 +686,43 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
 
       {showYoutube ? (
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <label className="relative w-full max-w-sm shrink">
-              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
-              <input
-                value={ytQInput}
-                onChange={(e) => setYtQInput(e.target.value)}
-                placeholder="Search name, student ID, campus, channel…"
-                className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
-              />
-            </label>
-            <div className="flex max-w-full shrink-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5">
-              {YT_STATUS_FILTERS.map((f) => (
-                <button
-                  key={f.id || "all"}
-                  type="button"
-                  onClick={() => setYtStatusFilter(f.id)}
-                  className={cn(
-                    "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium",
-                    ytStatusFilter === f.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400"
-                  )}
-                >
-                  {f.label}
-                </button>
-              ))}
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div className="min-w-0 flex-1 space-y-3">
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h2 className="text-sm font-semibold tracking-tight text-zinc-100">YouTube creator board</h2>
+              <p className="text-[11px] text-zinc-500">
+                <span className="text-lime-400/90">{youtubeSyncQ.data?.scraped_total ?? 0} scraped</span>
+                <span className="mx-1.5 text-zinc-700">·</span>
+                <span className="text-zinc-400">{youtubeSyncQ.data?.not_scraped_total ?? 0} not scraped</span>
+                <span className="mx-1.5 text-zinc-700">·</span>
+                <span>{youtubeSyncQ.data?.connected_total || 0} connected</span>
+              </p>
+            </div>
+            <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+              <label className="relative w-full max-w-sm shrink">
+                <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+                <input
+                  value={ytQInput}
+                  onChange={(e) => setYtQInput(e.target.value)}
+                  placeholder="Search name, student ID, campus, channel…"
+                  className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
+                />
+              </label>
+              <div className="thin-scroll flex max-w-full flex-wrap items-center gap-1">
+                {YT_STATUS_FILTERS.map((f) => (
+                  <button
+                    key={f.id || "all"}
+                    type="button"
+                    onClick={() => setYtStatusFilter(f.id)}
+                    className={cn(
+                      "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium",
+                      ytStatusFilter === f.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400"
+                    )}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -727,40 +747,66 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
           </div>
         </div>
 
-        <div className="mt-5 overflow-x-auto">
+        <div className="mt-5">
           {!youtubeBoardRows.length ? (
             <div className="rounded-xl border border-dashed border-white/10 px-6 py-12 text-center text-sm text-zinc-500">
-              No YouTube rows yet. Import a roster with YouTube links, or connect channels on creator pages.
+              No YouTube rows yet. Import a roster, or connect channels on creator pages.
             </div>
           ) : (
-            <div className="max-h-[70vh] overflow-y-auto overscroll-contain">
-              <table className="min-w-[1100px] w-full text-left text-sm">
-                <thead className="sticky top-0 z-10 bg-[#121212]">
+            <div className="thin-scroll max-h-[min(70vh,720px)] overflow-y-auto overscroll-contain rounded-xl border border-white/[0.04]">
+              <table className="w-full table-fixed text-left text-sm">
+                <colgroup>
+                  <col className="w-10" />
+                  <col className="w-[22%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[8%]" />
+                  <col className="w-[11%]" />
+                  <col />
+                  <col className="w-[12%]" />
+                </colgroup>
+                <thead className="sticky top-0 z-10 bg-[#121212]/90 backdrop-blur-sm">
                   <tr className="border-b border-white/[0.06] text-[10px] uppercase tracking-[0.12em] text-zinc-500">
-                    <th className="px-2 py-3">
+                    <th className="px-3 py-3">
                       <input
                         type="checkbox"
                         checked={!!ytAllIds.length && ytSelected.length === ytAllIds.length}
                         onChange={(e) => setYtSelected(e.target.checked ? ytAllIds : [])}
                       />
                     </th>
-                    <th className="px-2 py-3">Creator</th>
-                    <th className="px-2 py-3">Student ID</th>
-                    <th className="px-2 py-3">Campus</th>
-                    <th className="px-2 py-3">Subscribers</th>
-                    <th className="px-2 py-3">Views</th>
-                    <th className="px-2 py-3">Videos</th>
-                    <th className="px-2 py-3">Sync status</th>
-                    <th className="px-2 py-3">Last synced</th>
+                    <th className="px-3 py-3 font-medium">Creator</th>
+                    <th className="px-3 py-3 font-medium">Student ID</th>
+                    <th className="px-3 py-3 text-right font-medium">Subs</th>
+                    <th className="px-3 py-3 text-right font-medium">Videos</th>
+                    <th className="px-3 py-3 font-medium">YT scrape</th>
+                    <th className="px-3 py-3 font-medium">Why</th>
+                    <th className="px-3 py-3 text-right font-medium">Last synced</th>
                   </tr>
                 </thead>
                 <tbody>
                   {youtubeBoardRows.map((row) => {
                     const live = row.job_status || "";
-                    const status = live || row.sync_status || "—";
+                    const isScraped =
+                      row.scraped === true ||
+                      (row.scraped == null && row.sync_status === "success" && !!row.last_synced_at);
+                    const label =
+                      row.scrape_label ||
+                      (["pending", "running", "retrying"].includes(live)
+                        ? "Syncing"
+                        : isScraped
+                          ? "Scraped"
+                          : "Not scraped");
+                    const reason =
+                      row.reason ||
+                      row.last_error ||
+                      (row.sync_status === "no_youtube"
+                        ? "No YouTube link in roster"
+                        : row.sync_status === "not_connected"
+                          ? "YouTube link on roster — channel not connected yet"
+                          : "—");
                     return (
                       <tr key={row.profile_id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
-                        <td className="px-2 py-3">
+                        <td className="px-3 py-3 align-middle">
                           <input
                             type="checkbox"
                             checked={ytSelected.includes(row.profile_id)}
@@ -773,10 +819,10 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                             }
                           />
                         </td>
-                        <td className="px-2 py-3">
+                        <td className="px-3 py-3 align-middle">
                           <Link
                             href={`/admin-scraping/${row.profile_id}`}
-                            className="flex items-center gap-3 hover:opacity-90"
+                            className="flex min-w-0 items-center gap-2.5 hover:opacity-90"
                           >
                             <SparkAvatar
                               initials={(row.full_name || row.username || "?")
@@ -784,54 +830,67 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                                 .toUpperCase()}
                               size="sm"
                             />
-                            <div>
-                              <div className="font-medium">{row.full_name || row.username}</div>
-                              <div className="text-[11px] text-zinc-500">@{row.username}</div>
-                              <div className="text-[11px] text-zinc-500">
-                                {row.channel_name || row.handle || row.youtube_ref || "No channel yet"}
+                            <div className="min-w-0">
+                              <div className="truncate font-medium text-zinc-100">
+                                {row.full_name || row.username}
                               </div>
-                              {row.last_error ? (
-                                <div className="mt-0.5 flex items-center gap-1 text-[11px] text-rose-400">
-                                  <AlertCircle size={11} /> Sync issue
-                                </div>
-                              ) : null}
+                              <div className="truncate text-[11px] text-zinc-500">@{row.username}</div>
+                              <div className="truncate text-[11px] text-zinc-600">
+                                {row.channel_name || row.handle || row.youtube_ref || row.university || "—"}
+                              </div>
                             </div>
                           </Link>
                         </td>
-                        <td className="px-2 py-3 tabular text-zinc-300">{row.student_id || "—"}</td>
-                        <td className="px-2 py-3 text-zinc-400">{row.university || "—"}</td>
-                        <td className="px-2 py-3 tabular">
+                        <td className="px-3 py-3 align-middle">
+                          <div className="truncate tabular-nums text-zinc-300">{row.student_id || "—"}</div>
+                          {row.university ? (
+                            <div className="truncate text-[10px] text-zinc-600">{row.university}</div>
+                          ) : null}
+                        </td>
+                        <td className="px-3 py-3 align-middle text-right tabular-nums text-zinc-200">
                           {row.hidden_subscriber_count
                             ? "Hidden"
                             : row.subscriber_count != null
                               ? formatNumber(row.subscriber_count)
                               : "—"}
                         </td>
-                        <td className="px-2 py-3 tabular">
-                          {row.connected ? formatNumber(row.view_count || 0) : "—"}
-                        </td>
-                        <td className="px-2 py-3 tabular">
+                        <td className="px-3 py-3 align-middle text-right tabular-nums text-zinc-200">
                           {row.connected ? formatNumber(row.video_count || 0) : "—"}
                         </td>
-                        <td className="px-2 py-3">
+                        <td className="px-3 py-3 align-middle">
                           <span
                             className={cn(
-                              "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
-                              ["pending", "running", "retrying"].includes(live) &&
-                                "bg-sky-500/15 text-sky-300",
-                              status === "success" && "bg-lime-500/15 text-lime-400",
-                              (status === "failed" || status === "unavailable") &&
-                                "bg-rose-500/15 text-rose-400",
-                              status === "quota_exceeded" && "bg-amber-500/15 text-amber-300",
-                              status === "not_connected" && "bg-zinc-700/80 text-zinc-300"
+                              "inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                              label === "Scraped" && "bg-lime-500/15 text-lime-400",
+                              label === "Syncing" && "bg-sky-500/15 text-sky-300",
+                              label === "Not scraped" && "bg-zinc-800 text-zinc-400",
+                              row.sync_status === "failed" && "bg-rose-500/15 text-rose-400",
+                              row.sync_status === "quota_exceeded" && "bg-amber-500/15 text-amber-300"
                             )}
                           >
-                            {status.replace(/_/g, " ")}
+                            {label}
                           </span>
                         </td>
-                        <td className="px-2 py-3 text-[11px] whitespace-nowrap text-zinc-500">
+                        <td className="px-3 py-3 align-middle">
+                          <p
+                            className={cn(
+                              "line-clamp-2 text-[11px] leading-snug",
+                              isScraped ? "text-zinc-500" : "text-zinc-400",
+                              (row.sync_status === "failed" || row.last_error) && !isScraped && "text-rose-300/90"
+                            )}
+                            title={reason}
+                          >
+                            {reason}
+                          </p>
+                        </td>
+                        <td className="px-3 py-3 align-middle text-right text-[11px] tabular-nums text-zinc-500">
                           {row.last_synced_at
-                            ? new Date(row.last_synced_at).toLocaleString()
+                            ? new Date(row.last_synced_at).toLocaleString(undefined, {
+                                day: "2-digit",
+                                month: "short",
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })
                             : "—"}
                         </td>
                       </tr>
@@ -939,7 +998,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                 className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
               />
             </label>
-            <div className="flex max-w-full shrink-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5" title="Active = public tracked accounts. Private = Instagram-private accounts (rechecked each morning).">
+            <div className="thin-scroll flex max-w-full flex-wrap items-center gap-1" title="Active = public tracked accounts. Private = Instagram-private accounts (rechecked each morning).">
               {STATUS_FILTERS.map((f) => (
                 <button
                   key={f.id || "all"}
@@ -995,7 +1054,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
         {bulkNote ? <p className="mt-3 text-sm text-emerald-400/90">{bulkNote}</p> : null}
         {error && !add.isPending ? <p className="mt-2 text-sm text-rose-400">{error}</p> : null}
 
-        <div className="mt-5 overflow-x-auto">
+        <div className="mt-5">
           {isLoading ? (
             <div className="h-40 animate-pulse rounded-xl bg-zinc-900" />
           ) : !data?.items.length ? (
@@ -1007,33 +1066,46 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
               .
             </div>
           ) : (
-            <table className="min-w-[1100px] w-full text-left text-sm">
-              <thead>
+            <div className="thin-scroll max-h-[min(70vh,720px)] overflow-y-auto overscroll-contain rounded-xl border border-white/[0.04]">
+            <table className="w-full table-fixed text-left text-sm">
+              <colgroup>
+                <col className="w-10" />
+                <col className="w-[22%]" />
+                <col className="w-[12%]" />
+                <col className="w-[14%]" />
+                <col className="w-[10%]" />
+                <col className="w-[9%]" />
+                <col className="w-[10%]" />
+                <col className="w-[8%]" />
+                <col className="w-[9%]" />
+                <col className="w-[12%]" />
+              </colgroup>
+              <thead className="sticky top-0 z-10 bg-[#121212]/90 backdrop-blur-sm">
                 <tr className="border-b border-white/[0.06] text-[10px] uppercase tracking-[0.12em] text-zinc-500">
-                  <th className="px-2 py-3">
+                  <th className="px-3 py-3">
                     <input
                       type="checkbox"
                       checked={!!allIds.length && selected.length === allIds.length}
                       onChange={(e) => setSelected(e.target.checked ? allIds : [])}
                     />
                   </th>
-                  <th className="px-2 py-3">Creator</th>
-                  <th className="px-2 py-3">Student ID</th>
-                  <th className="px-2 py-3">Campus</th>
-                  <th className="px-2 py-3">Followers</th>
-                  <th className="px-2 py-3" title="Posts dated from 15 Jul 2026 (programme window)">
-                    Prog. posts
+                  <th className="px-3 py-3 font-medium">Creator</th>
+                  <th className="px-3 py-3 font-medium">Student ID</th>
+                  <th className="px-3 py-3 font-medium">Campus</th>
+                  <th className="px-3 py-3 text-right font-medium">Followers</th>
+                  <th className="px-3 py-3 text-right font-medium" title="Posts dated from 15 Jul 2026 (programme window)">
+                    Prog.
                   </th>
-                  <th className="px-2 py-3">Scrape progress</th>
-                  <th className="px-2 py-3">Growth</th>
-                  <th className="px-2 py-3">Status</th>
-                  <th className="px-2 py-3">Scraped</th>
+                  <th className="px-3 py-3 font-medium">Progress</th>
+                  <th className="px-3 py-3 text-right font-medium">Growth</th>
+                  <th className="px-3 py-3 font-medium">Status</th>
+                  <th className="px-3 py-3 text-right font-medium">Scraped</th>
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((p) => (
                   <tr key={p.id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
-                    <td className="px-2 py-3">
+                    <td className="px-3 py-3 align-middle">
                       <input
                         type="checkbox"
                         checked={selected.includes(p.id)}
@@ -1044,24 +1116,24 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                         }
                       />
                     </td>
-                    <td className="px-2 py-3">
-                      <Link href={`/admin-scraping/${p.id}`} className="flex items-center gap-3 hover:opacity-90">
+                    <td className="px-3 py-3 align-middle">
+                      <Link href={`/admin-scraping/${p.id}`} className="flex min-w-0 items-center gap-2.5 hover:opacity-90">
                         <SparkAvatar
                           initials={(p.student?.full_name || p.full_name || p.username || "?")
                             .slice(0, 2)
                             .toUpperCase()}
                           size="sm"
                         />
-                        <div>
-                          <div className="flex flex-wrap items-center gap-1.5 font-medium">
-                            <span>{p.student?.full_name || p.full_name || p.username}</span>
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 items-center gap-1.5 font-medium">
+                            <span className="truncate">{p.student?.full_name || p.full_name || p.username}</span>
                             {p.is_private ? (
-                              <span className="rounded-full bg-violet-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-300">
+                              <span className="shrink-0 rounded-full bg-violet-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-300">
                                 Private
                               </span>
                             ) : null}
                           </div>
-                          <div className="text-[11px] text-zinc-500">@{p.username}</div>
+                          <div className="truncate text-[11px] text-zinc-500">@{p.username}</div>
                           {p.status === "failed" && (
                             <div className="mt-0.5 flex items-center gap-1 text-[11px] text-rose-400">
                               <AlertCircle size={11} /> Scrape failed
@@ -1075,9 +1147,15 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                         </div>
                       </Link>
                     </td>
-                    <td className="px-2 py-3 tabular text-zinc-300">{p.student?.student_id || "—"}</td>
-                    <td className="px-2 py-3 text-zinc-400">{p.student?.university || "—"}</td>
-                    <td className="px-2 py-3 tabular">
+                    <td className="px-3 py-3 align-middle">
+                      <div className="truncate tabular-nums text-zinc-300">{p.student?.student_id || "—"}</div>
+                    </td>
+                    <td className="px-3 py-3 align-middle">
+                      <div className="truncate text-zinc-400" title={p.student?.university || undefined}>
+                        {p.student?.university || "—"}
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 align-middle text-right tabular-nums">
                       <div>{formatNumber(p.followers)}</div>
                       {p.followers_baseline_date ? (
                         <div
@@ -1092,15 +1170,15 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                         </div>
                       ) : null}
                     </td>
-                    <td className="px-2 py-3 tabular">
+                    <td className="px-3 py-3 align-middle text-right tabular-nums">
                       <div className="font-medium text-zinc-100">
                         {formatNumber(typeof p.programme_posts === "number" ? p.programme_posts : 0)}
                       </div>
                       <div className="text-[10px] text-zinc-600" title="Instagram lifetime post count">
-                        {formatNumber(p.posts_count)} IG total
+                        {formatNumber(p.posts_count)} IG
                       </div>
                     </td>
-                    <td className="px-2 py-3">
+                    <td className="px-3 py-3 align-middle">
                       {p.scrape_progress?.active ? (
                         <ScrapeRowProgress username={p.username} progress={p.scrape_progress} />
                       ) : (
@@ -1109,16 +1187,16 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                     </td>
                     <td
                       className={cn(
-                        "px-2 py-3 tabular",
+                        "px-3 py-3 align-middle text-right tabular-nums",
                         p.growth_pct_today >= 0 ? "text-lime-400" : "text-rose-400"
                       )}
                     >
                       {formatPct(p.growth_pct_today)}
                     </td>
-                    <td className="px-2 py-3">
+                    <td className="px-3 py-3 align-middle">
                       <span
                         className={cn(
-                          "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
+                          "inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
                           p.scrape_progress?.active && "bg-sky-500/15 text-sky-300",
                           !p.scrape_progress?.active &&
                             p.is_private &&
@@ -1150,13 +1228,21 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                               : p.status}
                       </span>
                     </td>
-                    <td className="px-2 py-3 text-[11px] text-zinc-500 whitespace-nowrap">
-                      {p.last_scraped_at ? new Date(p.last_scraped_at).toLocaleString() : "—"}
+                    <td className="px-3 py-3 align-middle text-right text-[11px] tabular-nums text-zinc-500">
+                      {p.last_scraped_at
+                        ? new Date(p.last_scraped_at).toLocaleString(undefined, {
+                            day: "2-digit",
+                            month: "short",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })
+                        : "—"}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
