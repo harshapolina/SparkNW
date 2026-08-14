@@ -51,7 +51,7 @@ const VIEW_COPY: Record<
   youtube: {
     title: "YouTube sync",
     subtitle:
-      "Connected channels, live queue, and daily YouTube updates. Instagram scraping is on its own page.",
+      "Creator board, live queue, and daily YouTube updates. Instagram scraping is on its own page.",
   },
 };
 
@@ -186,11 +186,15 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
     profile_id: string;
     username: string;
     full_name?: string | null;
+    student_id?: string | null;
+    university?: string | null;
     channel_id?: string | null;
     channel_name?: string | null;
     handle?: string | null;
+    thumbnail_url?: string | null;
     status?: string;
     sync_status?: string;
+    job_status?: string | null;
     error_message?: string | null;
     last_error?: string | null;
     last_synced_at?: string | null;
@@ -198,7 +202,11 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
     started_at?: string | null;
     finished_at?: string | null;
     subscriber_count?: number | null;
+    hidden_subscriber_count?: boolean;
+    view_count?: number;
     video_count?: number | null;
+    connected?: boolean;
+    youtube_ref?: string | null;
   };
 
   type YtSyncStatus = {
@@ -208,13 +216,68 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
     history: YtSyncRow[];
     connected: YtSyncRow[];
     connected_total: number;
+    board?: YtSyncRow[];
+    board_total?: number;
   };
+
+  const YT_STATUS_FILTERS = [
+    { id: "", label: "All" },
+    { id: "connected", label: "Connected" },
+    { id: "syncing", label: "Syncing" },
+    { id: "success", label: "Success" },
+    { id: "failed", label: "Failed" },
+    { id: "not_connected", label: "Not connected" },
+    { id: "quota_exceeded", label: "Quota" },
+  ] as const;
+
+  const [ytQInput, setYtQInput] = useState("");
+  const [ytStatusFilter, setYtStatusFilter] = useState("");
+  const [ytSelected, setYtSelected] = useState<string[]>([]);
 
   const youtubeSyncQ = useQuery({
     queryKey: ["youtube", "sync-status"],
     queryFn: () => api<YtSyncStatus>("/youtube/sync-status"),
     refetchInterval: (q) => ((q.state.data?.active_count || 0) > 0 ? 3000 : 15000),
   });
+
+  const youtubeBoardRows = useMemo(() => {
+    const rows = youtubeSyncQ.data?.board || youtubeSyncQ.data?.connected || [];
+    const qLower = ytQInput.trim().toLowerCase();
+    return rows.filter((row) => {
+      const isConnected = row.connected !== false && row.sync_status !== "not_connected";
+      const displayStatus = row.job_status || row.sync_status || "";
+      if (ytStatusFilter === "connected" && !isConnected) return false;
+      if (ytStatusFilter === "not_connected" && isConnected) return false;
+      if (ytStatusFilter === "syncing") {
+        if (!["pending", "running", "retrying"].includes(String(row.job_status || ""))) return false;
+      } else if (
+        ytStatusFilter === "success" ||
+        ytStatusFilter === "failed" ||
+        ytStatusFilter === "quota_exceeded"
+      ) {
+        if (displayStatus !== ytStatusFilter && row.sync_status !== ytStatusFilter) return false;
+      } else if (ytStatusFilter && ytStatusFilter !== "connected" && ytStatusFilter !== "not_connected") {
+        if (displayStatus !== ytStatusFilter && row.sync_status !== ytStatusFilter) return false;
+      }
+      if (!qLower) return true;
+      const hay = [
+        row.full_name,
+        row.username,
+        row.student_id,
+        row.university,
+        row.channel_name,
+        row.handle,
+        row.channel_id,
+        row.youtube_ref,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(qLower);
+    });
+  }, [youtubeSyncQ.data, ytQInput, ytStatusFilter]);
+
+  const ytAllIds = useMemo(() => youtubeBoardRows.map((r) => r.profile_id), [youtubeBoardRows]);
 
   const youtubeSyncAll = useMutation({
     mutationFn: () =>
@@ -228,6 +291,32 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
           (data.skipped_pending ? ` (${data.skipped_pending} already in queue)` : "") +
           ` · ${data.connected_total} connected`
       );
+      void qc.invalidateQueries({ queryKey: ["youtube", "sync-status"] });
+    },
+    onError: (e: Error) => setError(e.message),
+  });
+
+  const youtubeSyncSelected = useMutation({
+    mutationFn: async () => {
+      const ids = ytSelected.filter(Boolean);
+      let ok = 0;
+      let fail = 0;
+      for (const pid of ids) {
+        try {
+          await api(`/youtube/profiles/${pid}/sync`, {
+            method: "POST",
+            body: JSON.stringify({ max_videos: 0, fetch_videos: true }),
+          });
+          ok += 1;
+        } catch {
+          fail += 1;
+        }
+      }
+      return { ok, fail };
+    },
+    onSuccess: (r) => {
+      setBulkNote(`YouTube sync finished for ${r.ok} selected` + (r.fail ? ` · ${r.fail} failed` : ""));
+      setYtSelected([]);
       void qc.invalidateQueries({ queryKey: ["youtube", "sync-status"] });
     },
     onError: (e: Error) => setError(e.message),
@@ -579,45 +668,193 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
             <div className="mb-2 text-xs font-semibold uppercase tracking-[0.1em] text-zinc-500">
               Connected channels
             </div>
-            {(youtubeSyncQ.data?.connected || []).length ? (
-              <ul className="max-h-64 space-y-2 overflow-auto text-xs">
-                {youtubeSyncQ.data!.connected.map((row) => (
-                  <li
-                    key={row.profile_id}
-                    className="rounded-xl border border-white/[0.06] bg-black/30 px-3 py-2"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <Link
-                        href={`/admin-scraping/${row.profile_id}`}
-                        className="font-medium text-zinc-200 hover:text-[#ff4d00]"
-                      >
-                        @{row.username}
-                      </Link>
-                      <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">
-                        {row.sync_status || "—"}
-                      </span>
-                    </div>
-                    <div className="mt-1 text-zinc-500">
-                      {row.channel_name || row.handle || row.channel_id || "—"}
-                      {row.last_synced_at
-                        ? ` · last ${new Date(row.last_synced_at).toLocaleString()}`
-                        : " · never synced"}
-                    </div>
-                    {row.last_error ? (
-                      <p className="mt-1 text-rose-300/90 line-clamp-2">{row.last_error}</p>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-xs text-zinc-500">
-                No channels connected yet. Open a creator → Overview → Connect YouTube.
-              </p>
-            )}
+            <p className="text-xs text-zinc-500">
+              {youtubeSyncQ.data?.connected_total || 0} connected · see board below
+            </p>
           </div>
         </div>
-        {bulkNote ? <p className="mt-3 text-sm text-emerald-400/90">{bulkNote}</p> : null}
-        {error ? <p className="mt-2 text-sm text-rose-400">{error}</p> : null}
+      </div>
+      ) : null}
+
+      {showYoutube ? (
+      <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <label className="relative w-full max-w-sm shrink">
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+              <input
+                value={ytQInput}
+                onChange={(e) => setYtQInput(e.target.value)}
+                placeholder="Search name, student ID, campus, channel…"
+                className="w-full rounded-full border border-white/10 bg-black py-2.5 pl-10 pr-4 text-sm outline-none focus:border-[#ff3b30]"
+              />
+            </label>
+            <div className="flex max-w-full shrink-0 flex-nowrap items-center gap-1 overflow-x-auto pb-0.5">
+              {YT_STATUS_FILTERS.map((f) => (
+                <button
+                  key={f.id || "all"}
+                  type="button"
+                  onClick={() => setYtStatusFilter(f.id)}
+                  className={cn(
+                    "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium",
+                    ytStatusFilter === f.id ? "bg-white text-black" : "bg-zinc-900 text-zinc-400"
+                  )}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={!ytSelected.length || youtubeSyncSelected.isPending}
+              onClick={() => youtubeSyncSelected.mutate()}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 disabled:opacity-40 hover:border-white/20"
+            >
+              <RefreshCw size={14} className={youtubeSyncSelected.isPending ? "animate-spin" : undefined} />
+              Sync selected
+            </button>
+            <button
+              type="button"
+              disabled={youtubeSyncAll.isPending}
+              onClick={() => youtubeSyncAll.mutate()}
+              className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 disabled:opacity-40 hover:border-white/20"
+            >
+              <RefreshCw size={14} />
+              Sync all connected
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-5 overflow-x-auto">
+          {!youtubeBoardRows.length ? (
+            <div className="rounded-xl border border-dashed border-white/10 px-6 py-12 text-center text-sm text-zinc-500">
+              No YouTube rows yet. Import a roster with YouTube links, or connect channels on creator pages.
+            </div>
+          ) : (
+            <div className="max-h-[70vh] overflow-y-auto overscroll-contain">
+              <table className="min-w-[1100px] w-full text-left text-sm">
+                <thead className="sticky top-0 z-10 bg-[#121212]">
+                  <tr className="border-b border-white/[0.06] text-[10px] uppercase tracking-[0.12em] text-zinc-500">
+                    <th className="px-2 py-3">
+                      <input
+                        type="checkbox"
+                        checked={!!ytAllIds.length && ytSelected.length === ytAllIds.length}
+                        onChange={(e) => setYtSelected(e.target.checked ? ytAllIds : [])}
+                      />
+                    </th>
+                    <th className="px-2 py-3">Creator</th>
+                    <th className="px-2 py-3">Student ID</th>
+                    <th className="px-2 py-3">Campus</th>
+                    <th className="px-2 py-3">Subscribers</th>
+                    <th className="px-2 py-3">Views</th>
+                    <th className="px-2 py-3">Videos</th>
+                    <th className="px-2 py-3">Sync status</th>
+                    <th className="px-2 py-3">Last synced</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {youtubeBoardRows.map((row) => {
+                    const live = row.job_status || "";
+                    const status = live || row.sync_status || "—";
+                    return (
+                      <tr key={row.profile_id} className="border-b border-white/[0.04] hover:bg-white/[0.02]">
+                        <td className="px-2 py-3">
+                          <input
+                            type="checkbox"
+                            checked={ytSelected.includes(row.profile_id)}
+                            onChange={(e) =>
+                              setYtSelected((prev) =>
+                                e.target.checked
+                                  ? [...prev, row.profile_id]
+                                  : prev.filter((id) => id !== row.profile_id)
+                              )
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-3">
+                          <Link
+                            href={`/admin-scraping/${row.profile_id}`}
+                            className="flex items-center gap-3 hover:opacity-90"
+                          >
+                            <SparkAvatar
+                              initials={(row.full_name || row.username || "?")
+                                .slice(0, 2)
+                                .toUpperCase()}
+                              size="sm"
+                            />
+                            <div>
+                              <div className="font-medium">{row.full_name || row.username}</div>
+                              <div className="text-[11px] text-zinc-500">@{row.username}</div>
+                              <div className="text-[11px] text-zinc-500">
+                                {row.channel_name || row.handle || row.youtube_ref || "No channel yet"}
+                              </div>
+                              {row.last_error ? (
+                                <div className="mt-0.5 flex items-center gap-1 text-[11px] text-rose-400">
+                                  <AlertCircle size={11} /> Sync issue
+                                </div>
+                              ) : null}
+                            </div>
+                          </Link>
+                        </td>
+                        <td className="px-2 py-3 tabular text-zinc-300">{row.student_id || "—"}</td>
+                        <td className="px-2 py-3 text-zinc-400">{row.university || "—"}</td>
+                        <td className="px-2 py-3 tabular">
+                          {row.hidden_subscriber_count
+                            ? "Hidden"
+                            : row.subscriber_count != null
+                              ? formatNumber(row.subscriber_count)
+                              : "—"}
+                        </td>
+                        <td className="px-2 py-3 tabular">
+                          {row.connected ? formatNumber(row.view_count || 0) : "—"}
+                        </td>
+                        <td className="px-2 py-3 tabular">
+                          {row.connected ? formatNumber(row.video_count || 0) : "—"}
+                        </td>
+                        <td className="px-2 py-3">
+                          <span
+                            className={cn(
+                              "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase",
+                              ["pending", "running", "retrying"].includes(live) &&
+                                "bg-sky-500/15 text-sky-300",
+                              status === "success" && "bg-lime-500/15 text-lime-400",
+                              (status === "failed" || status === "unavailable") &&
+                                "bg-rose-500/15 text-rose-400",
+                              status === "quota_exceeded" && "bg-amber-500/15 text-amber-300",
+                              status === "not_connected" && "bg-zinc-700/80 text-zinc-300"
+                            )}
+                          >
+                            {status.replace(/_/g, " ")}
+                          </span>
+                        </td>
+                        <td className="px-2 py-3 text-[11px] whitespace-nowrap text-zinc-500">
+                          {row.last_synced_at
+                            ? new Date(row.last_synced_at).toLocaleString()
+                            : "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+        <div className="mt-4 text-xs text-zinc-500">
+          {youtubeBoardRows.length} shown
+          {youtubeSyncQ.data?.board_total
+            ? ` · ${youtubeSyncQ.data.board_total} total`
+            : ""}{" "}
+          · {ytSelected.length} selected
+        </div>
+        {bulkNote && showYoutube ? (
+          <p className="mt-3 text-sm text-emerald-400/90">{bulkNote}</p>
+        ) : null}
+        {error && showYoutube && !showInstagram ? (
+          <p className="mt-2 text-sm text-rose-400">{error}</p>
+        ) : null}
       </div>
       ) : null}
 

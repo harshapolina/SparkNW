@@ -273,6 +273,10 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
 
     history = [_job_row(j) for j in recent_jobs]
 
+    active_by_pid = {
+        str(j.profile_id): j for j in active_jobs if j.profile_id
+    }
+
     connected_rows = []
     for ch in sorted(
         channels,
@@ -287,20 +291,75 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
                 "username": getattr(p, "username", None) or "—",
                 "full_name": getattr(p, "full_name", None)
                 or (student.get("full_name") if isinstance(student, dict) else None),
+                "student_id": student.get("student_id") if isinstance(student, dict) else None,
+                "university": student.get("university") if isinstance(student, dict) else None,
                 "channel_id": ch.channel_id,
                 "channel_name": ch.channel_name,
                 "handle": ch.handle,
+                "thumbnail_url": ch.thumbnail_url,
                 "sync_status": ch.sync_status.value
                 if hasattr(ch.sync_status, "value")
                 else str(ch.sync_status),
+                "job_status": (
+                    active_by_pid[ch.profile_id].status.value
+                    if ch.profile_id in active_by_pid
+                    and hasattr(active_by_pid[ch.profile_id].status, "value")
+                    else (
+                        str(active_by_pid[ch.profile_id].status)
+                        if ch.profile_id in active_by_pid
+                        else None
+                    )
+                ),
                 "last_error": ch.last_error,
                 "last_synced_at": ch.last_synced_at.isoformat() + "Z"
                 if ch.last_synced_at
                 else None,
                 "subscriber_count": ch.subscriber_count,
-                "video_count": ch.video_count,
+                "hidden_subscriber_count": bool(ch.hidden_subscriber_count),
+                "view_count": int(ch.view_count or 0),
+                "video_count": int(ch.video_count or 0),
+                "connected": True,
             }
         )
+
+    # Roster rows with a YouTube link that are not connected yet
+    pending_connect: list[dict[str, Any]] = []
+    candidates = await Profile.find({"youtube_connected": {"$ne": True}}).limit(2000).to_list()
+    for p in candidates:
+        student = dict(getattr(p, "student", None) or {})
+        ref = youtube_ref_from_student(student)
+        if not ref:
+            continue
+        pid = str(p.id)
+        pending_connect.append(
+            {
+                "profile_id": pid,
+                "username": getattr(p, "username", None) or "—",
+                "full_name": getattr(p, "full_name", None) or student.get("full_name"),
+                "student_id": student.get("student_id"),
+                "university": student.get("university"),
+                "channel_id": None,
+                "channel_name": None,
+                "handle": None,
+                "thumbnail_url": None,
+                "sync_status": "not_connected",
+                "job_status": (
+                    active_by_pid[pid].status.value
+                    if pid in active_by_pid and hasattr(active_by_pid[pid].status, "value")
+                    else (str(active_by_pid[pid].status) if pid in active_by_pid else None)
+                ),
+                "last_error": None,
+                "last_synced_at": None,
+                "subscriber_count": None,
+                "hidden_subscriber_count": False,
+                "view_count": 0,
+                "video_count": 0,
+                "connected": False,
+                "youtube_ref": ref,
+            }
+        )
+
+    board = connected_rows + pending_connect
 
     return {
         "running": running,
@@ -309,4 +368,6 @@ async def get_youtube_sync_status(*, recent_limit: int = 40) -> dict[str, Any]:
         "history": history,
         "connected": connected_rows,
         "connected_total": len(connected_rows),
+        "board": board,
+        "board_total": len(board),
     }
