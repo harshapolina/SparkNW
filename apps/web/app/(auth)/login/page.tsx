@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { BrandLogo } from "@/components/brand-logo";
 import { api, saveUser, setTokens, type User } from "@/lib/api";
+import { studentDashboardHref } from "@/lib/spark/student-routes";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -27,7 +28,11 @@ export default function LoginPage() {
       );
       setTokens(res.tokens);
       saveUser({ ...res.user, role: res.user.role || "admin" });
-      router.push(res.user.role === "student" ? "/student-dashboard" : "/admin-dashboard");
+      router.push(
+        res.user.role === "student"
+          ? studentDashboardHref(res.user.student_id)
+          : "/admin-dashboard"
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

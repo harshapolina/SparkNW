@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { BrandLogo } from "@/components/brand-logo";
 import { api, saveUser, setTokens, type User } from "@/lib/api";
+import { studentDashboardHref } from "@/lib/spark/student-routes";
 
 export default function StudentLoginPage() {
   const router = useRouter();
@@ -30,7 +31,7 @@ export default function StudentLoginPage() {
       );
       setTokens(res.tokens);
       saveUser(res.user);
-      router.push("/student-dashboard");
+      router.push(studentDashboardHref(res.user.student_id || studentId.trim()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

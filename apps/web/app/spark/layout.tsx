@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getStoredUser, getUserRole } from "@/lib/api";
 import { DashboardShell } from "@/components/layout/shell";
+import { studentDashboardHref } from "@/lib/spark/student-routes";
 
-/** Legacy /spark/* redirects — keep InstaScope shell for stub pages; gate students out of admin. */
+/** Legacy /spark/* — students never stay here; they go to the student portal. */
 export default function SparkRootLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const [allowShell, setAllowShell] = useState(false);
+
   useEffect(() => {
     const user = getStoredUser();
     const token = localStorage.getItem("is_access_token");
@@ -16,9 +19,19 @@ export default function SparkRootLayout({ children }: { children: React.ReactNod
       return;
     }
     if (getUserRole(user) === "student") {
-      // Allow only redirects / stubs that send them to student routes
+      router.replace(studentDashboardHref(user?.student_id));
       return;
     }
+    setAllowShell(true);
   }, [router]);
+
+  if (!allowShell) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-black text-sm text-zinc-500">
+        Opening your portal…
+      </div>
+    );
+  }
+
   return <DashboardShell>{children}</DashboardShell>;
 }

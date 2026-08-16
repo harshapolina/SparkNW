@@ -8,6 +8,7 @@ import { clearTokens, getStoredUser, type User } from "@/lib/api";
 import { BrandLogo } from "@/components/brand-logo";
 import { useRequireRole } from "@/lib/spark/auth-guard";
 import { prefetchStudentSpark } from "@/lib/spark/prefetch";
+import { studentDashboardHref, withStudentId } from "@/lib/spark/student-routes";
 import { cn } from "@/lib/utils";
 
 const nav = [
@@ -28,6 +29,15 @@ export default function StudentPortalLayout({ children }: { children: React.Reac
   }, [ready]);
 
   useEffect(() => {
+    if (!ready || !user?.student_id) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("student_id") === user.student_id) return;
+    params.set("student_id", user.student_id);
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname);
+  }, [ready, user, pathname, router]);
+
+  useEffect(() => {
     if (!ready) return;
     prefetchStudentSpark(qc);
     for (const item of nav) router.prefetch(item.href);
@@ -46,7 +56,7 @@ export default function StudentPortalLayout({ children }: { children: React.Reac
       <header className="sticky top-0 z-20 border-b border-white/[0.06] bg-black/90 backdrop-blur">
         <div className="mx-auto max-w-6xl px-4 md:px-6">
           <div className="flex h-14 items-center justify-between gap-3">
-            <Link href="/student-dashboard" className="inline-flex min-w-0 shrink-0 items-center">
+            <Link href={studentDashboardHref(user?.student_id)} className="inline-flex min-w-0 shrink-0 items-center">
               <BrandLogo height={24} priority />
             </Link>
             <div className="flex min-w-0 items-center gap-3 text-xs text-zinc-400">
@@ -67,7 +77,7 @@ export default function StudentPortalLayout({ children }: { children: React.Reac
             {nav.map((item) => (
               <Link
                 key={item.href}
-                href={item.href}
+                href={item.href === "/top-10" ? item.href : withStudentId(item.href, user?.student_id)}
                 className={cn(
                   "shrink-0 rounded-full px-3 py-1.5 text-xs font-medium transition",
                   pathname === item.href ? "bg-white text-black" : "text-zinc-400 hover:text-white"
