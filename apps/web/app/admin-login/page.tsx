@@ -58,7 +58,6 @@ export default function AdminLoginPage() {
               onChange={(e) => setEmail(e.target.value)}
               required
               className="w-full rounded-xl border border-white/10 bg-black px-3 py-2.5 text-sm outline-none focus:border-[#ff3b30]"
-              placeholder="admin@example.com"
             />
           </label>
           <label className="block space-y-1.5">
