@@ -11,7 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { ArrowUpRight, BookOpen, FolderKanban, Gift, Medal } from "lucide-react";
+import { ArrowUpRight, Gift, Medal } from "lucide-react";
 import { api } from "@/lib/api";
 import type { StudentDashboardResponse } from "@/lib/spark/api-types";
 import { formatNumber } from "@/lib/utils";
@@ -115,8 +115,6 @@ export default function StudentDashboardPage() {
   const shortcuts = [
     { href: "/student-leaderboard", label: "Leaderboard", icon: Medal },
     { href: "/top-10", label: "Top 10", icon: Gift },
-    { href: "/spark/projects", label: "Projects", icon: FolderKanban },
-    { href: "/spark/resources", label: "Resources", icon: BookOpen },
   ];
 
   return (
@@ -253,7 +251,7 @@ export default function StudentDashboardPage() {
         </div>
         <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5 md:col-span-2">
           <div className="mb-3 text-[11px] uppercase tracking-[0.12em] text-zinc-500">Quick navigation</div>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3">
             {shortcuts.map((s) => {
               const Icon = s.icon;
               return (

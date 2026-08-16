@@ -85,12 +85,9 @@ export default function StudentLoginPage() {
           </button>
         </form>
 
-        <div className="mt-6 flex flex-wrap gap-4 text-xs text-zinc-500">
+        <div className="mt-6 text-xs text-zinc-500">
           <Link href="/top-10" className="hover:text-zinc-300">
             Public Top 10
-          </Link>
-          <Link href="/admin-login" className="hover:text-zinc-300">
-            Admin login
           </Link>
         </div>
       </div>
