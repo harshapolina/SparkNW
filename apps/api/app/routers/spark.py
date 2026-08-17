@@ -67,6 +67,8 @@ async def leaderboard(
         from_date=start,
         to_date=end,
     )
+    for r in rows:
+        r.pop("task_history", None)
     if campus and campus.lower() not in {"all", "national", ""}:
         rows = [r for r in rows if r["campus"].lower() == campus.lower()]
         for i, r in enumerate(rows):
@@ -101,6 +103,8 @@ async def leaderboard(
         you = next((r for r in full if r.get("is_you")), None)
     else:
         you = next((r for r in rows if r.get("is_you")), None)
+    if you:
+        you.pop("task_history", None)
 
     return {
         "items": rows,

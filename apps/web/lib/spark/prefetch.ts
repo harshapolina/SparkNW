@@ -8,23 +8,11 @@ import type {
 } from "@/lib/spark/api-types";
 import { defaultCohortRange, utcTodayYmd } from "@/lib/spark/cohort";
 
-/** Prefetch SPARK APIs with the same query keys the pages use. */
+/** Prefetch only the student dashboard payload. Leaderboard/top-10 wait until those pages. */
 export function prefetchStudentSpark(qc: QueryClient) {
-  const range = defaultCohortRange(utcTodayYmd());
   void qc.prefetchQuery({
     queryKey: ["spark", "student"],
     queryFn: () => api<StudentDashboardResponse>("/spark/student"),
-  });
-  void qc.prefetchQuery({
-    queryKey: ["spark", "leaderboard", "overall", "student", range.from, range.to],
-    queryFn: () =>
-      api<LeaderboardResponse>(
-        `/spark/leaderboard?sort=overall&from_date=${range.from}&to_date=${range.to}`
-      ),
-  });
-  void qc.prefetchQuery({
-    queryKey: ["spark", "top-10", "public"],
-    queryFn: () => publicApi<Top10Response>("/spark/top-10"),
   });
 }
 

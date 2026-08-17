@@ -10,6 +10,7 @@ function persistable(query: Query) {
     key.includes("sync-status") ||
     key.includes("scrape_progress") ||
     key.includes("scrape-progress") ||
+    key.includes("leaderboard") ||
     key.includes("|jobs|") ||
     key.endsWith("|jobs")
   ) {

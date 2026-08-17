@@ -6,9 +6,12 @@ import { FormEvent, useState } from "react";
 import { BrandLogo } from "@/components/brand-logo";
 import { api, saveUser, setTokens, type User } from "@/lib/api";
 import { studentDashboardHref } from "@/lib/spark/student-routes";
+import { useQueryClient } from "@tanstack/react-query";
+import type { StudentDashboardResponse } from "@/lib/spark/api-types";
 
 export default function StudentLoginPage() {
   const router = useRouter();
+  const qc = useQueryClient();
   const [studentId, setStudentId] = useState("");
   const [instagram, setInstagram] = useState("");
   const [error, setError] = useState("");
@@ -31,6 +34,10 @@ export default function StudentLoginPage() {
       );
       setTokens(res.tokens);
       saveUser(res.user);
+      void qc.prefetchQuery({
+        queryKey: ["spark", "student"],
+        queryFn: () => api<StudentDashboardResponse>("/spark/student"),
+      });
       router.push(studentDashboardHref(res.user.student_id || studentId.trim()));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");

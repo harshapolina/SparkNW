@@ -6,8 +6,11 @@ performance multiplier, audience growth, plus judged/manual categories).
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections import defaultdict
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from instascope_shared.cohort import clamp_scoring_window, snapshot_floor_ymd
@@ -81,6 +84,15 @@ def _initials(name: str, username: str) -> str:
     if len(parts) >= 2:
         return (parts[0][0] + parts[1][0]).upper()
     return source[:2].upper()
+
+
+def _display_name(profile: Profile) -> str:
+    student = getattr(profile, "student", None) or {}
+    if isinstance(student, dict):
+        roster = student.get("full_name")
+        if isinstance(roster, str) and roster.strip():
+            return roster.strip()
+    return (profile.full_name or profile.username or "Student").strip()
 
 
 SPARK_CAMPUSES = (
@@ -173,35 +185,127 @@ def score_profile(
         growth_pts_override=growth_pts_override,
         include_youtube=include_youtube,
         campus=_campus(profile),
-        initials=_initials(profile.full_name or "", profile.username),
+        initials=_initials(_display_name(profile), profile.username),
     )
 
 
 async def _profiles_for_org(org_id: str | None = None) -> list[Profile]:
     oid = org_id or DEFAULT_ORG_ID
-    profiles = await Profile.find(Profile.org_id == oid).to_list()
-    # Include legacy profiles missing org_id so shared cohort works pre-backfill
-    all_profiles = await Profile.find_all().to_list()
-    legacy = [p for p in all_profiles if not getattr(p, "org_id", None)]
-    if not profiles and legacy:
-        return legacy
-    if legacy:
-        seen = {str(p.id) for p in profiles}
-        for p in legacy:
-            if str(p.id) not in seen:
-                profiles.append(p)
-    return profiles
+    return await Profile.find(
+        {
+            "$or": [
+                {"org_id": oid},
+                {"org_id": {"$exists": False}},
+                {"org_id": None},
+                {"org_id": ""},
+            ]
+        }
+    ).to_list()
 
 
-async def _posts_for_profiles(profile_ids: list[str]) -> dict[str, list[Post]]:
-    by: dict[str, list[Post]] = defaultdict(list)
+_POST_SCORE_FIELDS = {
+    "profile_id": 1,
+    "likes": 1,
+    "comments": 1,
+    "views": 1,
+    "posted_at": 1,
+    "media_type": 1,
+    "caption": 1,
+    "shortcode": 1,
+}
+
+_YT_VIDEO_SCORE_FIELDS = {
+    "profile_id": 1,
+    "published_at": 1,
+    "view_count": 1,
+    "like_count": 1,
+    "comment_count": 1,
+    "is_short": 1,
+    "duration_seconds": 1,
+    "video_id": 1,
+}
+
+_STUDENT_INSIGHT_KEYS = (
+    "posts_last_7d",
+    "posts_last_30d",
+    "median_likes",
+    "max_likes",
+    "max_reel_views",
+    "max_views",
+    "reel_count",
+    "image_count",
+    "video_share_pct",
+    "top_hashtags",
+)
+
+
+async def _const(value: Any) -> Any:
+    return value
+
+
+async def _posts_for_profiles(
+    profile_ids: list[str],
+    *,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+) -> dict[str, list[Any]]:
+    by: dict[str, list[Any]] = defaultdict(list)
     if not profile_ids:
         return by
-    # Chunk to avoid huge $in if needed; day-1 load all matching
-    posts = await Post.find({"profile_id": {"$in": profile_ids}}).to_list()
-    for p in posts:
-        by[p.profile_id].append(p)
+    query: dict[str, Any] = {"profile_id": {"$in": profile_ids}}
+    if from_date is not None:
+        start = from_date.replace(tzinfo=None) if from_date.tzinfo else from_date
+        posted: dict[str, Any] = {"$gte": start}
+        if to_date is not None:
+            end = to_date.replace(tzinfo=None) if to_date.tzinfo else to_date
+            posted["$lte"] = end
+        query["posted_at"] = posted
+    col = Post.get_motor_collection()
+    async for d in col.find(query, _POST_SCORE_FIELDS):
+        pid = str(d.get("profile_id") or "")
+        if not pid:
+            continue
+        by[pid].append(
+            SimpleNamespace(
+                id=d.get("_id"),
+                profile_id=pid,
+                likes=int(d.get("likes") or 0),
+                comments=int(d.get("comments") or 0),
+                views=int(d.get("views") or 0),
+                posted_at=d.get("posted_at"),
+                media_type=d.get("media_type"),
+                caption=(d.get("caption") or "")[:320],
+                shortcode=d.get("shortcode"),
+            )
+        )
     return by
+
+
+async def _followers_at_cutoff(
+    profile_ids: list[str],
+    cutoff_ymd: str,
+    *,
+    earliest: bool = False,
+    floor_ymd: str | None = None,
+) -> dict[str, int]:
+    """One aggregation: latest (or earliest) followers per profile at a date cutoff."""
+    if not profile_ids:
+        return {}
+    match: dict[str, Any] = {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": cutoff_ymd}}
+    if floor_ymd:
+        match["snapshot_date"] = {"$gte": floor_ymd, "$lte": cutoff_ymd}
+    pipeline = [
+        {"$match": match},
+        {"$sort": {"snapshot_date": 1 if earliest else -1}},
+        {"$group": {"_id": "$profile_id", "followers": {"$first": "$followers"}}},
+    ]
+    col = ProfileSnapshot.get_motor_collection()
+    out: dict[str, int] = {}
+    async for doc in col.aggregate(pipeline, allowDiskUse=True):
+        pid = str(doc.get("_id") or "")
+        if pid:
+            out[pid] = int(doc.get("followers") or 0)
+    return out
 
 
 def _latest_snap_by_profile(snaps: list[ProfileSnapshot]) -> dict[str, ProfileSnapshot]:
@@ -249,13 +353,40 @@ async def _youtube_channels_by_profile(profile_ids: list[str]) -> dict[str, YouT
     return {r.profile_id: r for r in rows}
 
 
-async def _youtube_videos_by_profile(profile_ids: list[str]) -> dict[str, list[YouTubeVideo]]:
-    by: dict[str, list[YouTubeVideo]] = defaultdict(list)
+async def _youtube_videos_by_profile(
+    profile_ids: list[str],
+    *,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
+) -> dict[str, list[Any]]:
+    by: dict[str, list[Any]] = defaultdict(list)
     if not profile_ids:
         return by
-    rows = await YouTubeVideo.find({"profile_id": {"$in": profile_ids}}).to_list()
-    for v in rows:
-        by[v.profile_id].append(v)
+    query: dict[str, Any] = {"profile_id": {"$in": profile_ids}}
+    if from_date is not None:
+        start = from_date.replace(tzinfo=None) if from_date.tzinfo else from_date
+        published: dict[str, Any] = {"$gte": start}
+        if to_date is not None:
+            end = to_date.replace(tzinfo=None) if to_date.tzinfo else to_date
+            published["$lte"] = end
+        query["published_at"] = published
+    col = YouTubeVideo.get_motor_collection()
+    async for d in col.find(query, _YT_VIDEO_SCORE_FIELDS):
+        pid = str(d.get("profile_id") or "")
+        if not pid:
+            continue
+        by[pid].append(
+            SimpleNamespace(
+                profile_id=pid,
+                published_at=d.get("published_at"),
+                view_count=int(d.get("view_count") or 0),
+                like_count=d.get("like_count"),
+                comment_count=d.get("comment_count"),
+                is_short=bool(d.get("is_short")),
+                duration_seconds=d.get("duration_seconds"),
+                video_id=d.get("video_id"),
+            )
+        )
     return by
 
 
@@ -298,15 +429,63 @@ def _yt_subscribers_at_cutoffs(
     return _subs(start_map), _subs(end_map)
 
 
-async def _latest_youtube_snaps(profile_ids: list[str]) -> dict[str, YouTubeSnapshot]:
+async def _yt_subscribers_at_cutoff(
+    profile_ids: list[str],
+    cutoff_ymd: str,
+    *,
+    earliest: bool = False,
+    floor_ymd: str | None = None,
+) -> dict[str, int]:
     if not profile_ids:
         return {}
-    snaps = await YouTubeSnapshot.find({"profile_id": {"$in": profile_ids}}).to_list()
-    latest: dict[str, YouTubeSnapshot] = {}
-    for s in snaps:
-        cur = latest.get(s.profile_id)
-        if not cur or s.snapshot_date > cur.snapshot_date:
-            latest[s.profile_id] = s
+    match: dict[str, Any] = {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": cutoff_ymd}}
+    if floor_ymd:
+        match["snapshot_date"] = {"$gte": floor_ymd, "$lte": cutoff_ymd}
+    pipeline = [
+        {"$match": match},
+        {"$sort": {"snapshot_date": 1 if earliest else -1}},
+        {"$group": {"_id": "$profile_id", "subscribers": {"$first": "$subscribers"}}},
+    ]
+    col = YouTubeSnapshot.get_motor_collection()
+    out: dict[str, int] = {}
+    async for doc in col.aggregate(pipeline, allowDiskUse=True):
+        pid = str(doc.get("_id") or "")
+        if pid and doc.get("subscribers") is not None:
+            out[pid] = int(doc.get("subscribers") or 0)
+    return out
+
+
+async def _latest_youtube_snaps(profile_ids: list[str]) -> dict[str, Any]:
+    if not profile_ids:
+        return {}
+    pipeline = [
+        {"$match": {"profile_id": {"$in": profile_ids}}},
+        {"$sort": {"snapshot_date": -1}},
+        {
+            "$group": {
+                "_id": "$profile_id",
+                "likes": {"$first": "$likes"},
+                "comments": {"$first": "$comments"},
+                "subscribers": {"$first": "$subscribers"},
+                "total_views": {"$first": "$total_views"},
+                "snapshot_date": {"$first": "$snapshot_date"},
+            }
+        },
+    ]
+    col = YouTubeSnapshot.get_motor_collection()
+    latest: dict[str, Any] = {}
+    async for d in col.aggregate(pipeline, allowDiskUse=True):
+        pid = str(d.get("_id") or "")
+        if not pid:
+            continue
+        latest[pid] = SimpleNamespace(
+            profile_id=pid,
+            likes=int(d.get("likes") or 0),
+            comments=int(d.get("comments") or 0),
+            subscribers=d.get("subscribers"),
+            total_views=int(d.get("total_views") or 0),
+            snapshot_date=d.get("snapshot_date"),
+        )
     return latest
 
 
@@ -380,6 +559,23 @@ async def _enrich_leaderboard_youtube(rows: list[dict[str, Any]]) -> None:
         _apply_youtube_to_row(r, channels.get(pid), snaps.get(pid))
 
 
+_BOARD_TTL_SEC = 120.0
+_board_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_board_locks: dict[str, asyncio.Lock] = {}
+
+
+def _board_cache_key(org_id: str, sort: str, start: datetime, end: datetime) -> str:
+    return f"{org_id}|{sort}|{start.isoformat()}|{end.isoformat()}"
+
+
+def _rows_for_you(rows: list[dict[str, Any]], you_profile_id: str | None) -> list[dict[str, Any]]:
+    """Shallow-copy rows so callers can mutate rank/is_you without poisoning the cache."""
+    return [
+        {**r, "is_you": bool(you_profile_id and r.get("id") == you_profile_id)}
+        for r in rows
+    ]
+
+
 async def build_leaderboard(
     org_id: str | None = None,
     *,
@@ -391,73 +587,112 @@ async def build_leaderboard(
     to_date: datetime | None = None,
 ) -> list[dict[str, Any]]:
     oid = org_id or DEFAULT_ORG_ID
+    window_start, window_end = clamp_scoring_window(from_date, to_date)
+    use_cache = profiles is None and posts_map is None
+    key = _board_cache_key(oid, sort, window_start, window_end)
+
+    if use_cache:
+        hit = _board_cache.get(key)
+        if hit and (time.monotonic() - hit[0]) < _BOARD_TTL_SEC:
+            return _rows_for_you(hit[1], you_profile_id)
+        lock = _board_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            hit = _board_cache.get(key)
+            if hit and (time.monotonic() - hit[0]) < _BOARD_TTL_SEC:
+                return _rows_for_you(hit[1], you_profile_id)
+            rows = await _build_leaderboard_fresh(
+                oid,
+                sort=sort,
+                profiles=None,
+                posts_map=None,
+                from_date=window_start,
+                to_date=window_end,
+            )
+            _board_cache[key] = (time.monotonic(), rows)
+            return _rows_for_you(rows, you_profile_id)
+
+    rows = await _build_leaderboard_fresh(
+        oid,
+        sort=sort,
+        profiles=profiles,
+        posts_map=posts_map,
+        from_date=window_start,
+        to_date=window_end,
+    )
+    return _rows_for_you(rows, you_profile_id)
+
+
+async def _build_leaderboard_fresh(
+    oid: str,
+    *,
+    sort: SortKey,
+    profiles: list[Profile] | None,
+    posts_map: dict[str, list[Post]] | None,
+    from_date: datetime | None,
+    to_date: datetime | None,
+) -> list[dict[str, Any]]:
     if profiles is None:
         profiles = await _profiles_for_org(oid)
     profile_ids = [str(p.id) for p in profiles]
-    if posts_map is None:
-        posts_map = await _posts_for_profiles(profile_ids)
 
     # Always score inside the SPARK cohort window (floored at programme start).
     window_start, window_end = clamp_scoring_window(from_date, to_date)
-
-    # Previous ranks: snapshot on/before window start (followers proxy).
     prev_cutoff = window_start.strftime("%Y-%m-%d")
     end_cutoff = window_end.strftime("%Y-%m-%d")
+    include_yt = bool(get_settings().youtube_scoring_enabled)
 
-    prev_snaps = (
-        await ProfileSnapshot.find(
-            {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": prev_cutoff}}
-        ).to_list()
-        if profile_ids
-        else []
+    (
+        loaded_posts,
+        prev_followers,
+        followers_at_end,
+        videos_map,
+        channels,
+        yt_start,
+        yt_end,
+        latest_yt,
+    ) = await asyncio.gather(
+        _posts_for_profiles(profile_ids, from_date=window_start, to_date=window_end)
+        if posts_map is None
+        else _const(posts_map),
+        _followers_at_cutoff(profile_ids, prev_cutoff),
+        _followers_at_cutoff(profile_ids, end_cutoff),
+        _youtube_videos_by_profile(profile_ids, from_date=window_start, to_date=window_end)
+        if include_yt
+        else _const({}),
+        _youtube_channels_by_profile(profile_ids) if include_yt else _const({}),
+        _yt_subscribers_at_cutoff(profile_ids, prev_cutoff) if include_yt else _const({}),
+        _yt_subscribers_at_cutoff(profile_ids, end_cutoff) if include_yt else _const({}),
+        _latest_youtube_snaps(profile_ids) if include_yt else _const({}),
     )
-    latest_prev = _latest_snap_by_profile(prev_snaps)
-    prev_followers = {pid: s.followers for pid, s in latest_prev.items()}
+    if posts_map is None:
+        posts_map = loaded_posts
+
     prev_order = sorted(prev_followers.items(), key=lambda x: x[1], reverse=True)
     prev_rank = {pid: i + 1 for i, (pid, _) in enumerate(prev_order)}
 
-    followers_at_end: dict[str, int] = {}
     followers_at_start: dict[str, int] = {pid: int(f or 0) for pid, f in prev_followers.items()}
     if profile_ids:
-        end_snaps = await ProfileSnapshot.find(
-            {"profile_id": {"$in": profile_ids}, "snapshot_date": {"$lte": end_cutoff}}
-        ).to_list()
-        for pid, snap in _latest_snap_by_profile(end_snaps).items():
-            followers_at_end[pid] = int(snap.followers or 0)
-
-        # No Jul-15 snapshot → use first scrape inside the window as baseline
-        # (otherwise start=0 awards every growth milestone unfairly).
         missing = [pid for pid in profile_ids if pid not in followers_at_start]
         if missing:
-            window_snaps = await ProfileSnapshot.find(
-                {
-                    "profile_id": {"$in": missing},
-                    "snapshot_date": {"$gte": prev_cutoff, "$lte": end_cutoff},
-                }
-            ).to_list()
-            for pid, snap in _earliest_snap_by_profile(window_snaps).items():
-                followers_at_start[pid] = int(snap.followers or 0)
+            earliest = await _followers_at_cutoff(
+                missing, end_cutoff, earliest=True, floor_ymd=prev_cutoff
+            )
+            followers_at_start.update(earliest)
 
-    # YouTube videos + subscriber baselines for overall SPARK points
-    videos_map = await _youtube_videos_by_profile(profile_ids)
-    channels = await _youtube_channels_by_profile(profile_ids)
-    yt_snaps_all = (
-        await YouTubeSnapshot.find({"profile_id": {"$in": profile_ids}}).to_list()
-        if profile_ids
-        else []
-    )
-    yt_start, yt_end = _yt_subscribers_at_cutoffs(
-        yt_snaps_all, start_ymd=prev_cutoff, end_ymd=end_cutoff
-    )
-    for pid, ch in channels.items():
-        if pid not in yt_end and ch.subscriber_count is not None:
-            yt_end[pid] = int(ch.subscriber_count)
-        if pid not in yt_start and ch.subscriber_count is not None:
-            # No history → baseline = current (no unearned growth milestones)
-            yt_start[pid] = int(ch.subscriber_count)
+    if include_yt:
+        missing_yt = [pid for pid in profile_ids if pid not in yt_start]
+        if missing_yt:
+            earliest_yt = await _yt_subscribers_at_cutoff(
+                missing_yt, end_cutoff, earliest=True, floor_ymd=prev_cutoff
+            )
+            yt_start.update(earliest_yt)
+        for pid, ch in channels.items():
+            if pid not in yt_end and ch.subscriber_count is not None:
+                yt_end[pid] = int(ch.subscriber_count)
+            if pid not in yt_start and ch.subscriber_count is not None:
+                yt_start[pid] = int(ch.subscriber_count)
 
     rows: list[dict[str, Any]] = []
-    include_yt = bool(get_settings().youtube_scoring_enabled)
     for p in profiles:
         pid = str(p.id)
         end_fol = followers_at_end.get(pid)
@@ -502,10 +737,12 @@ async def build_leaderboard(
         r["rank"] = i + 1
         r["prev_rank"] = prev_rank.get(r["id"], i + 1)
         r["rank_delta"] = r["prev_rank"] - r["rank"]
-        r["is_you"] = bool(you_profile_id and r["id"] == you_profile_id)
+        r["is_you"] = False
         r["window_from"] = window_start.strftime("%Y-%m-%d")
         r["window_to"] = window_end.strftime("%Y-%m-%d")
-    await _enrich_leaderboard_youtube(rows)
+    for r in rows:
+        pid = r["id"]
+        _apply_youtube_to_row(r, channels.get(pid), latest_yt.get(pid))
     return rows
 
 
@@ -514,8 +751,11 @@ async def get_top_10(org_id: str | None = None) -> dict[str, Any]:
     board = await build_leaderboard(
         org_id, sort="overall", from_date=start, to_date=end
     )
+    items = board[:10]
+    for r in items:
+        r.pop("task_history", None)
     return {
-        "items": board[:10],
+        "items": items,
         "total_creators": len(board),
         "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
         "from_date": start.strftime("%Y-%m-%d"),
@@ -523,7 +763,24 @@ async def get_top_10(org_id: str | None = None) -> dict[str, Any]:
     }
 
 
+def _slim_board_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "handle": row.get("handle"),
+        "initials": row.get("initials"),
+        "rank": row.get("rank"),
+        "points": row.get("points"),
+        "followers": row.get("followers"),
+        "is_you": bool(row.get("is_you")),
+    }
+
+
 async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
+    profile = await Profile.get(profile_id)
+    if not profile:
+        return {"empty": True, "creators": [], "creator": None, "scraped": False}
+
     start, end = clamp_scoring_window(None, None)
     board = await build_leaderboard(
         org_id,
@@ -532,46 +789,42 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
         from_date=start,
         to_date=end,
     )
-    if not board:
-        return {"empty": True, "creators": [], "creator": None}
-
     creator = next((r for r in board if r["id"] == profile_id), None)
+    on_board = creator is not None
     if not creator:
-        return {"empty": True, "creators": [], "creator": None, "error": "Profile not on leaderboard"}
+        # Unscraped / not yet on the cached board — still show a zeroed portal.
+        creator = score_profile(profile, [], from_date=start, as_of=end)
+        creator["rank"] = len(board) + 1
+        creator["prev_rank"] = creator["rank"]
+        creator["rank_delta"] = 0
+        creator["is_you"] = True
+        creator["window_from"] = start.strftime("%Y-%m-%d")
+        creator["window_to"] = end.strftime("%Y-%m-%d")
 
-    profile = await Profile.get(profile_id)
-    from instascope_shared.instagram_time import infer_posted_at
-
-    window_start, window_end = clamp_scoring_window(start, end)
-    start_n = _naive_dt(window_start) or window_start
-    end_n = _naive_dt(window_end) or window_end
-    all_posts = await Post.find(Post.profile_id == profile_id).sort(-Post.posted_at).to_list()
-    posts: list[Post] = []
-    for p in all_posts:
-        dt = _naive_dt(p.posted_at)
-        if dt is None:
-            inferred = infer_posted_at(
-                shortcode=p.shortcode,
-                ig_post_id=getattr(p, "ig_post_id", None),
-            )
-            dt = _naive_dt(inferred)
-            if dt is not None:
-                p.posted_at = dt
-        if dt is None:
-            continue
-        if start_n <= dt <= end_n:
-            posts.append(p)
-
-    # Performance series from snapshots (programme floor → today)
+    scraped = bool(getattr(profile, "last_success_at", None)) or int(profile.followers or 0) > 0 or int(
+        profile.posts_count or 0
+    ) > 0
+    window_start, window_end = start, end
     floor_ymd = snapshot_floor_ymd()
-    snaps = (
-        await ProfileSnapshot.find(
+    posts, snaps_desc = await asyncio.gather(
+        Post.find(
+            {
+                "profile_id": profile_id,
+                "posted_at": {"$gte": window_start, "$lte": window_end},
+            }
+        )
+        .sort(-Post.posted_at)
+        .limit(12)
+        .to_list(),
+        ProfileSnapshot.find(
             ProfileSnapshot.profile_id == creator["id"],
             ProfileSnapshot.snapshot_date >= floor_ymd,
         )
-        .sort(+ProfileSnapshot.snapshot_date)
-        .to_list()
+        .sort(-ProfileSnapshot.snapshot_date)
+        .limit(16)
+        .to_list(),
     )
+    snaps = list(reversed(snaps_desc))
     performance = [
         {
             "date": s.snapshot_date[-5:] if len(s.snapshot_date) >= 5 else s.snapshot_date,
@@ -581,7 +834,7 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
             "likes": s.avg_likes,
             "engagement": s.engagement_rate,
         }
-        for s in snaps[-30:]
+        for s in snaps
     ]
     if not performance:
         performance = [
@@ -603,21 +856,21 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
     elif creator["growth_pct_today"]:
         followers_delta = int(creator["followers"] * (creator["growth_pct_today"] / 100))
 
-    top = [r for r in board if not r.get("is_you")][:5]
+    top = [_slim_board_row(r) for r in board if not r.get("is_you")][:5]
 
     recent_posts = [
         {
             "id": str(p.id),
             "shortcode": p.shortcode,
             "media_type": p.media_type.value if hasattr(p.media_type, "value") else str(p.media_type),
-            "caption": (p.caption or "")[:200],
+            "caption": (p.caption or "")[:120],
             "likes": int(p.likes or 0),
             "comments": int(p.comments or 0),
             "views": int(p.views or 0),
             "posted_at": p.posted_at.isoformat() if p.posted_at else None,
             "permalink": p.permalink,
         }
-        for p in posts[:20]
+        for p in posts
     ]
 
     history = [
@@ -633,37 +886,35 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
             "followers_growth": s.followers_growth,
             "followers_growth_pct": s.followers_growth_pct,
         }
-        for s in reversed(snaps[-30:])
+        for s in reversed(snaps[-10:])
     ]
 
-    yt_channel = await YouTubeChannel.find_one(YouTubeChannel.profile_id == profile_id)
-    yt_snaps = await _latest_youtube_snaps([profile_id])
-    yt_prev = await _prev_youtube_snaps([profile_id], yt_snaps)
-    youtube_row: dict[str, Any] = {"id": profile_id}
-    _apply_youtube_to_row(
-        youtube_row,
-        yt_channel,
-        yt_snaps.get(profile_id),
-        yt_prev.get(profile_id),
-    )
-    youtube_payload = youtube_row.get("youtube") or _empty_youtube_metrics()
+    yt_payload = creator.get("youtube") or _empty_youtube_metrics()
+    task_history = (creator.get("task_history") or [])[:8]
+    creator_out = {k: v for k, v in creator.items() if k not in {"task_history", "youtube"}}
+    raw_insights = dict(getattr(profile, "insights", None) or {}) if profile else {}
+    insights = {k: raw_insights[k] for k in _STUDENT_INSIGHT_KEYS if k in raw_insights}
 
     return {
         "empty": False,
+        "scraped": scraped,
         "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
-        "refresh_note": "Stats from live Instagram scrapes",
-        "creator": creator,
+        "refresh_note": (
+            "Stats from live Instagram scrapes"
+            if scraped
+            else "Not scraped yet — numbers show 0 until the first Instagram sync"
+        ),
+        "creator": creator_out,
         "top_creators": top,
-        "leaderboard": board,
         "performance": performance,
         "followers_delta": followers_delta,
-        "task_history": creator.get("task_history") or [],
-        "total_participants": len(board),
+        "task_history": task_history,
+        "total_participants": len(board) if on_board else len(board) + 1,
         "in_top_10": creator["rank"] <= 10,
-        "insights": dict(getattr(profile, "insights", None) or {}) if profile else {},
+        "insights": insights,
         "recent_posts": recent_posts,
         "history": history,
-        "youtube": youtube_payload,
+        "youtube": yt_payload,
         "profile": {
             "bio": getattr(profile, "bio", None) if profile else None,
             "website": getattr(profile, "website", None) if profile else None,
@@ -680,16 +931,13 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
 
 async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
     oid = org_id or DEFAULT_ORG_ID
-    profiles = await _profiles_for_org(oid)
-    posts_map = await _posts_for_profiles([str(p.id) for p in profiles])
     window_start, window_end = clamp_scoring_window(None, None)
-    board = await build_leaderboard(
-        oid,
-        sort="overall",
-        profiles=profiles,
-        posts_map=posts_map,
-        from_date=window_start,
-        to_date=window_end,
+    board, profiles = await asyncio.gather(
+        build_leaderboard(oid, sort="overall", from_date=window_start, to_date=window_end),
+        _profiles_for_org(oid),
+    )
+    posts_map = await _posts_for_profiles(
+        [str(p.id) for p in profiles], from_date=window_start, to_date=window_end
     )
     # Flatten posts once — keep only cohort-window posts for overview charts/totals.
     all_posts = [p for bucket in posts_map.values() for p in bucket]

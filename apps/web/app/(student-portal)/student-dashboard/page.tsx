@@ -1,16 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useQuery } from "@tanstack/react-query";
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { ArrowUpRight, Gift, Medal } from "lucide-react";
 import { api } from "@/lib/api";
 import type { StudentDashboardResponse } from "@/lib/spark/api-types";
@@ -19,6 +11,29 @@ import { TierBadge } from "@/components/spark/tier-badge";
 import { ProgressBar, SparkAvatar } from "@/components/spark/ui";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
 
+const PerformanceChart = dynamic(
+  () => import("@/components/spark/performance-chart").then((m) => m.PerformanceChart),
+  {
+    ssr: false,
+    loading: () => <div className="h-full animate-pulse rounded-xl bg-black/40" />,
+  }
+);
+
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-6">
+      <div className="h-12 w-2/3 animate-pulse rounded-xl bg-zinc-900" />
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <div key={i} className="h-28 animate-pulse rounded-2xl bg-zinc-900" />
+        ))}
+      </div>
+      <div className="h-40 animate-pulse rounded-2xl bg-zinc-900" />
+      <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />
+    </div>
+  );
+}
+
 export default function StudentDashboardPage() {
   const { data, isPending, error } = useQuery({
     queryKey: ["spark", "student"],
@@ -26,7 +41,7 @@ export default function StudentDashboardPage() {
   });
 
   if (isPending && !data) {
-    return <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />;
+    return <DashboardSkeleton />;
   }
 
   if (error) {
@@ -126,7 +141,9 @@ export default function StudentDashboardPage() {
             <span className="text-[#ff4d00]">Keep the camera rolling.</span>
           </h1>
           <p className="mt-2 text-sm text-zinc-400">
-            Live SPARK score from scraped Instagram data ·{" "}
+            {data.scraped === false
+              ? "Waiting for the first Instagram scrape — stats show 0 until then · "
+              : "Live SPARK score from scraped Instagram data · "}
             <span className="text-[#ff4d00]">{creator.handle}</span>
           </p>
           <ProgrammeWindowNote className="mt-2 !text-xs" />
@@ -136,6 +153,12 @@ export default function StudentDashboardPage() {
           <div className="mt-0.5 normal-case tracking-normal">{data.refresh_note}</div>
         </div>
       </div>
+
+      {data.scraped === false && (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          Your account is live. Metrics stay at 0 until Instagram is scraped.
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         {kpis.map((k) => (
@@ -292,30 +315,7 @@ export default function StudentDashboardPage() {
             ))}
           </div>
           <div className="h-56 min-w-0">
-            <ResponsiveContainer width="100%" height="100%" debounce={40}>
-              <AreaChart data={data.performance || []}>
-                <defs>
-                  <linearGradient id="sparkViewsLive" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#ff4d00" stopOpacity={0.35} />
-                    <stop offset="100%" stopColor="#ff4d00" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
-                <XAxis dataKey="date" tick={{ fill: "#71717a", fontSize: 11 }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fill: "#71717a", fontSize: 11 }} axisLine={false} tickLine={false} width={40} />
-                <Tooltip
-                  contentStyle={{ background: "#121212", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 12 }}
-                />
-                <Area
-                  type="monotone"
-                  dataKey="followers"
-                  stroke="#ff4d00"
-                  fill="url(#sparkViewsLive)"
-                  strokeWidth={2.5}
-                  isAnimationActive={false}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
+            <PerformanceChart data={data.performance || []} />
           </div>
         </div>
 

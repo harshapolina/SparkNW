@@ -121,7 +121,9 @@ export default function StudentDashboardPage() {
             <span className="text-[#ff4d00]">Keep the camera rolling.</span>
           </h1>
           <p className="mt-2 text-sm text-zinc-400">
-            Live SPARK score from scraped Instagram data ·{" "}
+            {data.scraped === false
+              ? "Waiting for the first Instagram scrape — stats show 0 until then · "
+              : "Live SPARK score from scraped Instagram data · "}
             <Link href={`/profiles/${creator.id}`} className="text-[#ff4d00] hover:underline">
               {creator.handle}
             </Link>
@@ -132,6 +134,12 @@ export default function StudentDashboardPage() {
           <div className="mt-0.5 normal-case tracking-normal">{data.refresh_note}</div>
         </div>
       </div>
+
+      {data.scraped === false && (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          Your account is live. Metrics stay at 0 until Instagram is scraped.
+        </div>
+      )}
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
         {kpis.map((k) => (

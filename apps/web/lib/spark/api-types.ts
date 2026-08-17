@@ -273,6 +273,7 @@ export type AdminOverviewResponse = {
 
 export type StudentDashboardResponse = {
   empty: boolean;
+  scraped?: boolean;
   week_label?: string;
   refresh_note?: string;
   creator?: SparkCreatorRow;

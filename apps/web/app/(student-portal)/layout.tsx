@@ -38,15 +38,29 @@ export default function StudentPortalLayout({ children }: { children: React.Reac
   }, [ready, user, pathname, router]);
 
   useEffect(() => {
-    if (!ready) return;
+    const token = typeof window !== "undefined" ? localStorage.getItem("is_access_token") : null;
+    if (!token) return;
     prefetchStudentSpark(qc);
-    for (const item of nav) router.prefetch(item.href);
-  }, [ready, qc, router]);
+  }, [qc]);
 
   if (!ready) {
     return (
-      <div className="grid min-h-screen place-items-center bg-black text-sm text-zinc-500">
-        Loading student portal…
+      <div className="min-h-screen bg-black text-white">
+        <header className="sticky top-0 z-20 border-b border-white/[0.06] bg-black/90">
+          <div className="mx-auto flex h-14 max-w-6xl items-center px-4 md:px-6">
+            <BrandLogo height={24} priority />
+          </div>
+        </header>
+        <main className="mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-8">
+          <div className="space-y-6">
+            <div className="h-12 w-2/3 animate-pulse rounded-xl bg-zinc-900" />
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="h-28 animate-pulse rounded-2xl bg-zinc-900" />
+              ))}
+            </div>
+          </div>
+        </main>
       </div>
     );
   }

@@ -563,6 +563,13 @@ def package_leaderboard_row(
     consistency_score = min(100, int((posts_7d / 3) * 40 + min(posts_30, 12) / 12 * 60))
     consistency = scored["consistency"]
     audience_display = follower_count + (yt_subs if include_youtube else 0)
+    student = getattr(profile, "student", None) or {}
+    roster_name = student.get("full_name") if isinstance(student, dict) else None
+    display_name = (
+        roster_name.strip()
+        if isinstance(roster_name, str) and roster_name.strip()
+        else (profile.full_name or profile.username)
+    )
 
     task_history = list(scored["task_history"])
     if scored["growth"]:
@@ -610,7 +617,7 @@ def package_leaderboard_row(
     return {
         "id": str(profile.id),
         "profile_id": str(profile.id),
-        "name": profile.full_name or profile.username,
+        "name": display_name,
         "handle": f"@{profile.username}",
         "username": profile.username,
         "initials": initials,

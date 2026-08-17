@@ -33,6 +33,7 @@ merge_student = _roster.merge_student
 
 from instascope_shared.domain.instagram import extract_username  # noqa: E402
 
+from bson import ObjectId
 from pymongo import MongoClient, UpdateOne
 
 ADMIN_EMAIL = "sparkadmin@nw.co.in"
@@ -138,6 +139,22 @@ def main() -> int:
     db = client[db_name]
     user = db.users.find_one({"email": re.compile(f"^{re.escape(ADMIN_EMAIL)}$", re.I)})
     if not user:
+        top = list(
+            db.profiles.aggregate(
+                [
+                    {"$group": {"_id": "$user_id", "n": {"$sum": 1}}},
+                    {"$sort": {"n": -1}},
+                    {"$limit": 1},
+                ]
+            )
+        )
+        if top and top[0].get("_id"):
+            oid = top[0]["_id"]
+            try:
+                user = db.users.find_one({"_id": ObjectId(str(oid))})
+            except Exception:
+                user = db.users.find_one({"_id": oid})
+    if not user:
         print(f"Admin user {ADMIN_EMAIL} not found in {db_name}.users — create via API first", file=sys.stderr)
         return 1
     user_id = str(user["_id"])
@@ -155,8 +172,12 @@ def main() -> int:
                         {
                             "$set": {
                                 "user_id": user_id,
+                                "org_id": {"$ifNull": ["$org_id", "spark"]},
                                 "username": p["username"],
                                 "profile_url": p["url"],
+                                "full_name": {
+                                    "$ifNull": ["$full_name", student.get("full_name") or None]
+                                },
                                 "updated_at": now,
                                 "student": {
                                     "$mergeObjects": [
