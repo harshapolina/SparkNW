@@ -111,3 +111,16 @@ def test_manual_categories_capped():
     assert scored["monthly_bonuses"] == 100
     assert scored["bonus"] == 50
     assert scored["points"] == 850 + 100 + 50
+
+
+def test_merge_spark_scoring_insights_keeps_admin_bonus():
+    from instascope_shared.services.spark_points import merge_spark_scoring_insights
+
+    merged = merge_spark_scoring_insights(
+        {"spark_bonus_points": 80, "spark_bonus_log": [{"points": 80}], "sampled_posts": 12},
+        {"sampled_posts": 4, "avg_likes": 10},
+    )
+    assert merged["sampled_posts"] == 4
+    assert merged["avg_likes"] == 10
+    assert merged["spark_bonus_points"] == 80
+    assert merged["spark_bonus_log"] == [{"points": 80}]

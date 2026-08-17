@@ -66,6 +66,28 @@ CATEGORY_CAPS = {
     "monthly_bonuses": 1_350,
 }
 
+# Admin-awarded SPARK fields stored on Profile.insights — must survive scrapes.
+SPARK_SCORING_INSIGHT_KEYS = (
+    "spark_bonus_points",
+    "spark_bonus_log",
+    "spark_points",
+    "spark_collaborations",
+    "spark_revenue",
+    "spark_recognition",
+    "spark_participation",
+    "spark_monthly_bonuses",
+)
+
+
+def merge_spark_scoring_insights(existing: dict[str, Any] | None, metrics: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep admin-awarded SPARK points when scrape/recompute overwrites insights."""
+    out = dict(metrics or {})
+    prev = existing if isinstance(existing, dict) else {}
+    for key in SPARK_SCORING_INSIGHT_KEYS:
+        if key in prev and key not in out:
+            out[key] = prev[key]
+    return out
+
 PieceKind = Literal["short", "long", "other"]
 
 

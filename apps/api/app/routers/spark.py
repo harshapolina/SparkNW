@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from app.deps import get_current_user, require_admin, require_student
 from instascope_shared.cohort import clamp_scoring_window, cohort_start_ymd
 from instascope_shared.models import DEFAULT_ORG_ID, User
+from instascope_shared.schemas import AddBonusPointsRequest
 from instascope_shared.services import spark as spark_service
 
 router = APIRouter(prefix="/spark", tags=["spark"])
@@ -130,3 +131,25 @@ async def student_dashboard(user: User = Depends(require_student)):
 @router.get("/admin")
 async def admin_overview(user: User = Depends(require_admin)):
     return await spark_service.get_admin_overview(_org_id(user))
+
+
+@router.post("/profiles/{profile_id}/bonus-points")
+async def add_bonus_points(
+    profile_id: str,
+    payload: AddBonusPointsRequest,
+    user: User = Depends(require_admin),
+):
+    """Add (or subtract) SPARK points on one account. Updates leaderboard + student dashboards."""
+    from instascope_shared.services import profiles as profile_service
+
+    profile = await profile_service.get_profile(str(user.id), profile_id)
+    try:
+        result = await spark_service.add_manual_bonus_points(
+            profile,
+            points=payload.points,
+            reason=payload.reason or "",
+            added_by=getattr(user, "email", None) or str(user.id),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return result

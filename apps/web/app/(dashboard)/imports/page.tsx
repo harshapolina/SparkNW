@@ -5,6 +5,7 @@ import { useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   CheckSquare,
+  Download,
   FileSpreadsheet,
   Link2,
   Loader2,
@@ -21,7 +22,7 @@ import { api } from "@/lib/api";
 import { saveDuplicatesFromImport } from "@/lib/import-duplicates";
 import { saveUnimportedFromImport, saveUnimportedFromParse } from "@/lib/import-unimported";
 import { cn } from "@/lib/utils";
-import { extractUsername, parseSheetMatrixDetailed, type SheetStudent } from "@/lib/student-sheet";
+import { downloadImportableCsv, extractUsername, parseSheetMatrixDetailed, type SheetStudent } from "@/lib/student-sheet";
 
 type Row = {
   id: string;
@@ -387,6 +388,18 @@ export default function ImportsPage() {
             )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={!selectedCount}
+              onClick={() =>
+                downloadImportableCsv(
+                  selected.map((r) => ({ username: r.username, url: r.raw, student: r.student }))
+                )
+              }
+            >
+              <Download size={14} /> Download CSV
+            </Button>
             <Button
               size="sm"
               variant="secondary"

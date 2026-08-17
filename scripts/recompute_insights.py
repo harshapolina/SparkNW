@@ -52,7 +52,10 @@ async def main() -> None:
                 if profile.following
                 else float(profile.followers)
             )
-            profile.insights = metrics
+            from instascope_shared.services.spark_points import merge_spark_scoring_insights
+
+            prev_insights = profile.insights if isinstance(profile.insights, dict) else {}
+            profile.insights = merge_spark_scoring_insights(prev_insights, metrics)
             await profile.save()
             updated += 1
             print(

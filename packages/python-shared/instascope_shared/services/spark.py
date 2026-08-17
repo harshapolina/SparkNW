@@ -564,6 +564,57 @@ _board_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _board_locks: dict[str, asyncio.Lock] = {}
 
 
+def invalidate_leaderboard_cache() -> None:
+    _board_cache.clear()
+
+
+async def add_manual_bonus_points(
+    profile: Profile,
+    *,
+    points: int,
+    reason: str = "",
+    added_by: str = "",
+) -> dict[str, Any]:
+    """Increment admin-awarded SPARK points. Result is included in every leaderboard/dashboard score."""
+    try:
+        delta = int(points)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("points must be an integer") from exc
+    if delta == 0:
+        raise ValueError("points cannot be 0")
+
+    insights = dict(getattr(profile, "insights", None) or {})
+    try:
+        current = int(insights.get("spark_bonus_points") or 0)
+    except (TypeError, ValueError):
+        current = 0
+    total = max(0, current + delta)
+    insights["spark_bonus_points"] = total
+    log = insights.get("spark_bonus_log")
+    if not isinstance(log, list):
+        log = []
+    log.insert(
+        0,
+        {
+            "points": delta,
+            "reason": (reason or "").strip()[:240],
+            "added_at": datetime.utcnow().isoformat(),
+            "added_by": (added_by or "").strip()[:120],
+            "total_after": total,
+        },
+    )
+    insights["spark_bonus_log"] = log[:50]
+    profile.insights = insights
+    profile.updated_at = datetime.utcnow()
+    await profile.save()
+    invalidate_leaderboard_cache()
+    return {
+        "bonus_points": total,
+        "added": delta,
+        "log": insights["spark_bonus_log"][:12],
+    }
+
+
 def _board_cache_key(org_id: str, sort: str, start: datetime, end: datetime) -> str:
     return f"{org_id}|{sort}|{start.isoformat()}|{end.isoformat()}"
 

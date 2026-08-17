@@ -24,6 +24,7 @@ import {
   formatSignedNumber,
   humanizeScrapeError,
 } from "@/lib/utils";
+import { AdminAddPointsCard } from "@/components/admin-add-points";
 import { ScrapeProgressCard } from "@/components/scrape-progress";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
 import {
@@ -666,6 +667,8 @@ export default function AdminCreatorDetailPage() {
           </div>
         </div>
       </div>
+
+      <AdminAddPointsCard profileId={profileId} insights={p.insights} />
 
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">

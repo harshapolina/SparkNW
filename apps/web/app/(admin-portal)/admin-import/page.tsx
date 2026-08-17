@@ -3,14 +3,14 @@
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FileSpreadsheet, Loader2, Sheet, Upload } from "lucide-react";
+import { Download, FileSpreadsheet, Loader2, Sheet, Upload } from "lucide-react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { api } from "@/lib/api";
 import { saveDuplicatesFromImport } from "@/lib/import-duplicates";
 import { saveUnimportedFromImport, saveUnimportedFromParse } from "@/lib/import-unimported";
 import { cn } from "@/lib/utils";
-import { parseSheetMatrixDetailed, type SheetStudent } from "@/lib/student-sheet";
+import { downloadImportableCsv, parseSheetMatrixDetailed, type SheetStudent } from "@/lib/student-sheet";
 import { type ScrapeStatusResponse } from "@/lib/scrape-progress";
 import { ScrapeActivityBanner, ScrapeProgressBar } from "@/components/scrape-progress";
 
@@ -374,6 +374,18 @@ export default function AdminImportPage() {
               )}
             </div>
             <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={!selected.length}
+                onClick={() =>
+                  downloadImportableCsv(
+                    selected.map((r) => ({ username: r.username, url: r.raw, student: r.student }))
+                  )
+                }
+                className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-xs disabled:opacity-40"
+              >
+                <Download size={13} /> Download CSV
+              </button>
               <button
                 type="button"
                 onClick={() => setRows((prev) => prev.map((r) => ({ ...r, selected: true })))}

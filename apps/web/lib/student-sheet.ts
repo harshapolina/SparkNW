@@ -281,3 +281,52 @@ export function parseSheetMatrixDetailed(matrix: string[][]): {
 
   return { rows: out, rejected };
 }
+
+/** Download importable preview rows as CSV (selected rows from Import roster). */
+export function downloadImportableCsv(
+  rows: { username: string; url?: string; student: SheetStudent }[],
+  filename = `spark-importable-${new Date().toISOString().slice(0, 10)}.csv`
+): void {
+  if (typeof window === "undefined" || !rows.length) return;
+  const headers = [
+    "student_id",
+    "instagram_username",
+    "full_name",
+    "email",
+    "mobile",
+    "university",
+    "instagram_url",
+    "youtube_link",
+    "youtube_username",
+  ];
+  const esc = (v: unknown) => {
+    const s = String(v ?? "");
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const lines = [
+    headers.join(","),
+    ...rows.map((r) => {
+      const s = r.student || {};
+      return [
+        s.student_id ?? "",
+        r.username || s.instagram_username || "",
+        s.full_name ?? "",
+        s.email ?? "",
+        s.mobile ?? "",
+        s.university ?? "",
+        r.url || s.instagram_url || "",
+        s.youtube_link ?? "",
+        s.youtube_username ?? "",
+      ]
+        .map(esc)
+        .join(",");
+    }),
+  ];
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}

@@ -12,6 +12,7 @@ from instascope_shared.analytics.metrics import compute_post_metrics
 from instascope_shared.core.config import get_settings
 from instascope_shared.domain.instagram import growth_pct
 from instascope_shared.instagram_time import infer_posted_at
+from instascope_shared.services.spark_points import merge_spark_scoring_insights
 from instascope_shared.models import (
     Job,
     JobStatus,
@@ -586,7 +587,8 @@ async def apply_scrape_result(
     profile.engagement_rate = eng
     profile.growth_pct_today = g_pct
     profile.follower_following_ratio = round(followers / following, 4) if following else float(followers)
-    profile.insights = metrics
+    prev_insights = profile.insights if isinstance(profile.insights, dict) else {}
+    profile.insights = merge_spark_scoring_insights(prev_insights, metrics)
     profile.status = ProfileStatus.ACTIVE
     profile.last_scraped_at = datetime.utcnow()
     profile.last_success_at = datetime.utcnow()

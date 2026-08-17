@@ -66,6 +66,13 @@ class UpdateProfileRequest(BaseModel):
     url: str = Field(min_length=1, description="Instagram profile URL or @username")
 
 
+class AddBonusPointsRequest(BaseModel):
+    """Admin-awarded SPARK points added to a profile (included in all boards)."""
+
+    points: int = Field(..., description="Positive to add, negative to subtract")
+    reason: str = Field(default="", max_length=240)
+
+
 class StudentInfo(BaseModel):
     """Registration-sheet fields shown on profile pages."""
 

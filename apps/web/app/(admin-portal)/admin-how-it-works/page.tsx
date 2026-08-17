@@ -474,8 +474,10 @@ export default function AdminHowItWorksPage() {
           <h3 className="pt-2 text-sm font-semibold text-zinc-200">4–8) Judged / manual categories</h3>
           <p className="text-sm text-zinc-400">
             Collaborations, revenue, recognition, program participation, and monthly bonus challenges
-            are awarded via admin insights (<code className="text-zinc-300">spark_points.*</code> or
-            legacy <code className="text-zinc-300">spark_bonus_points</code>) and capped:
+            are awarded via admin insights (<code className="text-zinc-300">spark_points.*</code>) and capped.
+            Extra one-off points can also be added from any account page with <strong>Add</strong>
+            (stored as <code className="text-zinc-300">spark_bonus_points</code>, no cap) and show up
+            on the leaderboard and student dashboard immediately.
           </p>
           <DataTable
             headers={["Category", "Cap"]}
