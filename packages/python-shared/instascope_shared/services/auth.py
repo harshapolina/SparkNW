@@ -78,6 +78,25 @@ def _norm_ig_username(raw: str) -> str:
         return username
 
 
+def _exact_ci(value: str) -> dict:
+    return {"$regex": f"^{re.escape(value)}$", "$options": "i"}
+
+
+def _profile_matches_login(profile: Profile, sid: str, ig: str) -> bool:
+    student = getattr(profile, "student", None) or {}
+    roster_sid = _norm_student_id(str(student.get("student_id") or ""))
+    if roster_sid != sid:
+        return False
+    candidates = {
+        _norm_ig_username(getattr(profile, "username", None) or ""),
+        _norm_ig_username(str(student.get("instagram_username") or "")),
+        _norm_ig_username(str(student.get("instagram_handle") or "")),
+        _norm_ig_username(str(student.get("instagram_url") or "")),
+    }
+    candidates.discard("")
+    return ig in candidates
+
+
 async def signup(payload: SignupRequest) -> AuthResponse:
     existing = await User.find_one(User.email == payload.email.lower())
     if existing:
@@ -138,27 +157,27 @@ async def _find_student_profile(student_id: str, ig_username: str, org_id: str =
             detail="student_id and instagram_username are required",
         )
 
-    profiles = await Profile.find(Profile.org_id == org_id).to_list()
-    # Also include legacy profiles missing org_id
-    if not profiles:
-        profiles = await Profile.find_all().to_list()
-        profiles = [p for p in profiles if not getattr(p, "org_id", None) or p.org_id == org_id]
-
-    matches: list[Profile] = []
-    for p in profiles:
-        student = getattr(p, "student", None) or {}
-        roster_sid = _norm_student_id(str(student.get("student_id") or ""))
-        if roster_sid != sid:
-            continue
-        candidates = {
-            _norm_ig_username(p.username or ""),
-            _norm_ig_username(str(student.get("instagram_username") or "")),
-            _norm_ig_username(str(student.get("instagram_handle") or "")),
-            _norm_ig_username(str(student.get("instagram_url") or "")),
-        }
-        candidates.discard("")
-        if ig in candidates:
-            matches.append(p)
+    # Look up one student by ID / handle. Never load the full roster.
+    sid_rx = _exact_ci(sid)
+    ig_rx = _exact_ci(ig)
+    org_clause = {
+        "$or": [
+            {"org_id": org_id},
+            {"org_id": {"$exists": False}},
+            {"org_id": None},
+            {"org_id": ""},
+        ]
+    }
+    identity_clause = {
+        "$or": [
+            {"username": ig_rx},
+            {"student.instagram_username": ig_rx},
+            {"student.instagram_handle": ig_rx},
+            {"student.student_id": sid_rx},
+        ]
+    }
+    profiles = await Profile.find({"$and": [org_clause, identity_clause]}).to_list()
+    matches = [p for p in profiles if _profile_matches_login(p, sid, ig)]
 
     if not matches:
         raise HTTPException(
@@ -219,7 +238,8 @@ async def student_login(payload: StudentLoginRequest) -> AuthResponse:
         if not user:
             user = User(
                 email=email,
-                password_hash=hash_password(secrets.token_urlsafe(32)),
+                # Students never use password login; skip bcrypt (~300ms) on first sign-in.
+                password_hash="!",
                 name=str(display_name),
                 role=UserRole.STUDENT,
                 org_id=org_id,

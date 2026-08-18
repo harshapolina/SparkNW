@@ -163,6 +163,7 @@ class Profile(Document):
             IndexModel([("user_id", ASCENDING), ("status", ASCENDING)]),
             IndexModel([("org_id", ASCENDING), ("status", ASCENDING)]),
             IndexModel([("org_id", ASCENDING), ("username", ASCENDING)]),
+            IndexModel([("org_id", ASCENDING), ("student.student_id", ASCENDING)]),
             IndexModel([("status", ASCENDING), ("last_scraped_at", ASCENDING)]),
             IndexModel([("youtube_channel_id", ASCENDING)]),
             IndexModel([("org_id", ASCENDING), ("youtube_connected", ASCENDING)]),
