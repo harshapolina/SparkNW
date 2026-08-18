@@ -80,9 +80,6 @@ async def leaderboard(
         r.pop("task_history", None)
     if campus and campus.lower() not in {"all", "national", ""}:
         rows = [r for r in rows if r["campus"].lower() == campus.lower()]
-        for i, r in enumerate(rows):
-            r["rank"] = i + 1
-            r["is_you"] = bool(you_id and r["id"] == you_id)
     if q:
         s = q.lower().strip()
         rows = [
@@ -93,9 +90,6 @@ async def leaderboard(
             or s in r["campus"].lower()
             or s in (r.get("team") or "").lower()
         ]
-        for i, r in enumerate(rows):
-            r["rank"] = i + 1
-            r["is_you"] = bool(you_id and r["id"] == you_id)
 
     # Campuses from the same date window (avoid a second full live board pass).
     campuses = sorted({r["campus"] for r in rows if r.get("campus")})

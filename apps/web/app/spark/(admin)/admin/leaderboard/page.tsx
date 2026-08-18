@@ -52,7 +52,7 @@ export default function AdminLeaderboardPage() {
           (c.team || "").toLowerCase().includes(s)
       );
     }
-    return list.map((c, i) => ({ ...c, rank: i + 1 }));
+    return list;
   }, [boardQ.data, campus, tier, q]);
 
   const totalPages = Math.max(1, Math.ceil(ranked.length / PAGE_SIZE));

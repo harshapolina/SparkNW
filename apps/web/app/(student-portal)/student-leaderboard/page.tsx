@@ -47,7 +47,7 @@ export default function StudentLeaderboardPage() {
       );
     }
     // Preserve national ranks when not campus-filtering; re-rank for campus view
-    if (campusFilter) {
+    if (campusFilter && !q.trim()) {
       return list.map((c, i) => ({ ...c, rank: i + 1 }));
     }
     return list;

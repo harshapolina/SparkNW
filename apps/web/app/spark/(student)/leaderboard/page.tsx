@@ -38,7 +38,10 @@ export default function StudentLeaderboardPage() {
           c.campus.toLowerCase().includes(s)
       );
     }
-    return list.map((c, i) => ({ ...c, rank: i + 1 }));
+    if (campusFilter && !q.trim()) {
+      return list.map((c, i) => ({ ...c, rank: i + 1 }));
+    }
+    return list;
   }, [data, campusFilter, q]);
 
   const top10 = ranked.slice(0, 10);
