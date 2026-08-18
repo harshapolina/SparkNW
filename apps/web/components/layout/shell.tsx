@@ -10,7 +10,7 @@ import {
   Search,
   Settings,
 } from "lucide-react";
-import { api, clearTokens, getStoredUser, type Profile, type User } from "@/lib/api";
+import { ADMIN_LOGIN_PATH, api, clearTokens, getStoredUser, type Profile, type User } from "@/lib/api";
 import { BrandLogo } from "@/components/brand-logo";
 import { prefetchSparkData, sparkQueryKeyForApi } from "@/lib/spark/prefetch";
 import { cn } from "@/lib/utils";
@@ -163,7 +163,7 @@ export function DashboardShell({ children }: { children: React.ReactNode }) {
             <button
               onClick={() => {
                 clearTokens();
-                router.push("/login");
+                router.push(ADMIN_LOGIN_PATH);
               }}
               className="flex items-center gap-2 rounded-full bg-white py-1.5 pl-1.5 pr-3 shadow-soft"
               title="Sign out"

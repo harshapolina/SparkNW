@@ -35,7 +35,6 @@ map_sheet_row = _roster.map_sheet_row
 
 ADMIN_EMAIL = "sparkadmin@NW.co.in"
 ADMIN_PASSWORD = "Editco@spark3"
-ADMIN_NAME = "Spark Admin"
 
 
 def http_json(method: str, url: str, body: dict | None = None, token: str | None = None) -> dict:
@@ -54,30 +53,14 @@ def http_json(method: str, url: str, body: dict | None = None, token: str | None
 
 
 def ensure_admin(api: str) -> str:
-    """Signup or login; return access token."""
-    try:
-        res = http_json(
-            "POST",
-            f"{api}/auth/signup",
-            {
-                "name": ADMIN_NAME,
-                "email": ADMIN_EMAIL,
-                "password": ADMIN_PASSWORD,
-            },
-        )
-        print(f"Created admin {ADMIN_EMAIL}")
-        return _token_from_auth(res)
-    except RuntimeError as e:
-        if "409" not in str(e) and "already" not in str(e).lower() and "exist" not in str(e).lower():
-            # try login anyway
-            pass
-        res = http_json(
-            "POST",
-            f"{api}/auth/login",
-            {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
-        )
-        print(f"Logged in as {ADMIN_EMAIL}")
-        return _token_from_auth(res)
+    """Login as the existing admin; return access token."""
+    res = http_json(
+        "POST",
+        f"{api}/auth/login",
+        {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD},
+    )
+    print(f"Logged in as {ADMIN_EMAIL}")
+    return _token_from_auth(res)
 
 
 def _token_from_auth(res: dict) -> str:

@@ -79,18 +79,6 @@ export default function AdminLoginPage() {
             {loading ? "Signing in…" : "Open admin portal"}
           </button>
         </form>
-
-        <div className="mt-6 flex flex-wrap gap-4 text-xs text-zinc-500">
-          <Link href="/top-10" className="hover:text-zinc-300">
-            Public Top 10
-          </Link>
-          <Link href="/student-login" className="hover:text-zinc-300">
-            Student login
-          </Link>
-          <Link href="/login" className="hover:text-zinc-300">
-            Spark login
-          </Link>
-        </div>
       </div>
     </div>
   );

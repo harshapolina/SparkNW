@@ -5,7 +5,7 @@ import { FormEvent, useState } from "react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { api } from "@/lib/api";
+import { ADMIN_LOGIN_PATH, api } from "@/lib/api";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
@@ -53,7 +53,7 @@ export default function ForgotPasswordPage() {
             </Button>
           </>
         )}
-        <Link href="/login" className="block text-center text-sm text-muted hover:text-fg">Back to login</Link>
+        <Link href={ADMIN_LOGIN_PATH} className="block text-center text-sm text-muted hover:text-fg">Back to login</Link>
       </motion.form>
     </div>
   );

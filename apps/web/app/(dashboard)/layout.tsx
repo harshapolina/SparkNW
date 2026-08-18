@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { getStoredUser, getUserRole } from "@/lib/api";
+import { ADMIN_LOGIN_PATH, getStoredUser, getUserRole } from "@/lib/api";
 import { DashboardShell } from "@/components/layout/shell";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
@@ -11,7 +11,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const user = getStoredUser();
     const token = localStorage.getItem("is_access_token");
     if (!user && !token) {
-      router.replace("/admin-login");
+      router.replace(ADMIN_LOGIN_PATH);
       return;
     }
     const role = getUserRole(user);

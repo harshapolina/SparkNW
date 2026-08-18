@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.deps import get_current_user
 from instascope_shared.models import User
@@ -18,8 +18,8 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def signup(payload: SignupRequest):
-    return await auth_service.signup(payload)
+async def signup(_payload: SignupRequest):
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account creation is disabled")
 
 
 @router.post("/login", response_model=AuthResponse)

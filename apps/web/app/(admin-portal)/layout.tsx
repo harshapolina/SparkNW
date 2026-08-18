@@ -24,7 +24,7 @@ import {
   Upload,
   Video,
 } from "lucide-react";
-import { clearTokens, getStoredUser, type User } from "@/lib/api";
+import { ADMIN_LOGIN_PATH, clearTokens, getStoredUser, type User } from "@/lib/api";
 import { BrandLogo } from "@/components/brand-logo";
 import { useRequireRole } from "@/lib/spark/auth-guard";
 import { adminScrapingListHref } from "@/lib/admin-scraping-list-state";
@@ -94,7 +94,7 @@ function childHref(href: string) {
 }
 
 export default function AdminPortalLayout({ children }: { children: React.ReactNode }) {
-  const ready = useRequireRole("admin", "/admin-login");
+  const ready = useRequireRole("admin", ADMIN_LOGIN_PATH);
   const pathname = usePathname();
   const router = useRouter();
   const qc = useQueryClient();
@@ -261,7 +261,7 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
             className="hover:text-[#ff4d00]"
             onClick={() => {
               clearTokens();
-              router.replace("/admin-login");
+              router.replace(ADMIN_LOGIN_PATH);
             }}
           >
             Sign out
@@ -288,7 +288,7 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
             className="shrink-0 text-xs text-zinc-400 hover:text-[#ff4d00]"
             onClick={() => {
               clearTokens();
-              router.replace("/admin-login");
+              router.replace(ADMIN_LOGIN_PATH);
             }}
           >
             Sign out

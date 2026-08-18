@@ -52,15 +52,6 @@ export default function PublicTop10Page() {
             >
               Student login
             </Link>
-            <span className="hidden text-zinc-700 sm:inline">·</span>
-            <Link
-              href="/admin-login"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-zinc-400 hover:text-white"
-            >
-              Admin login
-            </Link>
           </div>
         </div>
 

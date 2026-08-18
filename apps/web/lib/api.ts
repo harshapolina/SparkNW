@@ -1,5 +1,8 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
+/** Hidden admin sign-in path — not linked from public pages. */
+export const ADMIN_LOGIN_PATH = "/spark-hq";
+
 export type UserRole = "admin" | "student";
 
 export type Tokens = { access_token: string; refresh_token: string; token_type: string };
@@ -183,12 +186,11 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
       if (typeof window !== "undefined") {
         const pathName = window.location.pathname;
         if (
-          !pathName.startsWith("/login") &&
-          !pathName.startsWith("/admin-login") &&
+          !pathName.startsWith(ADMIN_LOGIN_PATH) &&
           !pathName.startsWith("/student-login") &&
           !pathName.startsWith("/top-10")
         ) {
-          window.location.href = "/admin-login";
+          window.location.href = ADMIN_LOGIN_PATH;
         }
       }
     }
