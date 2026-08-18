@@ -171,7 +171,7 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
         </div>
       </div>
 
-      <CampusUploadsTable data={admin.campus_uploads} platform="youtube" />
+      <CampusUploadsTable platform="youtube" />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric

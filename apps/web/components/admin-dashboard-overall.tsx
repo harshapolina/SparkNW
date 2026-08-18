@@ -246,7 +246,7 @@ export function AdminOverallDashboard({
         />
       </div>
 
-      <CampusUploadsTable data={admin.campus_uploads} platform="overall" />
+      <CampusUploadsTable platform="overall" />
 
       <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">

@@ -135,6 +135,12 @@ async def admin_overview(user: User = Depends(require_admin)):
     return await spark_service.get_admin_overview(_org_id(user))
 
 
+@router.get("/admin/campus-uploads")
+async def campus_uploads(user: User = Depends(require_admin)):
+    """Fast campus × month upload counts (does not rebuild the leaderboard)."""
+    return await spark_service.get_campus_uploads(_org_id(user))
+
+
 @router.post("/profiles/{profile_id}/bonus-points")
 async def add_bonus_points(
     profile_id: str,

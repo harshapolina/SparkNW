@@ -121,7 +121,15 @@ export function AdminDashboardBoard({ view }: { view: DashboardBoardView }) {
     return Math.max(1, ...cells.map((c) => c.count));
   }, [admin?.posting_heatmap]);
 
-  if (isPending && !admin) return <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />;
+  if (isPending && !admin) {
+    const pendingPlatform = view === "youtube" ? "youtube" : view === "overall" ? "overall" : "instagram";
+    return (
+      <div className="space-y-6">
+        <CampusUploadsTable platform={pendingPlatform} />
+        <div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />
+      </div>
+    );
+  }
   if (error) {
     return (
       <div className="rounded-2xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
@@ -647,7 +655,7 @@ export function AdminDashboardBoard({ view }: { view: DashboardBoardView }) {
             </div>
           </div>
 
-          <CampusUploadsTable data={admin.campus_uploads} platform="instagram" />
+          <CampusUploadsTable platform="instagram" />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">

@@ -137,6 +137,57 @@ def month_keys_inclusive(start: datetime, end: datetime) -> list[str]:
     return keys
 
 
+def _boards_from_campus_maps(
+    ig: dict[str, dict[str, int]],
+    yt: dict[str, dict[str, int]],
+    months: list[str],
+) -> dict[str, Any]:
+    def empty() -> dict[str, int]:
+        return {m: 0 for m in months}
+
+    campuses = sorted(
+        set(ig) | set(yt),
+        key=lambda c: (
+            -(sum(ig.get(c, {}).values()) + sum(yt.get(c, {}).values())),
+            c.lower(),
+        ),
+    )
+
+    def pack(store: dict[str, dict[str, int]]) -> dict[str, Any]:
+        rows = []
+        totals = empty()
+        grand = 0
+        for campus in campuses:
+            counts = [int(store.get(campus, {}).get(m, 0)) for m in months]
+            total = sum(counts)
+            for m, n in zip(months, counts):
+                totals[m] += n
+            grand += total
+            rows.append({"campus": campus, "counts": counts, "total": total})
+        return {
+            "rows": rows,
+            "totals": [totals[m] for m in months],
+            "grand_total": grand,
+        }
+
+    combined: dict[str, dict[str, int]] = {}
+    for campus in campuses:
+        merged = empty()
+        for m in months:
+            merged[m] = int(ig.get(campus, {}).get(m, 0)) + int(yt.get(campus, {}).get(m, 0))
+        combined[campus] = merged
+
+    return {
+        "months": [
+            {"id": m, "label": datetime.strptime(f"{m}-01", "%Y-%m-%d").strftime("%b %Y")}
+            for m in months
+        ],
+        "instagram": pack(ig),
+        "youtube": pack(yt),
+        "overall": pack(combined),
+    }
+
+
 def build_campus_uploads(
     *,
     campus_by_pid: dict[str, str],
@@ -174,47 +225,87 @@ def build_campus_uploads(
         campus = campus_by_pid.get(pid) or "—"
         bump(yt, campus, getattr(video, "published_at", None))
 
-    campuses = sorted(
-        set(ig) | set(yt),
-        key=lambda c: (
-            -(sum(ig.get(c, {}).values()) + sum(yt.get(c, {}).values())),
-            c.lower(),
-        ),
+    return _boards_from_campus_maps(ig, yt, months)
+
+
+def _org_profile_filter(org_id: str) -> dict[str, Any]:
+    return {
+        "$or": [
+            {"org_id": org_id},
+            {"org_id": {"$exists": False}},
+            {"org_id": None},
+            {"org_id": ""},
+        ]
+    }
+
+
+async def _uploads_by_profile_month(collection, date_field: str, start: datetime, end: datetime) -> dict[str, dict[str, int]]:
+    """Fast Mongo count of documents per profile_id × YYYY-MM."""
+    start_n = start.replace(tzinfo=None) if start.tzinfo else start
+    end_n = end.replace(tzinfo=None) if end.tzinfo else end
+    pipeline = [
+        {"$match": {date_field: {"$gte": start_n, "$lte": end_n}}},
+        {
+            "$group": {
+                "_id": {
+                    "pid": "$profile_id",
+                    "month": {"$dateToString": {"format": "%Y-%m", "date": f"${date_field}"}},
+                },
+                "n": {"$sum": 1},
+            }
+        },
+    ]
+    out: dict[str, dict[str, int]] = defaultdict(dict)
+    async for doc in collection.aggregate(pipeline, allowDiskUse=True):
+        ident = doc.get("_id") or {}
+        pid = str(ident.get("pid") or "")
+        month = ident.get("month")
+        if pid and month:
+            out[pid][str(month)] = int(doc.get("n") or 0)
+    return out
+
+
+async def get_campus_uploads(org_id: str | None = None) -> dict[str, Any]:
+    """Campus × month upload counts without scoring the full leaderboard."""
+    oid = org_id or DEFAULT_ORG_ID
+    start, end = clamp_scoring_window(None, None)
+    months = month_keys_inclusive(start, end)
+    month_set = set(months)
+
+    campus_by_pid: dict[str, str] = {}
+    col = Profile.get_motor_collection()
+    async for d in col.find(_org_profile_filter(oid), {"student": 1, "insights": 1, "username": 1}):
+        campus_by_pid[str(d.get("_id"))] = _campus(
+            SimpleNamespace(
+                student=d.get("student") or {},
+                insights=d.get("insights") or {},
+                username=d.get("username") or "",
+                id=d.get("_id"),
+            )
+        )
+
+    ig_pm, yt_pm = await asyncio.gather(
+        _uploads_by_profile_month(Post.get_motor_collection(), "posted_at", start, end),
+        _uploads_by_profile_month(YouTubeVideo.get_motor_collection(), "published_at", start, end),
     )
 
-    def pack(store: dict[str, dict[str, int]]) -> dict[str, Any]:
-        rows = []
-        totals = empty()
-        grand = 0
-        for campus in campuses:
-            counts = [int(store.get(campus, {}).get(m, 0)) for m in months]
-            total = sum(counts)
-            for m, n in zip(months, counts, strict=False):
-                totals[m] += n
-            grand += total
-            rows.append({"campus": campus, "counts": counts, "total": total})
-        return {
-            "rows": rows,
-            "totals": [totals[m] for m in months],
-            "grand_total": grand,
-        }
+    def empty() -> dict[str, int]:
+        return {m: 0 for m in months}
 
-    combined: dict[str, dict[str, int]] = {}
-    for campus in campuses:
-        merged = empty()
-        for m in months:
-            merged[m] = int(ig.get(campus, {}).get(m, 0)) + int(yt.get(campus, {}).get(m, 0))
-        combined[campus] = merged
+    ig: dict[str, dict[str, int]] = {}
+    yt: dict[str, dict[str, int]] = {}
 
-    return {
-        "months": [
-            {"id": m, "label": datetime.strptime(f"{m}-01", "%Y-%m-%d").strftime("%b %Y")}
-            for m in months
-        ],
-        "instagram": pack(ig),
-        "youtube": pack(yt),
-        "overall": pack(combined),
-    }
+    def fold(src: dict[str, dict[str, int]], dest: dict[str, dict[str, int]]) -> None:
+        for pid, by_month in src.items():
+            campus = campus_by_pid.get(pid) or "—"
+            row = dest.setdefault(campus, empty())
+            for month, n in by_month.items():
+                if month in month_set:
+                    row[month] += int(n or 0)
+
+    fold(ig_pm, ig)
+    fold(yt_pm, yt)
+    return _boards_from_campus_maps(ig, yt, months)
 
 
 def _naive_dt(value: datetime | None) -> datetime | None:
@@ -1177,10 +1268,8 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
         build_leaderboard(oid, sort="overall", from_date=window_start, to_date=window_end),
         _profiles_for_org(oid),
     )
-    profile_ids = [str(p.id) for p in profiles]
-    posts_map, videos_map = await asyncio.gather(
-        _posts_for_profiles(profile_ids, from_date=window_start, to_date=window_end),
-        _youtube_videos_by_profile(profile_ids, from_date=window_start, to_date=window_end),
+    posts_map = await _posts_for_profiles(
+        [str(p.id) for p in profiles], from_date=window_start, to_date=window_end
     )
     # Flatten posts once — keep only cohort-window posts for overview charts/totals.
     all_posts = [p for bucket in posts_map.values() for p in bucket]
@@ -1201,15 +1290,6 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
     total_comments = sum(int(r["comments"]) for r in board)
     total_points = sum(int(r["points"]) for r in board)
     reels = sum(1 for p in posts if str(getattr(p.media_type, "value", p.media_type)).lower() == "reel")
-    campus_by_pid = {str(p.id): _campus(p) for p in profiles}
-    yt_videos = [v for bucket in videos_map.values() for v in bucket]
-    campus_uploads = build_campus_uploads(
-        campus_by_pid=campus_by_pid,
-        posts=posts,
-        videos=yt_videos,
-        start=window_start,
-        end=window_end,
-    )
 
     # Fast WoW: points added in the last 7 days (new post performance + consistency + growth milestone deltas)
     week_ago_dt = max(window_start, datetime.utcnow() - timedelta(days=7))
@@ -1670,7 +1750,6 @@ async def get_admin_overview(org_id: str | None = None) -> dict[str, Any]:
         "insights": insights,
         "needing_attention": needing,
         "youtube": youtube_overview,
-        "campus_uploads": campus_uploads,
         # Lifetime unique counts (1 profile = 1 count; re-scrapes do not inflate).
         "overall": {
             "total_profiles": len(profiles),
