@@ -22,6 +22,7 @@ celery_app = Celery(
         "tasks.sync_youtube",
         "tasks.connect_youtube",
         "tasks.fanout_youtube",
+        "tasks.refresh_top10",
     ],
 )
 
@@ -53,6 +54,11 @@ celery_app.conf.update(
         "retry-failed": {
             "task": "tasks.retry_failed",
             "schedule": crontab(minute="*/30"),
+        },
+        # Public Top 10 snapshot — Framer/embed reads Mongo, never a live full recount.
+        "refresh-top10-snapshot": {
+            "task": "tasks.refresh_top10",
+            "schedule": crontab(minute="*/2"),
         },
     },
 )

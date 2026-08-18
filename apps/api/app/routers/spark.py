@@ -2,6 +2,8 @@ from datetime import datetime, time
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 
 from app.deps import get_current_user, require_admin, require_student
 from instascope_shared.cohort import clamp_scoring_window, cohort_start_ymd
@@ -36,8 +38,14 @@ def _parse_leaderboard_day(raw: Optional[str], *, end_of_day: bool = False) -> O
 
 @router.get("/top-10")
 async def top_10():
-    """Public anonymous Top 10 — no auth, no personalized YOU row."""
-    return await spark_service.get_top_10(DEFAULT_ORG_ID)
+    """Public anonymous Top 10 — served from a precomputed snapshot for Framer/embed."""
+    data = await spark_service.get_top_10(DEFAULT_ORG_ID)
+    return JSONResponse(
+        content=jsonable_encoder(data),
+        headers={
+            "Cache-Control": "public, max-age=30, s-maxage=60, stale-while-revalidate=300",
+        },
+    )
 
 
 @router.get("/leaderboard")

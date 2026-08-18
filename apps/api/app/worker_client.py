@@ -75,6 +75,21 @@ def dispatch_youtube_job_payloads(jobs: list) -> int:
     return dispatched
 
 
+def dispatch_refresh_top10(org_id: str | None = None) -> str | None:
+    """Rebuild the public Top 10 snapshot without blocking the API request."""
+    try:
+        from instascope_shared.models import DEFAULT_ORG_ID
+
+        result = _celery().send_task(
+            "tasks.refresh_top10",
+            args=[org_id or DEFAULT_ORG_ID],
+            expires=90,
+        )
+        return result.id
+    except Exception:
+        return None
+
+
 def dispatch_fanout_youtube() -> str | None:
     """Trigger Celery fan-out for all connected YouTube channels (respects toggle)."""
     try:

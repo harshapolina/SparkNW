@@ -392,6 +392,26 @@ class YouTubeVideo(Document):
         ]
 
 
+class SparkTop10Snapshot(Document):
+    """Precomputed public Top 10 so Framer/embed loads without a full board rebuild."""
+
+    org_id: Indexed(str, unique=True)  # type: ignore[valid-type]
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    total_creators: int = 0
+    from_date: str = ""
+    to_date: str = ""
+    week_label: str = ""
+    built_at: datetime = Field(default_factory=datetime.utcnow)
+    building_started_at: Optional[datetime] = None
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    class Settings:
+        name = "spark_top10_snapshots"
+        indexes = [
+            IndexModel([("org_id", ASCENDING)], unique=True),
+        ]
+
+
 class YouTubeSnapshot(Document):
     """Daily YouTube metrics snapshot for growth charts (mirrors ProfileSnapshot idea)."""
 
@@ -432,6 +452,7 @@ DOCUMENT_MODELS = [
     YouTubeChannel,
     YouTubeVideo,
     YouTubeSnapshot,
+    SparkTop10Snapshot,
 ]
 
 # Late import avoids circular refs — AppConfig lives with services but is a Document.

@@ -88,6 +88,13 @@ async def lifespan(_app: FastAPI):
             )
     except Exception:
         logging.getLogger("instascope.api").exception("startup YouTube resume failed")
+    try:
+        from app.worker_client import dispatch_refresh_top10
+
+        tid = dispatch_refresh_top10()
+        logging.getLogger("instascope.api").info("startup top10 refresh dispatched=%s", bool(tid))
+    except Exception:
+        logging.getLogger("instascope.api").exception("startup top10 refresh failed")
     yield
     await close_db()
 

@@ -96,4 +96,5 @@ def test_document_models_register_youtube():
     assert "youtube_channels" in names
     assert "youtube_videos" in names
     assert "youtube_snapshots" in names
+    assert "spark_top10_snapshots" in names
     assert "profiles" in names

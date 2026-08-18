@@ -23,6 +23,7 @@ from instascope_shared.models import (
     Profile,
     ProfileSnapshot,
     ProfileStatus,
+    SparkTop10Snapshot,
     YouTubeChannel,
     YouTubeSnapshot,
     YouTubeSyncStatus,
@@ -568,6 +569,64 @@ def invalidate_leaderboard_cache() -> None:
     _board_cache.clear()
 
 
+_TOP10_REFRESH_AFTER_SEC = 120.0
+_TOP10_BUILD_LOCK_SEC = 240.0
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _top10_items_from_board(board: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in board[:10]:
+        item = _jsonable({k: v for k, v in row.items() if k != "task_history"})
+        if isinstance(item, dict):
+            items.append(item)
+    return items
+
+
+def top10_payload_from_board(board: list[dict[str, Any]], *, start: datetime, end: datetime) -> dict[str, Any]:
+    return {
+        "items": _top10_items_from_board(board),
+        "total_creators": len(board),
+        "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
+        "from_date": start.strftime("%Y-%m-%d"),
+        "to_date": end.strftime("%Y-%m-%d"),
+    }
+
+
+def _payload_from_snapshot(snap: SparkTop10Snapshot) -> dict[str, Any]:
+    return {
+        "items": list(snap.items or []),
+        "total_creators": int(snap.total_creators or 0),
+        "week_label": snap.week_label or f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
+        "from_date": snap.from_date,
+        "to_date": snap.to_date,
+    }
+
+
+def request_top10_refresh(org_id: str | None = None) -> None:
+    """Fire-and-forget Celery rebuild. No-op if Redis/Celery is down."""
+    try:
+        from celery import Celery
+
+        settings = get_settings()
+        Celery("instascope", broker=settings.redis_url, backend=settings.redis_url).send_task(
+            "tasks.refresh_top10",
+            args=[org_id or DEFAULT_ORG_ID],
+            expires=90,
+        )
+    except Exception:
+        return
+
+
 async def add_manual_bonus_points(
     profile: Profile,
     *,
@@ -608,6 +667,7 @@ async def add_manual_bonus_points(
     profile.updated_at = datetime.utcnow()
     await profile.save()
     invalidate_leaderboard_cache()
+    request_top10_refresh(getattr(profile, "org_id", None) or DEFAULT_ORG_ID)
     return {
         "bonus_points": total,
         "added": delta,
@@ -797,21 +857,57 @@ async def _build_leaderboard_fresh(
     return rows
 
 
-async def get_top_10(org_id: str | None = None) -> dict[str, Any]:
+async def refresh_top10_snapshot(org_id: str | None = None, *, force: bool = False) -> dict[str, Any]:
+    """Rebuild the public Top 10 snapshot. Called by Celery Beat / add-points / cold start."""
+    oid = org_id or DEFAULT_ORG_ID
+    now = datetime.utcnow()
+    snap = await SparkTop10Snapshot.find_one(SparkTop10Snapshot.org_id == oid)
+    if snap:
+        building = snap.building_started_at
+        if building and (now - building).total_seconds() < _TOP10_BUILD_LOCK_SEC:
+            if snap.items:
+                return _payload_from_snapshot(snap)
+        if (
+            not force
+            and snap.items
+            and snap.built_at
+            and (now - snap.built_at).total_seconds() < _TOP10_REFRESH_AFTER_SEC
+        ):
+            return _payload_from_snapshot(snap)
+
+    if snap is None:
+        snap = SparkTop10Snapshot(org_id=oid, building_started_at=now)
+        await snap.insert()
+    else:
+        snap.building_started_at = now
+        snap.updated_at = now
+        await snap.save()
+
     start, end = clamp_scoring_window(None, None)
-    board = await build_leaderboard(
-        org_id, sort="overall", from_date=start, to_date=end
-    )
-    items = board[:10]
-    for r in items:
-        r.pop("task_history", None)
-    return {
-        "items": items,
-        "total_creators": len(board),
-        "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
-        "from_date": start.strftime("%Y-%m-%d"),
-        "to_date": end.strftime("%Y-%m-%d"),
-    }
+    board = await build_leaderboard(oid, sort="overall", from_date=start, to_date=end)
+    payload = top10_payload_from_board(board, start=start, end=end)
+    snap.items = payload["items"]
+    snap.total_creators = int(payload["total_creators"])
+    snap.from_date = str(payload["from_date"])
+    snap.to_date = str(payload["to_date"])
+    snap.week_label = str(payload["week_label"])
+    snap.built_at = datetime.utcnow()
+    snap.building_started_at = None
+    snap.updated_at = snap.built_at
+    await snap.save()
+    return payload
+
+
+async def get_top_10(org_id: str | None = None) -> dict[str, Any]:
+    """Public Top 10: return the saved snapshot instantly; rebuild in the background when stale."""
+    oid = org_id or DEFAULT_ORG_ID
+    snap = await SparkTop10Snapshot.find_one(SparkTop10Snapshot.org_id == oid)
+    if snap and snap.items:
+        age = (datetime.utcnow() - snap.built_at).total_seconds() if snap.built_at else 1e9
+        if age >= _TOP10_REFRESH_AFTER_SEC:
+            request_top10_refresh(oid)
+        return _payload_from_snapshot(snap)
+    return await refresh_top10_snapshot(oid, force=True)
 
 
 def _slim_board_row(row: dict[str, Any]) -> dict[str, Any]:
