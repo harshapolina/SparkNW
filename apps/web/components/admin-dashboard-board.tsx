@@ -40,6 +40,7 @@ import { SparkAvatar } from "@/components/spark/ui";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
 import { AdminYouTubeDashboard } from "@/components/admin-dashboard-youtube";
 import { AdminOverallDashboard } from "@/components/admin-dashboard-overall";
+import { CampusUploadsTable } from "@/components/campus-uploads-table";
 
 export type DashboardBoardView = "overall" | "instagram" | "youtube";
 
@@ -645,6 +646,8 @@ export function AdminDashboardBoard({ view }: { view: DashboardBoardView }) {
               </div>
             </div>
           </div>
+
+          <CampusUploadsTable data={admin.campus_uploads} platform="instagram" />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">

@@ -18,6 +18,7 @@ import type { AdminOverviewResponse } from "@/lib/spark/api-types";
 import { cn, formatNumber } from "@/lib/utils";
 import { SparkAvatar } from "@/components/spark/ui";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
+import { CampusUploadsTable } from "@/components/campus-uploads-table";
 
 type YtSyncStatus = {
   active_count: number;
@@ -169,6 +170,8 @@ export function AdminYouTubeDashboard({ admin }: { admin: AdminOverviewResponse 
           </div>
         </div>
       </div>
+
+      <CampusUploadsTable data={admin.campus_uploads} platform="youtube" />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric

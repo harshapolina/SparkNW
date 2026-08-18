@@ -150,6 +150,19 @@ export type AdminRecentProfile = {
   full_name_student?: string | null;
 };
 
+export type CampusUploadsBoard = {
+  rows: { campus: string; counts: number[]; total: number }[];
+  totals: number[];
+  grand_total: number;
+};
+
+export type CampusUploadsBreakdown = {
+  months: { id: string; label: string }[];
+  instagram: CampusUploadsBoard;
+  youtube: CampusUploadsBoard;
+  overall: CampusUploadsBoard;
+};
+
 export type AdminOverviewResponse = {
   week_label: string;
   date_range: string;
@@ -232,6 +245,7 @@ export type AdminOverviewResponse = {
     last_sync: string | null;
     next_sync: string;
   };
+  campus_uploads?: CampusUploadsBreakdown;
   youtube?: {
     connected: number;
     total_channels: number;
