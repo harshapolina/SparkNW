@@ -21,6 +21,8 @@ import httpx
 
 from instascope_scraper.caps import caps_env
 from instascope_scraper.instagram_time import infer_posted_at_iso
+from instascope_scraper.metrics import m
+from instascope_scraper.network_policy import is_pagination_url
 
 logger = logging.getLogger("instascope.scraper.http_profile")
 
@@ -322,6 +324,60 @@ def _page_size() -> int:
     return max(12, min(n, 12))
 
 
+def _httpx_event_hooks() -> dict[str, list]:
+    async def on_request(request: httpx.Request) -> None:
+        url = str(request.url)
+        m().record_request(url, pagination=is_pagination_url(url))
+
+    async def on_response(response: httpx.Response) -> None:
+        url = str(response.request.url)
+        nbytes = 0
+        try:
+            nbytes = int(response.headers.get("content-length") or 0)
+        except ValueError:
+            nbytes = 0
+        if nbytes <= 0:
+            try:
+                nbytes = len(response.content)
+            except Exception:
+                nbytes = 0
+        m().record_response(url, status=response.status_code, nbytes=nbytes)
+
+    return {"request": [on_request], "response": [on_response]}
+
+
+def _new_client(**kwargs: Any) -> httpx.AsyncClient:
+    kwargs.setdefault("follow_redirects", True)
+    kwargs.setdefault("event_hooks", _httpx_event_hooks())
+    return httpx.AsyncClient(**kwargs)
+
+
+def decide_feed_cursor(
+    *,
+    max_id: str | None,
+    next_cursor: str | None,
+    added: int,
+    requested: set[str],
+) -> tuple[str | None, str]:
+    """Pick the next feed max_id or stop.
+
+    ``stop_repeat`` — this cursor was already requested.
+    ``stop_stuck`` — duplicate page and cursor did not move.
+    ``advance`` — use the new cursor.
+    """
+    nxt = str(next_cursor).strip() if next_cursor else ""
+    cur = str(max_id).strip() if max_id else ""
+    if nxt and nxt == cur and added == 0:
+        return max_id, "stop_stuck"
+    if nxt and nxt in requested and added == 0:
+        return max_id, "stop_repeat"
+    if nxt and nxt != cur:
+        return nxt, "advance"
+    if added == 0:
+        return max_id, "stop_stuck"
+    return nxt or max_id, "advance"
+
+
 def _client_headers(username: str) -> dict[str, str]:
     return {
         "User-Agent": UA,
@@ -355,7 +411,8 @@ async def _get_json_with_retry(
             logger.exception("%s GET failed attempt=%s url=%s", label, attempt + 1, url[:160])
             if attempt + 1 >= max_retries:
                 raise
-            await asyncio.sleep(1.5 * (attempt + 1))
+            m().record_retry()
+            await asyncio.sleep(min(8.0, 1.5 * (2 ** attempt)))
             continue
         last_status = res.status_code
         last_snip = (res.text or "")[:300]
@@ -394,6 +451,7 @@ async def _get_json_with_retry(
                     pass
             if please_wait:
                 wait = min(wait, 8.0)
+            m().record_retry()
             logger.warning(
                 "%s HTTP %s attempt=%s/%s wait=%.1fs url=%s body=%r",
                 label,
@@ -432,9 +490,10 @@ def _apply_csrf(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
 
 
 async def _bootstrap_session(client: httpx.AsyncClient, username: str) -> None:
-    """Visit Instagram so we get csrftoken / mid cookies before API calls."""
-    await client.get("https://www.instagram.com/")
+    """Warm csrftoken/mid. Profile HTML is enough; homepage is a second multi-MB download."""
     await client.get(f"https://www.instagram.com/{username}/")
+    if not _csrf_from_cookies(client):
+        await client.get("https://www.instagram.com/")
     _apply_csrf(client, dict(client.headers))
 
 
@@ -445,7 +504,7 @@ async def fetch_web_profile_http(username: str, *, proxy: str | None = None) -> 
     # Proxies should fail fast so we can rotate to the next Decodo port.
     if proxy:
         timeout = httpx.Timeout(connect=15.0, read=30.0, write=30.0, pool=15.0)
-    async with httpx.AsyncClient(headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout) as client:
+    async with _new_client(headers=headers, proxy=proxy, timeout=timeout) as client:
         await _bootstrap_session(client, username)
         headers = _client_headers(username)
         _apply_csrf(client, headers)
@@ -485,9 +544,7 @@ async def fetch_profile_meta_card(
         "Upgrade-Insecure-Requests": "1",
     }
     try:
-        async with httpx.AsyncClient(
-            headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout
-        ) as client:
+        async with _new_client(headers=headers, proxy=proxy, timeout=timeout) as client:
             res = await client.get(url)
             html = res.text or ""
             low = html.lower()
@@ -920,7 +977,7 @@ async def fetch_all_media_nodes(
 
     headers = _client_headers(username)
     timeout = httpx.Timeout(60.0)
-    async with httpx.AsyncClient(headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout) as client:
+    async with _new_client(headers=headers, proxy=proxy, timeout=timeout) as client:
         await _bootstrap_session(client, username)
 
         # --- 1) Feed API (www, then mobile) — keep paging until full timeline ---
@@ -936,15 +993,32 @@ async def fetch_all_media_nodes(
             # Prefer discovering next_max_id from a fresh page-1 call.
             # If that returns only duplicates, advance using last seed media id.
             tried_seed_jump = False
+            requested_cursors: set[str] = set()
+            requested_first = False
 
             while (
                 more
                 and not hit_cohort_floor
                 and _still_short(len(out), limit=limit, expected_count=expected_count)
-                and stagnant < 10
+                and stagnant < 6
                 and pages < max_pages
             ):
+                if max_id is None:
+                    if requested_first:
+                        logger.info("feed @%s already fetched page-1 — stop", username)
+                        break
+                    requested_first = True
+                elif max_id in requested_cursors:
+                    logger.warning(
+                        "feed @%s refusing repeat cursor max_id=%s — stop pagination",
+                        username,
+                        max_id,
+                    )
+                    break
+                else:
+                    requested_cursors.add(max_id)
                 pages += 1
+                m().record_page()
                 await asyncio.sleep(delay if pages > 1 else 0.15)
 
                 # Prefer username feed first — user_id feed often returns 401 anonymously
@@ -1002,9 +1076,27 @@ async def fetch_all_media_nodes(
                 )
                 if added == 0:
                     stagnant += 1
-                    # Prefer Instagram's next_max_id from this response — do NOT discard it
-                    # for a bare pk seed jump (that was discarding a working cursor).
-                    if next_cursor and next_cursor != max_id:
+                    action = "stop_stuck"
+                    if next_cursor:
+                        _, action = decide_feed_cursor(
+                            max_id=max_id,
+                            next_cursor=next_cursor,
+                            added=0,
+                            requested=requested_cursors,
+                        )
+                    if action in {"stop_repeat", "stop_stuck"} and not (
+                        not tried_seed_jump and feed_seed_cursor and max_id != feed_seed_cursor
+                    ):
+                        logger.info(
+                            "feed @%s duplicate/stuck cursor action=%s max_id=%s next=%s — stop",
+                            username,
+                            action,
+                            max_id,
+                            next_cursor,
+                        )
+                        more = False
+                        break
+                    if next_cursor and next_cursor != max_id and next_cursor not in requested_cursors:
                         max_id = next_cursor
                         feed_seed_cursor = next_cursor
                         more = True
@@ -1025,6 +1117,8 @@ async def fetch_all_media_nodes(
                             max_id,
                         )
                         continue
+                    more = False
+                    break
                 else:
                     stagnant = 0
 
@@ -1087,8 +1181,8 @@ async def fetch_all_media_nodes(
                 and need_more
                 and not hit_cohort_floor
                 and cursor
-                and stagnant < 5
-                and pages < 80
+                and stagnant < 3
+                and pages < 40
             ):
                 pages += 1
                 need_more = (not hit_cohort_floor) and _still_short(
@@ -1106,7 +1200,7 @@ async def fetch_all_media_nodes(
                         doc_id=working_doc,
                     )
                 else:
-                    for doc_id in TIMELINE_DOC_IDS:
+                    for doc_id in TIMELINE_DOC_IDS[:2]:
                         payload = await _doc_id_timeline_page(
                             client,
                             username=username,
@@ -1155,7 +1249,7 @@ async def fetch_all_media_nodes(
             working_hash: str | None = None
             working_qid: str | None = None
             pages = 0
-            while has_next and need_more and not hit_cohort_floor and cursor and pages < 80:
+            while has_next and need_more and not hit_cohort_floor and cursor and pages < 20:
                 pages += 1
                 need_more = (not hit_cohort_floor) and _still_short(
                     len(out), limit=limit, expected_count=expected_count
@@ -1181,7 +1275,7 @@ async def fetch_all_media_nodes(
                         query_id=working_qid,
                     )
                 else:
-                    for qh in TIMELINE_QUERY_HASHES:
+                    for qh in TIMELINE_QUERY_HASHES[:1]:
                         payload = await _graphql_timeline_page(
                             client,
                             username=username,
@@ -1195,7 +1289,7 @@ async def fetch_all_media_nodes(
                             break
                         payload = None
                     if not payload:
-                        for qid in TIMELINE_QUERY_IDS:
+                        for qid in TIMELINE_QUERY_IDS[:1]:
                             payload = await _graphql_timeline_page(
                                 client,
                                 username=username,
@@ -1285,7 +1379,7 @@ async def fetch_timeline_via_username_feed(
 
     await _emit("username_feed")
 
-    async with httpx.AsyncClient(headers=headers, follow_redirects=True, proxy=proxy, timeout=timeout) as client:
+    async with _new_client(headers=headers, proxy=proxy, timeout=timeout) as client:
         await _bootstrap_session(client, username)
         max_id: str | None = None
         more = True
@@ -1293,14 +1387,31 @@ async def fetch_timeline_via_username_feed(
         pages = 0
         max_pages = max(80, (limit // max(page_size, 1)) + 40)
 
+        requested_cursors: set[str] = set()
+        requested_first = False
+
         while (
             more
             and not hit_cohort_floor
             and _still_short(len(nodes), limit=limit, expected_count=expected_count)
-            and stagnant < 10
+            and stagnant < 6
             and pages < max_pages
         ):
+            if max_id is None:
+                if requested_first:
+                    break
+                requested_first = True
+            elif max_id in requested_cursors:
+                logger.warning(
+                    "username_feed @%s refusing repeat cursor max_id=%s — stop",
+                    username,
+                    max_id,
+                )
+                break
+            else:
+                requested_cursors.add(max_id)
             pages += 1
+            m().record_page()
             if pages > 1:
                 await asyncio.sleep(delay)
             feed = await _feed_user_page_username(
@@ -1398,12 +1509,17 @@ async def fetch_timeline_via_username_feed(
 
             if added == 0:
                 stagnant += 1
+                if next_cursor and next_cursor in requested_cursors:
+                    more = False
+                    break
                 if next_cursor and next_cursor != max_id:
                     max_id = next_cursor
                     more = True
                     continue
                 if not more:
                     break
+                more = False
+                break
             else:
                 stagnant = 0
 

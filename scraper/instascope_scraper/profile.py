@@ -14,9 +14,10 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from instascope_scraper.browser import browser_session
+from instascope_scraper.browser import attach_bandwidth_limits, browser_session
 from instascope_scraper.caps import ScrapeCaps, caps_env, use_caps
 from instascope_scraper.instagram_time import infer_posted_at_iso
+from instascope_scraper.metrics import reset_metrics, start_metrics
 from instascope_scraper.types import ProxyConfig, ScrapedPost, ScrapeResult, proxy_to_httpx_url
 
 logger = logging.getLogger("instascope.scraper.profile")
@@ -615,7 +616,7 @@ async def _expand_all_posts(
 
     # Keep going until cohort floor or posts_count (or exhaust rounds).
     # Rotate residential proxies so one rate-limited port doesn't stall pagination.
-    rounds = max(1, int(os.getenv("SCRAPE_EXPAND_ROUNDS") or "8"))
+    rounds = max(1, int(os.getenv("SCRAPE_EXPAND_ROUNDS") or "4"))
     from instascope_scraper.proxy_pool import all_proxy_httpx_urls
 
     pool_urls = all_proxy_httpx_urls()
@@ -629,6 +630,8 @@ async def _expand_all_posts(
         proxy_cycle = [None]
     if os.getenv("SCRAPE_DIRECT_FALLBACK", "1") != "0" and None not in proxy_cycle:
         proxy_cycle.append(None)
+    max_proxies = max(1, int(os.getenv("SCRAPE_EXPAND_MAX_PROXIES") or "2"))
+    proxy_cycle = proxy_cycle[:max_proxies]
 
     stagnant_rounds = 0
     for round_i in range(rounds):
@@ -778,7 +781,7 @@ async def _enrich_views_via_http(
 ) -> list[ScrapedPost]:
     """Fill reel play counts via /api/v1/media/{id}/info/ over HTTP+proxy."""
     import httpx
-    from instascope_scraper.http_profile import _apply_csrf, _bootstrap_session, _client_headers
+    from instascope_scraper.http_profile import _apply_csrf, _bootstrap_session, _client_headers, _new_client
 
     # Always refresh reel play counts via media-info when possible. Feed/card
     # seeds can look "good enough" yet still be far below the public UI count.
@@ -795,7 +798,7 @@ async def _enrich_views_via_http(
     timeout = httpx.Timeout(30.0)
     by_code = {p.shortcode: p for p in posts}
 
-    async with httpx.AsyncClient(headers=headers, follow_redirects=True, proxy=proxy_url, timeout=timeout) as client:
+    async with _new_client(headers=headers, proxy=proxy_url, timeout=timeout) as client:
         await _bootstrap_session(client, username)
         for post in targets:
             await asyncio.sleep(delay)
@@ -1579,6 +1582,8 @@ async def _paginate_feed_in_browser(
     more = True
     stagnant = 0
     pages = 0
+    requested_cursors: set[str] = set()
+    requested_first = False
     delay = float(caps_env("SCRAPE_PAGE_DELAY_SECONDS", "0.75") or "0.75")
     page_size = _page_size()
     max_pages = max(80, (limit // max(page_size, 1)) + 40)
@@ -1592,7 +1597,16 @@ async def _paginate_feed_in_browser(
         max_pages,
     )
 
-    while more and _still_short(len(merged), limit=limit, expected_count=expected_count) and stagnant < 8 and pages < max_pages:
+    while more and _still_short(len(merged), limit=limit, expected_count=expected_count) and stagnant < 6 and pages < max_pages:
+        if max_id is None:
+            if requested_first:
+                break
+            requested_first = True
+        elif max_id in requested_cursors:
+            logger.warning("browser_feed @%s repeat cursor max_id=%s — stop", username, max_id)
+            break
+        else:
+            requested_cursors.add(max_id)
         pages += 1
         if pages > 1:
             await asyncio.sleep(delay)
@@ -1715,10 +1729,14 @@ async def _paginate_feed_in_browser(
 
         if added == 0:
             stagnant += 1
-            # Advance with response cursor even on duplicates
+            if cursor and cursor in requested_cursors:
+                more = False
+                break
             if cursor and cursor != max_id:
                 max_id = cursor
                 continue
+            more = False
+            break
         else:
             stagnant = 0
 
@@ -2589,6 +2607,7 @@ async def _scrape_live_browser(
             viewport={"width": 1365, "height": 900},
             locale="en-US",
         )
+        await attach_bandwidth_limits(context)
         await context.set_extra_http_headers(
             {
                 "Accept-Language": "en-US,en;q=0.9",
@@ -2932,6 +2951,33 @@ async def _scrape_profile_inner(
     live: Optional[bool] = None,
     on_progress=None,
 ) -> ScrapeResult:
+    mets = start_metrics(username)
+    try:
+        result = await _scrape_profile_run(
+            username,
+            headless=headless,
+            proxy=proxy,
+            delay_seconds=delay_seconds,
+            live=live,
+            on_progress=on_progress,
+        )
+        mets.posts_collected = len(result.posts or [])
+        mets.log_summary()
+        result.raw = {**(result.raw or {}), "scrape_metrics": mets.as_dict()}
+        return result
+    finally:
+        reset_metrics()
+
+
+async def _scrape_profile_run(
+    username: str,
+    *,
+    headless: bool = True,
+    proxy: Optional[ProxyConfig] = None,
+    delay_seconds: float = 2.0,
+    live: Optional[bool] = None,
+    on_progress=None,
+) -> ScrapeResult:
     """Always scrapes live Instagram data. `live` is kept for API compatibility."""
     _ = live  # ignored — real data only
     if os.getenv("LIVE_SCRAPE", "1") == "0":
@@ -2952,9 +2998,10 @@ async def _scrape_profile_inner(
 
     last_err: Exception | None = None
     attempts = int(caps_env("SCRAPE_MAX_RETRIES", "3") or "3")
-    # When we have multiple ports, try up to pool size (capped) so rate-limits rotate away.
+    attempts = max(1, min(attempts, 3))
+    # When we have multiple ports, rotate — but never more than 3 full scrapes.
     if rotate:
-        attempts = max(attempts, min(pool_size(), 5))
+        attempts = max(attempts, min(pool_size(), 3))
     logger.info(
         "scrape_profile @%s start attempts=%s headless=%s proxy=%s pool=%s",
         username,
