@@ -980,7 +980,11 @@ export function AdminDashboardBoard({ view }: { view: DashboardBoardView }) {
             </div>
           </div>
 
-          <Link href="/admin-import" className="block rounded-2xl border border-white/10 bg-gradient-to-br from-[#1a1a1a] to-black px-5 py-4 hover:border-[#ff3b30]/40">
+          <Link href="/admin-access" className="block rounded-2xl border border-white/10 bg-gradient-to-br from-[#1a1a1a] to-black px-5 py-4 hover:border-[#ff3b30]/40">
+            <div className="text-sm font-semibold">Student access</div>
+            <div className="mt-1 text-xs text-zinc-500">Admission number + Instagram login credentials</div>
+          </Link>
+          <Link href="/admin-import" className="block rounded-2xl border border-white/[0.06] bg-[#121212] px-5 py-4 hover:border-white/20">
             <div className="text-sm font-semibold">Import from sheets</div>
             <div className="mt-1 text-xs text-zinc-500">CSV, Excel, or Google Sheets → roster + scrape</div>
           </Link>
@@ -1000,6 +1004,7 @@ export function AdminDashboardBoard({ view }: { view: DashboardBoardView }) {
         <Link href="/admin-alerts" className="text-[#ff3b30] hover:underline">Alerts →</Link>
         <Link href="/admin-analytics" className="text-[#ff3b30] hover:underline">Analytics →</Link>
         <Link href="/admin-settings" className="text-[#ff3b30] hover:underline">Settings →</Link>
+        <Link href="/admin-access" className="text-[#ff3b30] hover:underline">Access →</Link>
         <Link href="/admin-import" className="hover:text-zinc-300">Import →</Link>
         <Link href="/admin-duplicates" className="hover:text-zinc-300">Duplicates →</Link>
         <Link href="/admin-unimported" className="hover:text-zinc-300">Unimported →</Link>

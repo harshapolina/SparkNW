@@ -1,7 +1,7 @@
 """Pydantic API schemas."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, HttpUrl
 
@@ -424,3 +424,41 @@ class YouTubeInsightsResponse(BaseModel):
     channel: Optional[dict[str, Any]] = None
     totals: dict[str, Any] = Field(default_factory=dict)
     videos: list[YouTubeVideoPublic] = Field(default_factory=list)
+
+
+# ── Student access (admin) ────────────────────────────
+
+
+class StudentAccessRow(BaseModel):
+    profile_id: str
+    full_name: str
+    student_id: str
+    instagram_username: str
+    campus: str = ""
+    access: str
+    has_account: bool = False
+    is_active: Optional[bool] = None
+
+
+class StudentAccessListResponse(BaseModel):
+    items: list[StudentAccessRow]
+    total: int
+    page: int
+    page_size: int
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
+class StudentAccessUpdateRequest(BaseModel):
+    student_id: Optional[str] = Field(default=None, max_length=64)
+    instagram_username: Optional[str] = Field(default=None, max_length=120)
+    full_name: Optional[str] = Field(default=None, max_length=160)
+    university: Optional[str] = Field(default=None, max_length=160)
+    access: Optional[Literal["grant", "revoke"]] = None
+
+
+class StudentAccessCreateRequest(BaseModel):
+    student_id: str = Field(min_length=1, max_length=64)
+    instagram_username: str = Field(min_length=1, max_length=120)
+    full_name: str = Field(default="", max_length=160)
+    university: str = Field(default="", max_length=160)
+    grant: bool = True

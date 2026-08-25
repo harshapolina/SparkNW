@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.routers import analytics, auth, notifications, profiles, settings, spark, youtube
+from app.routers import analytics, auth, notifications, profiles, settings, spark, student_access, youtube
 from instascope_shared.core.config import get_settings
 from instascope_shared.db.mongodb import close_db, connect_db
 
@@ -186,6 +186,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications.router, prefix=prefix)
     app.include_router(settings.router, prefix=prefix)
     app.include_router(spark.router, prefix=prefix)
+    app.include_router(student_access.router, prefix=prefix)
     app.include_router(youtube.router, prefix=prefix)
 
     @app.get("/health")

@@ -148,6 +148,25 @@ def _student_email(student_id: str) -> str:
     return f"{safe}@students.spark.example.com"
 
 
+def org_profile_clause(org_id: str = DEFAULT_ORG_ID) -> dict:
+    return {
+        "$or": [
+            {"org_id": org_id},
+            {"org_id": {"$exists": False}},
+            {"org_id": None},
+            {"org_id": ""},
+        ]
+    }
+
+
+def profile_display_name(profile: Profile) -> str:
+    student = getattr(profile, "student", None) or {}
+    name = student.get("full_name") if isinstance(student, dict) else None
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return str(getattr(profile, "full_name", None) or getattr(profile, "username", None) or "Student")
+
+
 async def _find_student_profile(student_id: str, ig_username: str, org_id: str = DEFAULT_ORG_ID) -> Profile:
     sid = _norm_student_id(student_id)
     ig = _norm_ig_username(ig_username)
@@ -160,14 +179,6 @@ async def _find_student_profile(student_id: str, ig_username: str, org_id: str =
     # Look up one student by ID / handle. Never load the full roster.
     sid_rx = _exact_ci(sid)
     ig_rx = _exact_ci(ig)
-    org_clause = {
-        "$or": [
-            {"org_id": org_id},
-            {"org_id": {"$exists": False}},
-            {"org_id": None},
-            {"org_id": ""},
-        ]
-    }
     identity_clause = {
         "$or": [
             {"username": ig_rx},
@@ -176,7 +187,7 @@ async def _find_student_profile(student_id: str, ig_username: str, org_id: str =
             {"student.student_id": sid_rx},
         ]
     }
-    profiles = await Profile.find({"$and": [org_clause, identity_clause]}).to_list()
+    profiles = await Profile.find({"$and": [org_profile_clause(org_id), identity_clause]}).to_list()
     matches = [p for p in profiles if _profile_matches_login(p, sid, ig)]
 
     if not matches:
@@ -191,22 +202,22 @@ async def _find_student_profile(student_id: str, ig_username: str, org_id: str =
     return matches[0]
 
 
-async def student_login(payload: StudentLoginRequest) -> AuthResponse:
-    profile = await _find_student_profile(payload.student_id, payload.instagram_username)
-    sid = _norm_student_id(payload.student_id)
+async def ensure_student_user(profile: Profile, *, is_active: bool | None = None) -> User:
+    """Create or link the student User for a roster profile (login is student ID + Instagram)."""
+    sid = _norm_student_id(str((getattr(profile, "student", None) or {}).get("student_id") or ""))
+    if not sid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Admission number (student ID) is required to grant access",
+        )
+
     org_id = getattr(profile, "org_id", None) or DEFAULT_ORG_ID
     if not getattr(profile, "org_id", None):
         profile.org_id = org_id
         profile.updated_at = datetime.utcnow()
         await profile.save()
 
-    student = profile.student or {}
-    display_name = (
-        (student.get("full_name") if isinstance(student.get("full_name"), str) else None)
-        or profile.full_name
-        or profile.username
-    )
-
+    display_name = profile_display_name(profile)
     user = await User.find_one(User.profile_id == str(profile.id), User.role == UserRole.STUDENT)
     if not user:
         user = await User.find_one(User.student_id == sid, User.role == UserRole.STUDENT)
@@ -217,39 +228,49 @@ async def student_login(payload: StudentLoginRequest) -> AuthResponse:
         user.org_id = org_id
         user.name = str(display_name)
         user.avatar_url = profile.avatar_url
+        if is_active is not None:
+            user.is_active = is_active
         user.updated_at = datetime.utcnow()
         await user.save()
-    else:
-        email = _student_email(sid)
-        existing_email = await User.find_one(User.email == email)
-        if existing_email:
-            if _role_value(existing_email) == UserRole.STUDENT.value:
-                user = existing_email
-                user.profile_id = str(profile.id)
-                user.student_id = sid
-                user.org_id = org_id
-                user.name = str(display_name)
-                user.avatar_url = profile.avatar_url
-                user.updated_at = datetime.utcnow()
-                await user.save()
-            else:
-                email = f"{sid.lower()}.{secrets.token_hex(3)}@students.spark.example.com"
-                user = None
-        if not user:
-            user = User(
-                email=email,
-                # Students never use password login; skip bcrypt (~300ms) on first sign-in.
-                password_hash="!",
-                name=str(display_name),
-                role=UserRole.STUDENT,
-                org_id=org_id,
-                profile_id=str(profile.id),
-                student_id=sid,
-                avatar_url=profile.avatar_url,
-            )
-            await user.insert()
-            await UserSettings(user_id=str(user.id)).insert()
+        return user
 
+    email = _student_email(sid)
+    existing_email = await User.find_one(User.email == email)
+    if existing_email:
+        if _role_value(existing_email) == UserRole.STUDENT.value:
+            user = existing_email
+            user.profile_id = str(profile.id)
+            user.student_id = sid
+            user.org_id = org_id
+            user.name = str(display_name)
+            user.avatar_url = profile.avatar_url
+            if is_active is not None:
+                user.is_active = is_active
+            user.updated_at = datetime.utcnow()
+            await user.save()
+            return user
+        email = f"{sid.lower()}.{secrets.token_hex(3)}@students.spark.example.com"
+
+    user = User(
+        email=email,
+        # Students never use password login; skip bcrypt (~300ms) on first sign-in.
+        password_hash="!",
+        name=str(display_name),
+        role=UserRole.STUDENT,
+        org_id=org_id,
+        profile_id=str(profile.id),
+        student_id=sid,
+        avatar_url=profile.avatar_url,
+        is_active=True if is_active is None else is_active,
+    )
+    await user.insert()
+    await UserSettings(user_id=str(user.id)).insert()
+    return user
+
+
+async def student_login(payload: StudentLoginRequest) -> AuthResponse:
+    profile = await _find_student_profile(payload.student_id, payload.instagram_username)
+    user = await ensure_student_user(profile)
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
 

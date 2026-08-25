@@ -43,7 +43,13 @@ export function prefetchSparkData(qc: QueryClient) {
 export function sparkQueryKeyForApi(path: string): unknown[] | null {
   const range = defaultCohortRange(utcTodayYmd());
   if (path.startsWith("/spark/student")) return ["spark", "student"];
-  if (path.startsWith("/spark/admin") && !path.includes("leaderboard")) return ["spark", "admin"];
+  if (
+    path.startsWith("/spark/admin") &&
+    !path.includes("leaderboard") &&
+    !path.includes("student-access")
+  ) {
+    return ["spark", "admin"];
+  }
   if (path.startsWith("/spark/top-10")) return ["spark", "top-10", "public"];
   if (path.startsWith("/spark/leaderboard")) {
     const sort = new URLSearchParams(path.split("?")[1] || "").get("sort") || "overall";
