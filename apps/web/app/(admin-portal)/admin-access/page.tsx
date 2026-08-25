@@ -349,9 +349,9 @@ export default function AdminAccessPage() {
                     <CredentialField
                       value={row.student_id}
                       disabled={patch.isPending}
-                      onSave={(student_id) =>
-                        patch.mutateAsync({ profile_id: row.profile_id, student_id })
-                      }
+                      onSave={async (student_id) => {
+                        await patch.mutateAsync({ profile_id: row.profile_id, student_id });
+                      }}
                     />
                   </td>
                   <td className="py-2 pr-3">
@@ -359,9 +359,12 @@ export default function AdminAccessPage() {
                       value={row.instagram_username}
                       prefix="@"
                       disabled={patch.isPending}
-                      onSave={(instagram_username) =>
-                        patch.mutateAsync({ profile_id: row.profile_id, instagram_username })
-                      }
+                      onSave={async (instagram_username) => {
+                        await patch.mutateAsync({
+                          profile_id: row.profile_id,
+                          instagram_username,
+                        });
+                      }}
                     />
                   </td>
                   <td className="max-w-[180px] truncate py-2 pr-3 text-zinc-400">{row.campus || "—"}</td>
