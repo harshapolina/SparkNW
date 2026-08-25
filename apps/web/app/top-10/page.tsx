@@ -127,7 +127,7 @@ export default function PublicTop10Page() {
                               <TierBadge tier={row.tier} />
                             </div>
                             <div className="mt-0.5 break-words text-[11px] text-zinc-500">
-                              {row.handle} · {formatNumber(row.followers)} followers · {row.streak_weeks}
+                              {row.handle} · {formatNumber(row.followers)} followers
                             </div>
                           </div>
                         </div>
@@ -147,7 +147,7 @@ export default function PublicTop10Page() {
                             <TierBadge tier={row.tier} />
                           </div>
                           <div className="mt-0.5 text-[11px] text-zinc-500">
-                            {row.handle} · {formatNumber(row.followers)} followers · {row.streak_weeks}
+                            {row.handle} · {formatNumber(row.followers)} followers
                           </div>
                         </div>
                       </div>

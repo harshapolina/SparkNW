@@ -39,7 +39,7 @@ export default function StudentDashboardPage() {
   if (!data || data.empty || !data.creator) {
     return (
       <div className="rounded-2xl border border-white/10 bg-[#121212] p-8 text-center">
-        <h1 className="text-2xl font-semibold">No scraped profiles yet</h1>
+        <h1 className="text-2xl font-semibold">Profile not ready yet</h1>
         <p className="mt-2 text-sm text-zinc-400">
           Add Instagram profiles in InstaScope and hit Refresh — SPARK ranks them with the live point system.
         </p>
@@ -96,7 +96,7 @@ export default function StudentDashboardPage() {
     {
       label: "Total Views",
       value: formatNumber(creator.views),
-      sub: <span className="text-zinc-400">From scraped posts</span>,
+      sub: <span className="text-zinc-400">From your posts</span>,
     },
     {
       label: "Avg. Engagement",
@@ -122,8 +122,8 @@ export default function StudentDashboardPage() {
           </h1>
           <p className="mt-2 text-sm text-zinc-400">
             {data.scraped === false
-              ? "Waiting for the first Instagram scrape — stats show 0 until then · "
-              : "Live SPARK score from scraped Instagram data · "}
+              ? "Waiting for the first Instagram fetch — stats show 0 until then · "
+              : "Live SPARK score from your Instagram metrics · "}
             <Link href={`/profiles/${creator.id}`} className="text-[#ff4d00] hover:underline">
               {creator.handle}
             </Link>
@@ -137,7 +137,7 @@ export default function StudentDashboardPage() {
 
       {data.scraped === false && (
         <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-          Your account is live. Metrics stay at 0 until Instagram is scraped.
+          Your account is live. Metrics stay at 0 until Instagram data is fetched.
         </div>
       )}
 

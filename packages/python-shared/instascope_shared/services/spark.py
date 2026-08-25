@@ -1232,9 +1232,9 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
         "scraped": scraped,
         "week_label": f"LIVE • {datetime.utcnow().strftime('%d %b %Y')}",
         "refresh_note": (
-            "Stats from live Instagram scrapes"
+            "Stats update after Instagram data is fetched"
             if scraped
-            else "Not scraped yet — numbers show 0 until the first Instagram sync"
+            else "Waiting for first Instagram fetch — numbers show 0 until then"
         ),
         "creator": creator_out,
         "top_creators": top,

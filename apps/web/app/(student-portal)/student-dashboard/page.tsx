@@ -55,9 +55,9 @@ export default function StudentDashboardPage() {
   if (!data || data.empty || !data.creator) {
     return (
       <div className="rounded-2xl border border-white/10 bg-[#121212] p-8 text-center">
-        <h1 className="text-2xl font-semibold">No scraped profiles yet</h1>
+        <h1 className="text-2xl font-semibold">Profile not ready yet</h1>
         <p className="mt-2 text-sm text-zinc-400">
-          Your profile is not on the board yet. Ask an admin to import and scrape your Instagram handle.
+          Your profile is not on the board yet. Ask an admin to import your Instagram handle and fetch your metrics.
         </p>
         <Link href="/top-10" className="mt-5 inline-flex text-[#ff4d00] hover:underline">
           View public Top 10 →
@@ -142,8 +142,8 @@ export default function StudentDashboardPage() {
           </h1>
           <p className="mt-2 text-sm text-zinc-400">
             {data.scraped === false
-              ? "Waiting for the first Instagram scrape — stats show 0 until then · "
-              : "Live SPARK score from scraped Instagram data · "}
+              ? "Waiting for the first Instagram fetch — stats show 0 until then · "
+              : "Live SPARK score from your Instagram metrics · "}
             <span className="text-[#ff4d00]">{creator.handle}</span>
           </p>
           <ProgrammeWindowNote className="mt-2 !text-xs" />
@@ -156,7 +156,7 @@ export default function StudentDashboardPage() {
 
       {data.scraped === false && (
         <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
-          Your account is live. Metrics stay at 0 until Instagram is scraped.
+          Your account is live. Metrics stay at 0 until Instagram data is fetched.
         </div>
       )}
 
@@ -409,9 +409,9 @@ export default function StudentDashboardPage() {
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         {[
           ["Following", formatNumber(data.profile?.following ?? 0)],
-          ["Posts scraped", formatNumber((data.recent_posts || []).length)],
+          ["Posts fetched", formatNumber((data.recent_posts || []).length)],
           ["Engagement", `${creator.engagement}%`],
-          ["Last scraped", data.profile?.last_scraped_at ? new Date(data.profile.last_scraped_at).toLocaleDateString() : "—"],
+          ["Last updated", data.profile?.last_scraped_at ? new Date(data.profile.last_scraped_at).toLocaleDateString() : "—"],
         ].map(([l, v]) => (
           <div key={l} className="rounded-2xl border border-white/[0.06] bg-[#121212] p-4">
             <div className="text-[10px] uppercase tracking-[0.1em] text-zinc-500">{l}</div>
@@ -423,7 +423,7 @@ export default function StudentDashboardPage() {
       {!!Object.keys(data.insights || {}).length && (
         <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
           <h2 className="text-sm font-semibold">My insights</h2>
-          <p className="mt-1 text-xs text-zinc-500">Computed from your scraped Instagram posts.</p>
+          <p className="mt-1 text-xs text-zinc-500">Computed from your Instagram posts.</p>
           <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {[
               ["Posts / 7d", String((data.insights as Record<string, unknown>)?.posts_last_7d ?? creator.posts_7d)],
@@ -455,7 +455,7 @@ export default function StudentDashboardPage() {
 
       <div className="rounded-2xl border border-white/[0.06] bg-[#121212] p-5">
         <h2 className="text-sm font-semibold">My recent posts</h2>
-        <p className="mt-1 text-xs text-zinc-500">From live Instagram scrapes on your profile.</p>
+        <p className="mt-1 text-xs text-zinc-500">From your latest Instagram sync.</p>
         <div className="mt-4 columns-1 gap-3 sm:columns-2 lg:columns-3">
           {(data.recent_posts || []).map((post) => (
             <div key={post.id} className="mb-3 break-inside-avoid rounded-xl border border-white/[0.04] bg-black/40 p-3">
@@ -473,7 +473,7 @@ export default function StudentDashboardPage() {
               )}
             </div>
           ))}
-          {!data.recent_posts?.length && <p className="text-sm text-zinc-500">No scraped posts yet — ask an admin to refresh your profile.</p>}
+          {!data.recent_posts?.length && <p className="text-sm text-zinc-500">No posts fetched yet — ask an admin to refresh your profile.</p>}
         </div>
       </div>
 

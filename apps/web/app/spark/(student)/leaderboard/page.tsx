@@ -64,7 +64,7 @@ export default function StudentLeaderboardPage() {
     return (
       <div className="rounded-2xl border border-white/10 bg-[#121212] p-8 text-center">
         <h1 className="text-2xl font-semibold">Leaderboard is empty</h1>
-        <p className="mt-2 text-sm text-zinc-400">Import or add profiles, then Refresh to scrape live metrics.</p>
+        <p className="mt-2 text-sm text-zinc-400">Import or add profiles, then Refresh to fetch live metrics.</p>
         <Link href="/profiles" className="mt-4 inline-flex text-[#ff3b30] hover:underline">
           Add profiles →
         </Link>
@@ -81,7 +81,7 @@ export default function StudentLeaderboardPage() {
         </div>
         <div className="text-right text-[11px] uppercase tracking-[0.12em] text-zinc-500">
           <div>LIVE COHORT</div>
-          <div className="mt-0.5 normal-case tracking-normal">Powered by InstaScope scrapes</div>
+          <div className="mt-0.5 normal-case tracking-normal">Powered by InstaScope syncs</div>
         </div>
       </div>
 
@@ -93,8 +93,8 @@ export default function StudentLeaderboardPage() {
             <span className="text-[#ff3b30]">Unlock milestones.</span>
           </h1>
           <p className="mt-4 text-sm leading-relaxed text-zinc-400">
-            Overall rank uses the SPARK point system (consistency + content performance + audience growth) from real
-            scraped posts. Use My campus to see only your campus creators.
+            Overall rank uses the SPARK point system (consistency + content performance + audience growth) from your
+            Instagram metrics. Use My campus to see only your campus creators.
           </p>
         </div>
         <label className="flex w-full max-w-sm items-center gap-2 rounded-full border border-white/10 bg-[#121212] px-4 py-2.5">
@@ -172,7 +172,7 @@ export default function StudentLeaderboardPage() {
                       <div className="truncate text-sm font-semibold">{row.name}</div>
                       <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-zinc-500">
                         <span className="truncate">
-                          {row.handle} · {formatNumber(row.followers)} followers · {row.streak_weeks}
+                          {row.handle} · {formatNumber(row.followers)} followers
                         </span>
                         <span
                           className={cn(
@@ -217,7 +217,7 @@ export default function StudentLeaderboardPage() {
                       </div>
                       <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-zinc-400">
                         <span className="truncate">
-                          {you.handle} · {formatNumber(you.points)} SPARK pts · {you.streak_weeks}
+                          {you.handle} · {formatNumber(you.points)} SPARK pts
                         </span>
                         <span
                           className={cn(

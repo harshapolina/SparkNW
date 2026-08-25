@@ -72,7 +72,7 @@ export default function StudentLeaderboardPage() {
     return (
       <div className="rounded-2xl border border-white/10 bg-[#121212] p-8 text-center">
         <h1 className="text-2xl font-semibold">Leaderboard is empty</h1>
-        <p className="mt-2 text-sm text-zinc-400">Profiles will appear here after admins scrape the cohort.</p>
+        <p className="mt-2 text-sm text-zinc-400">Profiles will appear here after admins fetch the cohort metrics.</p>
         <Link href="/top-10" className="mt-4 inline-flex text-[#ff3b30] hover:underline">
           Public Top 10 →
         </Link>
@@ -105,7 +105,7 @@ export default function StudentLeaderboardPage() {
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] text-zinc-500">
               <span className="break-words">
-                {row.handle} · {formatNumber(row.followers)} followers · {row.streak_weeks}
+                {row.handle} · {formatNumber(row.followers)} followers
               </span>
               <span
                 className={cn(
@@ -185,7 +185,7 @@ export default function StudentLeaderboardPage() {
           </h1>
           <ProgrammeWindowNote className="mt-3" toDate={range.to} />
           <p className="mt-3 text-sm leading-relaxed text-zinc-400">
-            Overall rank uses the SPARK point system from live scrapes in the programme window. See Top 10 below — your
+            Overall rank uses the SPARK point system from live Instagram metrics in the programme window. See Top 10 below — your
             row is highlighted if you&apos;re in it, or pinned when you&apos;re outside.
           </p>
         </div>
