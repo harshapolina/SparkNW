@@ -5,6 +5,10 @@ Does NOT enqueue the full roster. Usage:
   python scripts/scrape_bandwidth_sample.py
   python scripts/scrape_bandwidth_sample.py --limit 10
   python scripts/scrape_bandwidth_sample.py niat.genai user2 user3
+
+In Docker (worker already has MONGODB_URI from env_file):
+
+  docker compose exec -w /app worker python scripts/scrape_bandwidth_sample.py --limit 10
 """
 
 from __future__ import annotations
@@ -20,9 +24,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scraper"))
 sys.path.insert(0, str(ROOT / "packages" / "python-shared"))
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
 
-load_dotenv(ROOT / ".env")
+    for candidate in (ROOT / ".env", Path("/opt/instascope/.env"), Path(".env")):
+        if candidate.is_file():
+            load_dotenv(candidate, override=False)
+            break
+except Exception:
+    pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +41,30 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("pymongo").setLevel(logging.WARNING)
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def _mongo_settings() -> tuple[str, str]:
+    file_env: dict[str, str] = {}
+    for candidate in (ROOT / ".env", Path("/opt/instascope/.env")):
+        file_env = _read_env_file(candidate)
+        if file_env:
+            break
+    uri = (os.environ.get("MONGODB_URI") or file_env.get("MONGODB_URI") or "").strip()
+    dbn = (os.environ.get("MONGODB_DB") or file_env.get("MONGODB_DB") or "instascope").strip()
+    return uri, dbn
 
 
 def _load_usernames(limit: int, explicit: list[str]) -> list[str]:
@@ -46,17 +80,9 @@ def _load_usernames(limit: int, explicit: list[str]) -> list[str]:
     try:
         from pymongo import MongoClient
 
-        env: dict[str, str] = {}
-        for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            env[k.strip()] = v.strip().strip('"').strip("'")
-        uri = os.environ.get("MONGODB_URI") or env.get("MONGODB_URI")
-        dbn = os.environ.get("MONGODB_DB") or env.get("MONGODB_DB") or "instascope"
+        uri, dbn = _mongo_settings()
         if not uri:
-            raise RuntimeError("MONGODB_URI missing")
+            raise RuntimeError("MONGODB_URI missing (set env or pass usernames)")
         client = MongoClient(uri, serverSelectionTimeoutMS=20000)
         cur = (
             client[dbn]
@@ -74,6 +100,23 @@ def _load_usernames(limit: int, explicit: list[str]) -> list[str]:
     return names[:limit]
 
 
+async def _ensure_proxy_env_from_mongo() -> None:
+    """Worker containers often keep Decodo only in Mongo app_config."""
+    if (os.getenv("SCRAPE_PROXY_HOST") or os.getenv("SCRAPE_PROXY_URL") or "").strip():
+        return
+    try:
+        from instascope_shared.db.mongodb import close_db, connect_db
+        from instascope_shared.services.app_config import apply_proxy_config_to_env
+
+        await connect_db()
+        try:
+            await apply_proxy_config_to_env()
+        finally:
+            await close_db()
+    except Exception as exc:
+        print(f"proxy config from mongo skipped: {exc}", file=sys.stderr)
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser(description="Bandwidth sample scrape (default 10 profiles)")
     ap.add_argument("usernames", nargs="*", help="Optional explicit handles")
@@ -82,7 +125,13 @@ async def main() -> None:
     limit = max(1, min(args.limit, 10))
     handles = _load_usernames(limit, args.usernames)
     if not handles:
-        raise SystemExit("No usernames. Pass handles or set MONGODB_URI.")
+        uri, _ = _mongo_settings()
+        raise SystemExit(
+            "No usernames. Pass handles, set SCRAPE_TEST_USERNAMES, or ensure "
+            f"MONGODB_URI is set (currently {'set' if uri else 'missing'})."
+        )
+
+    await _ensure_proxy_env_from_mongo()
 
     from instascope_scraper.profile import scrape_profile
     from instascope_scraper.proxy_pool import next_proxy
@@ -90,7 +139,8 @@ async def main() -> None:
 
     proxy = next_proxy() or parse_proxy_url(os.getenv("SCRAPE_PROXY_URL") or None)
     print(f"Profiles to scrape: {len(handles)} (cap={limit})")
-    summaries: list[dict] = []
+    print(f"MONGODB_URI set: {bool((os.getenv('MONGODB_URI') or '').strip())}")
+    print(f"Proxy configured: {bool(proxy)}")
     ok = fail = 0
     posts = req = pag = retries = bytes_rx = 0.0
 
@@ -108,29 +158,12 @@ async def main() -> None:
             pag += float(metrics.get("pagination_requests") or 0)
             retries += float(metrics.get("retry_count") or 0)
             bytes_rx += float(metrics.get("bytes_received") or 0)
-            summaries.append(
-                {
-                    "username": handle,
-                    "ok": True,
-                    "posts": nposts,
-                    "path": (result.raw or {}).get("path"),
-                    **{k: metrics.get(k) for k in (
-                        "total_requests",
-                        "pagination_requests",
-                        "retry_count",
-                        "bytes_received",
-                        "scrape_duration_s",
-                        "blocked_requests",
-                    )},
-                }
-            )
             print(
                 f"OK @{handle} posts={nposts} req={metrics.get('total_requests')} "
                 f"bytes={metrics.get('bytes_received')} path={(result.raw or {}).get('path')}"
             )
         except Exception as exc:
             fail += 1
-            summaries.append({"username": handle, "ok": False, "error": str(exc)[:240]})
             print(f"FAIL @{handle}: {exc}")
 
     n = max(len(handles), 1)
