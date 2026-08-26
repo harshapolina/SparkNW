@@ -17,12 +17,25 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scraper"))
 sys.path.insert(0, str(ROOT / "packages" / "python-shared"))
+
+_IG_USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
+
+
+def _valid_ig_username(raw: str) -> bool:
+    u = (raw or "").strip().lstrip("@").lower()
+    if not u or not _IG_USERNAME_RE.match(u):
+        return False
+    # Junk roster values like "......." burn proxy quota for nothing.
+    if set(u) <= {".", "_"}:
+        return False
+    return True
 
 try:
     from dotenv import load_dotenv
@@ -68,12 +81,16 @@ def _mongo_settings() -> tuple[str, str]:
 
 
 def _load_usernames(limit: int, explicit: list[str]) -> list[str]:
-    names = [n.strip().lstrip("@") for n in explicit if n.strip()]
+    names = [n.strip().lstrip("@") for n in explicit if n.strip() and _valid_ig_username(n)]
     if len(names) >= limit:
         return names[:limit]
     env_list = (os.getenv("SCRAPE_TEST_USERNAMES") or "").strip()
     if env_list:
-        names.extend(n.strip().lstrip("@") for n in env_list.split(",") if n.strip())
+        names.extend(
+            n.strip().lstrip("@")
+            for n in env_list.split(",")
+            if n.strip() and _valid_ig_username(n)
+        )
     names = list(dict.fromkeys(names))
     if len(names) >= limit:
         return names[:limit]
@@ -87,11 +104,11 @@ def _load_usernames(limit: int, explicit: list[str]) -> list[str]:
         cur = (
             client[dbn]
             .profiles.find({"username": {"$exists": True, "$ne": ""}}, {"username": 1})
-            .limit(limit * 3)
+            .limit(max(limit * 20, 50))
         )
         for doc in cur:
             u = str(doc.get("username") or "").strip().lstrip("@")
-            if u and u not in names:
+            if u and _valid_ig_username(u) and u not in names:
                 names.append(u)
             if len(names) >= limit:
                 break
