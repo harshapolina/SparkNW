@@ -24,9 +24,13 @@ logger = logging.getLogger("instascope.scraper.profile")
 
 
 class ScrapeError(Exception):
-    def __init__(self, message: str, *, unavailable: bool = False):
+    def __init__(self, message: str, *, unavailable: bool = False, partial: Any = None):
         super().__init__(message)
         self.unavailable = unavailable
+        # Card-level data we did reach before giving up. The pipeline uses it to
+        # refresh followers/bio without letting a thin post sample overwrite
+        # richer history already in Mongo.
+        self.partial = partial
 
 
 def _parse_count(raw: str | int | float | None) -> int:
@@ -456,7 +460,8 @@ def _raise_if_incomplete(result: ScrapeResult) -> None:
     expected = result.posts_count
     raise ScrapeError(
         f"Incomplete timeline: only {got}/{expected} posts "
-        f"(Instagram pagination blocked). Check SCRAPE_PROXY_URL / Decodo."
+        f"(Instagram pagination blocked). Check SCRAPE_PROXY_URL / Decodo.",
+        partial=result,
     )
 
 
@@ -1366,6 +1371,92 @@ def _merge_media_nodes_into_posts(
             merged.append(post)
             seen.add(post.shortcode)
     return merged
+
+
+async def _try_polaris_timeline(page, *, username: str, result: ScrapeResult) -> bool:
+    """Read the whole timeline via the logged-out Polaris query. True when it worked.
+
+    Since Sep 2026 this is the only anonymous path that still paginates: the legacy
+    feed/GraphQL endpoints answer 401 require_login and in-page scrolling is pinned
+    by the login-wall modal. See instascope_scraper.polaris for the full write-up.
+    """
+    if (os.getenv("SCRAPE_POLARIS", "1") or "1").strip().lower() in {"0", "false", "no"}:
+        return False
+    try:
+        from instascope_scraper import polaris
+        from instascope_scraper.http_profile import _cohort_floor_unix
+    except Exception:
+        logger.exception("polaris @%s import failed", username)
+        return False
+
+    try:
+        floor = _cohort_floor_unix()
+    except Exception:
+        floor = None
+
+    try:
+        boot = await polaris.collect_timeline(
+            page,
+            username,
+            cohort_floor_unix=floor,
+            expected_count=int(result.posts_count or 0),
+        )
+    except polaris.PolarisUnavailable as exc:
+        logger.info("polaris @%s unavailable (%s) — falling back", username, exc)
+        return False
+    except Exception:
+        logger.exception("polaris @%s collect failed — falling back", username)
+        return False
+
+    posts = polaris.nodes_to_posts(
+        boot.get("nodes") or [], username=username, cohort_floor_unix=floor
+    )
+    if not posts:
+        logger.info("polaris @%s produced no in-window posts — falling back", username)
+        return False
+
+    # Profile card straight from the preload payload — this is the live count even
+    # when web_profile_info is 429ing.
+    if boot.get("followers") is not None:
+        result.followers = int(boot["followers"])
+    if boot.get("following") is not None:
+        result.following = int(boot["following"])
+    if boot.get("full_name") and not result.full_name:
+        result.full_name = boot["full_name"]
+    if boot.get("ig_user_id") and not result.ig_user_id:
+        result.ig_user_id = boot["ig_user_id"]
+    total = len(boot.get("nodes") or [])
+    if total > int(result.posts_count or 0):
+        result.posts_count = total
+
+    try:
+        await polaris.enrich_engagement(
+            page,
+            posts,
+            username=username,
+            limit=_enrich_limit(len(posts)),
+            delay_seconds=float(os.getenv("SCRAPE_ENRICH_DELAY_SECONDS") or "0.4"),
+        )
+    except Exception:
+        logger.exception("polaris enrich @%s failed — keeping posts without counts", username)
+
+    result.posts = posts
+    result.raw = {
+        **(result.raw or {}),
+        "path": "polaris_timeline",
+        "polaris_pages": boot.get("pages"),
+        "polaris_total_nodes": total,
+        "hit_cohort_floor": bool(boot.get("hit_cohort_floor")),
+        "feed_exhausted": bool(boot.get("feed_exhausted")),
+    }
+    logger.info(
+        "polaris @%s OK posts=%s (in-window) total_nodes=%s followers=%s",
+        username,
+        len(posts),
+        total,
+        result.followers,
+    )
+    return True
 
 
 async def _collect_full_timeline_in_browser(
@@ -2817,6 +2908,9 @@ async def _scrape_live_browser(
 
         # Full timeline for public profiles — skip when HTTP already completed it
         if not result.is_private and not _complete(result):
+            polaris_ok = await _try_polaris_timeline(page, username=username, result=result)
+            if polaris_ok:
+                return await _done(result, path="polaris_timeline")
             try:
                 result.posts = await _collect_full_timeline_in_browser(
                     page,
@@ -3086,7 +3180,10 @@ async def _scrape_profile_run(
             )
             await asyncio.sleep(delay_seconds * (attempt + 1))
 
-    raise ScrapeError(_humanize_scrape_error(last_err or "Scrape failed after retries"))
+    raise ScrapeError(
+        _humanize_scrape_error(last_err or "Scrape failed after retries"),
+        partial=getattr(last_err, "partial", None),
+    )
 
 
 def _humanize_scrape_error(err: BaseException | str) -> str:

@@ -14,7 +14,11 @@ from typing import Any, Callable, Literal
 
 from instascope_shared.core.config import get_settings
 from instascope_shared.models import Job, JobStatus, JobType, Profile
-from instascope_shared.services.scrape_pipeline import apply_scrape_result, mark_scrape_failed
+from instascope_shared.services.scrape_pipeline import (
+    apply_scrape_result,
+    mark_scrape_failed,
+    salvage_profile_card,
+)
 from instascope_scraper.caps import caps_for_api, use_caps
 from instascope_scraper.profile import ScrapeError, scrape_profile
 from instascope_scraper.proxy_pool import next_proxy, pool_size
@@ -321,6 +325,10 @@ async def run_profile_scrape(
         except ScrapeError as exc:
             if not _current():
                 return job
+            # Refresh the card from whatever we did reach, so a blocked timeline
+            # does not leave followers frozen at the last full scrape. Posts are
+            # deliberately left alone — see salvage_profile_card.
+            await salvage_profile_card(profile, getattr(exc, "partial", None))
             await mark_scrape_failed(job, profile, str(exc), unavailable=exc.unavailable)
             if not _current():
                 return job

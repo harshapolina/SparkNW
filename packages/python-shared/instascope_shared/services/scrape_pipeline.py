@@ -713,6 +713,58 @@ async def apply_scrape_result(
             pass
 
 
+async def salvage_profile_card(profile: Profile, partial: Any) -> bool:
+    """Refresh header fields from a partial scrape. Never touches posts.
+
+    A blocked timeline used to throw the whole run away, freezing followers at
+    the last complete scrape. The header (followers/following/bio/avatar) is
+    reliable even when pagination dies, and growth points depend on it, so it is
+    saved on its own. Post history is left untouched: a thin sample must not
+    overwrite or delete the richer set already stored.
+    """
+    if partial is None:
+        return False
+    followers = int(getattr(partial, "followers", 0) or 0)
+    following = int(getattr(partial, "following", 0) or 0)
+    posts_count = int(getattr(partial, "posts_count", 0) or 0)
+    if followers <= 0 and following <= 0 and posts_count <= 0:
+        return False
+
+    changed = False
+    if followers > 0 and followers != int(profile.followers or 0):
+        profile.followers = followers
+        changed = True
+    if following > 0 and following != int(profile.following or 0):
+        profile.following = following
+        changed = True
+    # posts_count is IG's lifetime total, independent of how many we paged.
+    if posts_count > 0 and posts_count != int(profile.posts_count or 0):
+        profile.posts_count = posts_count
+        changed = True
+    for attr in ("full_name", "bio", "website", "avatar_url", "category"):
+        value = getattr(partial, attr, None)
+        if value and value != getattr(profile, attr, None):
+            setattr(profile, attr, value)
+            changed = True
+
+    if not changed:
+        return False
+    profile.updated_at = datetime.utcnow()
+    try:
+        await profile.save()
+    except Exception:
+        logger.exception("salvage_profile_card save failed profile=%s", profile.id)
+        return False
+    logger.info(
+        "salvaged card @%s followers=%s following=%s posts_count=%s (posts untouched)",
+        profile.username,
+        followers,
+        following,
+        posts_count,
+    )
+    return True
+
+
 async def mark_scrape_failed(job: Job, profile: Profile, error: str, *, unavailable: bool = False) -> None:
     # Soft failures must NEVER leave the profile badge as "failed" when card data exists.
     # But empty profiles must stay failed with a visible error — otherwise the UI shows

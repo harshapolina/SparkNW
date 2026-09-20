@@ -48,3 +48,6 @@ logs/
 media/
 data/spark_students.tsv
 data/*.tsv
+
+# Roster exports contain student PII (names, emails, mobiles) — never commit.
+data/
