@@ -38,6 +38,7 @@ export const GROWTH_MILESTONES = [
 ] as const;
 
 export const WEEKLY_CONSISTENCY_PTS = 10; // 2 shorts + 1 long-form per week
+export const WEEKLY_BOOST_PTS = 20; // 4+ content pieces per week
 export const CONSISTENCY_CAP = 660;
 export const PERFORMANCE_CAP = 3000;
 

@@ -79,6 +79,25 @@ def test_weekly_consistency_accumulates():
     assert scored["consistency"] == 20
 
 
+def test_weekly_four_plus_content_awards_boost_points():
+    # 4 reels in the same week -> 20 pts boost
+    posts = [
+        _post(media_type="reel", views=100, posted_at=datetime(2026, 7, 20), shortcode="a"),
+        _post(media_type="reel", views=100, posted_at=datetime(2026, 7, 21), shortcode="b"),
+        _post(media_type="reel", views=100, posted_at=datetime(2026, 7, 22), shortcode="c"),
+        _post(media_type="reel", views=100, posted_at=datetime(2026, 7, 23), shortcode="d"),
+    ]
+    scored = compute_points_breakdown(
+        posts=posts,
+        followers=0,
+        as_of=datetime(2026, 7, 26),
+        from_date=datetime(2026, 7, 15),
+        include_youtube=False,
+    )
+    assert scored["consistency"] == 20
+    assert any("Weekly boost — 4+ content pieces" in t["title"] for t in scored["task_history"])
+
+
 def test_crosspost_counts_once_for_performance():
     day = datetime(2026, 7, 20, 12, 0, 0)
     posts = [_post(media_type="reel", views=12_000, posted_at=day, shortcode="ig1")]

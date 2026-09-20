@@ -54,6 +54,7 @@ LONG_BANDS = [
 
 PERFORMANCE_CAP = 3_000
 CONSISTENCY_PTS_PER_WEEK = 10
+CONSISTENCY_BOOST_PTS_PER_WEEK = 20
 CONSISTENCY_CAP = 660
 SHORT_MAX_SECONDS = 90
 LONG_MIN_SECONDS = 180  # ≥3 min
@@ -339,13 +340,14 @@ def consistency_from_pieces(
     *,
     as_of: datetime,
 ) -> tuple[int, list[dict[str, Any]], int, int, int]:
-    """10 pts/week for ≥2 shorts + ≥1 long-form, summed across programme weeks."""
+    """10 pts/week for ≥2 shorts + ≥1 long-form, or 20 pts/week for 4+ content pieces."""
     by_week: dict[tuple[int, int], dict[str, int]] = defaultdict(
-        lambda: {"shorts": 0, "longs": 0}
+        lambda: {"shorts": 0, "longs": 0, "total": 0}
     )
     for p in pieces:
         iso = p.published_at.isocalendar()
         wk = (int(iso[0]), int(iso[1]))
+        by_week[wk]["total"] += 1
         if p.kind == "short":
             by_week[wk]["shorts"] += 1
         elif p.kind == "long":
@@ -354,15 +356,32 @@ def consistency_from_pieces(
     history: list[dict[str, Any]] = []
     total = 0
     for (year, week), counts in sorted(by_week.items()):
-        if counts["shorts"] >= 2 and counts["longs"] >= 1:
-            total += CONSISTENCY_PTS_PER_WEEK
+        total_p = counts["total"]
+        base_met = counts["shorts"] >= 2 and counts["longs"] >= 1
+        if total_p >= 4:
+            pts = CONSISTENCY_BOOST_PTS_PER_WEEK
+            total += pts
+            history.append(
+                {
+                    "id": f"cons-{year}-W{week}",
+                    "week": week,
+                    "title": f"Weekly boost — 4+ content pieces (W{week})",
+                    "category": "Consistency",
+                    "points": pts,
+                    "status": "approved",
+                    "date": as_of.strftime("%Y-%m-%d"),
+                }
+            )
+        elif base_met:
+            pts = CONSISTENCY_PTS_PER_WEEK
+            total += pts
             history.append(
                 {
                     "id": f"cons-{year}-W{week}",
                     "week": week,
                     "title": f"Weekly minimum — 2 shorts + 1 long-form (W{week})",
                     "category": "Consistency",
-                    "points": CONSISTENCY_PTS_PER_WEEK,
+                    "points": pts,
                     "status": "approved",
                     "date": as_of.strftime("%Y-%m-%d"),
                 }
@@ -380,7 +399,7 @@ def consistency_from_pieces(
         elif p.kind == "long":
             longs_7d += 1
 
-    if posts_7d > 0 and not (shorts_7d >= 2 and longs_7d >= 1):
+    if posts_7d > 0 and not (posts_7d >= 4 or (shorts_7d >= 2 and longs_7d >= 1)):
         history.append(
             {
                 "id": f"cons-miss-{as_of.isocalendar()[1]}",
@@ -675,7 +694,9 @@ def package_leaderboard_row(
         "growth_pct_today": float(profile.growth_pct_today or 0),
         "consistency_score": consistency_score,
         "streak_weeks": (
-            f"{max(1, consistency // CONSISTENCY_PTS_PER_WEEK)} wks" if consistency else "0 wks"
+            f"{sum(1 for h in task_history if h.get('category') == 'Consistency' and h.get('status') == 'approved')} wks"
+            if consistency
+            else "0 wks"
         ),
         "grit_status": grit,
         "weeks_inactive": weeks_inactive,

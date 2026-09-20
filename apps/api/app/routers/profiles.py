@@ -3,7 +3,7 @@ import csv
 import io
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from app.deps import get_current_user
@@ -24,7 +24,6 @@ from instascope_shared.schemas import (
 )
 from instascope_shared.services import profiles as profile_service
 from instascope_shared.services.profiles import list_posts_in_programme_window, to_profile_response, to_profile_response_cohort
-from fastapi import HTTPException
 
 from app.scrape_bulk import (
     enqueue_bulk_profile_ids,
@@ -532,7 +531,7 @@ async def list_history(profile_id: str, user: User = Depends(get_current_user)):
             ProfileSnapshot.profile_id == profile_id,
             ProfileSnapshot.snapshot_date >= since,
         )
-        .sort(-ProfileSnapshot.snapshot_date)
+        .sort("-snapshot_date")
         .to_list()
     )
     return [

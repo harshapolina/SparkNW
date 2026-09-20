@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
-from instascope_shared.core.config import get_settings
+from instascope_shared.core import config
 from instascope_shared.services.youtube_errors import (
     YouTubeApiError,
     YouTubeConfigError,
@@ -349,7 +349,7 @@ class YouTubeClient:
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
     ):
-        key = (api_key if api_key is not None else get_settings().youtube_api_key) or ""
+        key = (api_key if api_key is not None else config.get_settings().youtube_api_key) or ""
         key = key.strip()
         if not key:
             raise YouTubeConfigError(

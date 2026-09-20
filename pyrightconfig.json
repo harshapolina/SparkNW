@@ -1,0 +1,26 @@
+{
+  "venvPath": ".",
+  "venv": ".venv_test",
+  "extraPaths": [
+    "packages/python-shared",
+    "scraper",
+    "apps/api",
+    "apps/worker"
+  ],
+  "include": [
+    "apps",
+    "packages",
+    "scraper",
+    "tests",
+    "scripts"
+  ],
+  "exclude": [
+    "**/node_modules",
+    "**/.next",
+    "**/.venv_test",
+    "**/__pycache__"
+  ],
+  "typeCheckingMode": "off",
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Windows"
+}

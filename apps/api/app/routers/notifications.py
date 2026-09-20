@@ -10,7 +10,7 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 @router.get("", response_model=list[NotificationResponse])
 async def list_notifications(user: User = Depends(get_current_user), unread_only: bool = False):
     query = Notification.find(Notification.user_id == str(user.id))
-    items = await query.sort(-Notification.created_at).limit(50).to_list()
+    items = await query.sort("-created_at").limit(50).to_list()
     if unread_only:
         items = [n for n in items if not n.is_read]
     return [
