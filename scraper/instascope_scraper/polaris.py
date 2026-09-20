@@ -295,12 +295,15 @@ async def collect_timeline(
     html: str | None = None,
     cohort_floor_unix: int | None = None,
     expected_count: int = 0,
+    max_posts: int = 0,
     delay_seconds: float = 0.7,
 ) -> dict[str, Any]:
     """Walk the whole logged-out timeline. Returns bootstrap fields + nodes.
 
     Stops early once posts fall before ``cohort_floor_unix`` (newest-first order),
-    which keeps programme scrapes from paging through years of old content.
+    which keeps programme scrapes from paging through years of old content, or
+    once ``max_posts`` is reached — bulk sheets take a capped first pass and let
+    the deep follow-up fetch the rest. ``max_posts`` of 0 means no cap.
     """
     if html is None:
         html = await page.content()
@@ -360,6 +363,12 @@ async def collect_timeline(
         if cursor is None:
             exhausted = True
 
+        if max_posts > 0 and len(seen) >= max_posts:
+            logger.info(
+                "polaris @%s hit max_posts=%s after page=%s", username, max_posts, pages
+            )
+            break
+
         if cohort_floor_unix is not None:
             oldest = min(
                 (
@@ -396,10 +405,18 @@ async def collect_timeline(
         exhausted,
     )
 
-    boot["nodes"] = list(seen.values())
+    nodes = list(seen.values())
+    if max_posts > 0 and len(nodes) > max_posts:
+        nodes.sort(
+            key=lambda n: (pk_to_datetime(n.get("pk")) or datetime.min.replace(tzinfo=timezone.utc)),
+            reverse=True,
+        )
+        nodes = nodes[:max_posts]
+    boot["nodes"] = nodes
     boot["pages"] = pages
     boot["hit_cohort_floor"] = hit_floor
     boot["feed_exhausted"] = exhausted
+    boot["capped"] = bool(max_posts > 0 and len(seen) >= max_posts)
     return boot
 
 

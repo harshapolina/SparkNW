@@ -1384,7 +1384,7 @@ async def _try_polaris_timeline(page, *, username: str, result: ScrapeResult) ->
         return False
     try:
         from instascope_scraper import polaris
-        from instascope_scraper.http_profile import _cohort_floor_unix
+        from instascope_scraper.http_profile import _cohort_floor_unix, _max_posts
     except Exception:
         logger.exception("polaris @%s import failed", username)
         return False
@@ -1400,6 +1400,7 @@ async def _try_polaris_timeline(page, *, username: str, result: ScrapeResult) ->
             username,
             cohort_floor_unix=floor,
             expected_count=int(result.posts_count or 0),
+            max_posts=_max_posts(),
         )
     except polaris.PolarisUnavailable as exc:
         logger.info("polaris @%s unavailable (%s) — falling back", username, exc)

@@ -127,3 +127,105 @@ def test_parse_engagement_unescaped_embed():
 def test_parse_engagement_partial_and_empty():
     assert parse_engagement('"edge_liked_by":{"count":7}') == {"likes": 7}
     assert parse_engagement("no counts here") == {}
+
+
+@pytest.mark.asyncio
+async def test_collect_timeline_honours_max_posts(monkeypatch):
+    """Bulk passes max_posts=48; the walker must stop and truncate to it."""
+    import instascope_scraper.polaris as mod
+
+    # Each page yields 12 synthetic nodes and always claims another page.
+    counter = {"n": 0}
+
+    class FakePage:
+        async def content(self):
+            return PROFILE_HTML
+
+        async def evaluate(self, _js, _args):
+            counter["n"] += 1
+            base = 3984285244001148342 - counter["n"] * 10_000_000_000
+            edges = [
+                {
+                    "node": {
+                        "pk": str(base - i * 1_000_000),
+                        "code": f"C{counter['n']:02d}{i:02d}",
+                        "__typename": "XIGPolarisImageMedia",
+                    }
+                }
+                for i in range(12)
+            ]
+            payload = {
+                "data": {
+                    "xig_user_by_username": {
+                        "polaris_ordered_timeline_connection": {
+                            "edges": edges,
+                            "page_info": {
+                                "end_cursor": f"CUR{counter['n']}",
+                                "has_next_page": True,
+                            },
+                        }
+                    }
+                }
+            }
+            import json as _json
+
+            return {"status": 200, "text": _json.dumps(payload)}
+
+    boot = await mod.collect_timeline(
+        FakePage(), "someone", max_posts=48, delay_seconds=0
+    )
+    assert len(boot["nodes"]) == 48
+    assert boot["capped"] is True
+    # 2 from the fixture's first page + 12/page, so it must not run away.
+    assert counter["n"] <= 5
+
+
+@pytest.mark.asyncio
+async def test_collect_timeline_uncapped_when_max_posts_zero(monkeypatch):
+    """max_posts=0 means no cap; exhaustion is what stops the walk."""
+    import json as _json
+
+    import instascope_scraper.polaris as mod
+
+    calls = {"n": 0}
+
+    class FakePage:
+        async def content(self):
+            return PROFILE_HTML
+
+        async def evaluate(self, _js, _args):
+            calls["n"] += 1
+            has_next = calls["n"] < 2
+            edges = [
+                {
+                    "node": {
+                        "pk": str(3984285244001148342 - calls["n"] * 10_000_000_000 - i),
+                        "code": f"Z{calls['n']}{i}",
+                        "__typename": "XIGPolarisImageMedia",
+                    }
+                }
+                for i in range(5)
+            ]
+            return {
+                "status": 200,
+                "text": _json.dumps(
+                    {
+                        "data": {
+                            "xig_user_by_username": {
+                                "polaris_ordered_timeline_connection": {
+                                    "edges": edges,
+                                    "page_info": {
+                                        "end_cursor": "NEXT",
+                                        "has_next_page": has_next,
+                                    },
+                                }
+                            }
+                        }
+                    }
+                ),
+            }
+
+    boot = await mod.collect_timeline(FakePage(), "someone", max_posts=0, delay_seconds=0)
+    assert boot["capped"] is False
+    assert boot["feed_exhausted"] is True
+    assert len(boot["nodes"]) == 12  # 2 seeded + 10 paged
