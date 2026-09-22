@@ -48,13 +48,18 @@ async def _connect(job_id: str, profile_id: str, url: str) -> dict:
                 sync_videos=True,
                 max_videos=0,
             )
-            # Mark roster status when student blob exists
-            student = dict(getattr(profile, "student", None) or {})
-            if student:
-                student["youtube_status"] = "Connected"
-                profile.student = student
-                profile.updated_at = datetime.utcnow()
-                await profile.save()
+            # Mark roster status when student blob exists. Set just this key: a
+            # full save() here wrote back the copy loaded before the sync, undoing
+            # anything else written to the profile meanwhile.
+            if getattr(profile, "student", None):
+                await Profile.find_one(Profile.id == profile.id).update(
+                    {
+                        "$set": {
+                            "student.youtube_status": "Connected",
+                            "updated_at": datetime.utcnow(),
+                        }
+                    }
+                )
             if job:
                 job.status = JobStatus.SUCCESS
                 job.error_message = None

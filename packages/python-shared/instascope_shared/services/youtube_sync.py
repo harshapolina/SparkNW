@@ -41,6 +41,24 @@ logger = logging.getLogger("instascope.youtube.sync")
 
 # 0 = all uploads on/after programme start (SPARK_COHORT_START / 15 Jul 2026).
 DEFAULT_MAX_VIDEOS = 0
+
+
+# The only Profile fields a YouTube sync owns.
+_YOUTUBE_PROFILE_FIELDS = ("youtube_channel_id", "youtube_connected", "youtube_last_synced_at")
+
+
+async def _save_youtube_refs(profile: Profile) -> None:
+    """Persist only the YouTube link fields from ``profile``.
+
+    A sync holds its Profile copy for the whole run (seconds to minutes) and used
+    to save() it, which $sets every field. Anything written meanwhile — an
+    Instagram scrape's results or progress, an edited link, bonus points — was
+    reverted. The 08:00 Instagram and YouTube fan-outs overlap, so this hit
+    daily scrapes, not just manual syncs.
+    """
+    fields: dict[str, Any] = {k: getattr(profile, k, None) for k in _YOUTUBE_PROFILE_FIELDS}
+    fields["updated_at"] = datetime.utcnow()
+    await Profile.find_one(Profile.id == profile.id).update({"$set": fields})
 # Safety only when a positive max_videos is passed; 0/None = unlimited until date floor.
 HARD_MAX_VIDEOS = 50_000
 # YouTube Shorts max length is 3 minutes; Data API has no dedicated isShort flag.
@@ -227,7 +245,7 @@ async def connect_youtube_channel(
         profile.youtube_channel_id = info.channel_id
         profile.youtube_connected = True
         profile.updated_at = datetime.utcnow()
-        await profile.save()
+        await _save_youtube_refs(profile)
 
         result: dict[str, Any] = {
             "connected": True,
@@ -386,7 +404,7 @@ async def sync_youtube_channel(
         profile.youtube_connected = True
         profile.youtube_last_synced_at = now
         profile.updated_at = now
-        await profile.save()
+        await _save_youtube_refs(profile)
 
         return {
             "ok": True,
@@ -715,4 +733,4 @@ async def mark_youtube_disconnected(profile: Profile) -> None:
     profile.youtube_channel_id = None
     profile.youtube_last_synced_at = None
     profile.updated_at = datetime.utcnow()
-    await profile.save()
+    await _save_youtube_refs(profile)
