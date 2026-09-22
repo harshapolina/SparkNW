@@ -1,5 +1,46 @@
 import type { LeaderboardSort } from "./types";
 
+/** One line of "where each point came from". Points can be negative
+ *  (manual deductions, category-cap adjustments); the list sums to the total. */
+export type SparkTaskHistoryItem = {
+  id: string;
+  week: number;
+  title: string;
+  category: string;
+  points: number;
+  /** approved | missed | capped */
+  status: string;
+  date: string;
+  shortcode?: string | null;
+  /** Instagram post or YouTube video that earned the points. */
+  url?: string | null;
+};
+
+/** Manual award as recorded — admin-only (carries who added it). */
+export type SparkBonusLogEntry = {
+  points: number;
+  reason?: string;
+  added_at?: string;
+  added_by?: string;
+  total_after?: number;
+};
+
+/** GET /spark/admin/profiles/{id}/points */
+export type SparkAdminProfilePoints = {
+  profile_id: string;
+  name: string;
+  handle: string;
+  tier: "BRONZE" | "SILVER" | "GOLD";
+  points: number;
+  rank: number | null;
+  ranked_total: number;
+  points_breakdown: Record<string, number>;
+  task_history: SparkTaskHistoryItem[];
+  bonus_log: SparkBonusLogEntry[];
+  window_from: string;
+  window_to: string;
+};
+
 export type SparkCreatorRow = {
   id: string;
   profile_id: string;
@@ -43,16 +84,7 @@ export type SparkCreatorRow = {
   rank_delta: number;
   next_tier?: string | null;
   points_to_next_tier?: number;
-  task_history?: Array<{
-    id: string;
-    week: number;
-    title: string;
-    category: string;
-    points: number;
-    status: string;
-    date: string;
-    shortcode?: string | null;
-  }>;
+  task_history?: SparkTaskHistoryItem[];
   is_you?: boolean;
   avatar_url?: string | null;
   youtube_connected?: boolean;

@@ -159,7 +159,7 @@ export function AdminAddPointsCard({
 
       {log.length > 0 && (
         <ul className="mt-4 space-y-1.5 border-t border-white/[0.06] pt-3 text-xs text-zinc-500">
-          {log.slice(0, 6).map((row, i) => (
+          {log.map((row, i) => (
             <li key={`${row.added_at || i}-${i}`} className="flex flex-wrap items-baseline gap-x-2">
               <span className={Number(row.points) >= 0 ? "font-medium tabular text-emerald-400" : "font-medium tabular text-rose-400"}>
                 {Number(row.points) >= 0 ? "+" : ""}
@@ -176,6 +176,7 @@ export function AdminAddPointsCard({
                   })}
                 </span>
               ) : null}
+              {row.added_by ? <span className="text-zinc-600">by {row.added_by}</span> : null}
             </li>
           ))}
         </ul>

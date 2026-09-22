@@ -847,7 +847,9 @@ async def add_manual_bonus_points(
             "total_after": total,
         },
     )
-    insights["spark_bonus_log"] = log[:50]
+    # Keep every award: the ledger is the audit trail behind the student's
+    # task history, and dropping old rows made the timeline stop adding up.
+    insights["spark_bonus_log"] = log
     profile.insights = insights
     profile.updated_at = datetime.utcnow()
     await profile.save()
@@ -856,7 +858,7 @@ async def add_manual_bonus_points(
     return {
         "bonus_points": total,
         "added": delta,
-        "log": insights["spark_bonus_log"][:12],
+        "log": insights["spark_bonus_log"],
     }
 
 
@@ -1108,6 +1110,46 @@ def _slim_board_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def get_profile_points(org_id: str, profile_id: str) -> dict[str, Any] | None:
+    """One student's SPARK points and full task history, for the admin portal.
+
+    Uses the same cached programme-window board as the student dashboard, so the
+    admin sees exactly the numbers the student sees. Adds the manual-award
+    ledger with who added each entry, which is kept out of the student view.
+    Returns None when the profile is missing or belongs to another org.
+    """
+    profile = await Profile.get(profile_id)
+    if not profile or (getattr(profile, "org_id", None) or DEFAULT_ORG_ID) != org_id:
+        return None
+
+    start, end = clamp_scoring_window(None, None)
+    board = await build_leaderboard(org_id, sort="overall", from_date=start, to_date=end)
+    row = next((r for r in board if r.get("id") == profile_id), None)
+    ranked = row is not None
+    if row is None:
+        # Not on the board yet (never scraped) — score it on its own.
+        row = score_profile(profile, [], from_date=start, as_of=end)
+
+    raw_log = (getattr(profile, "insights", None) or {}).get("spark_bonus_log")
+    bonus_log = [dict(e) for e in raw_log if isinstance(e, dict)] if isinstance(raw_log, list) else []
+
+    return {
+        "profile_id": profile_id,
+        "name": row.get("name"),
+        "handle": row.get("handle"),
+        "tier": row.get("tier"),
+        "points": row.get("points", 0),
+        "rank": row.get("rank") if ranked else None,
+        "ranked_total": len(board),
+        "points_breakdown": dict(row.get("points_breakdown") or {}),
+        # Rows are shared with the board cache — copy before handing out.
+        "task_history": [dict(t) for t in (row.get("task_history") or [])],
+        "bonus_log": bonus_log,
+        "window_from": start.strftime("%Y-%m-%d"),
+        "window_to": end.strftime("%Y-%m-%d"),
+    }
+
+
 async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
     profile = await Profile.get(profile_id)
     if not profile:
@@ -1222,7 +1264,7 @@ async def get_student_dashboard(org_id: str, profile_id: str) -> dict[str, Any]:
     ]
 
     yt_payload = creator.get("youtube") or _empty_youtube_metrics()
-    task_history = (creator.get("task_history") or [])[:8]
+    task_history = list(creator.get("task_history") or [])
     creator_out = {k: v for k, v in creator.items() if k not in {"task_history", "youtube"}}
     raw_insights = dict(getattr(profile, "insights", None) or {}) if profile else {}
     insights = {k: raw_insights[k] for k in _STUDENT_INSIGHT_KEYS if k in raw_insights}

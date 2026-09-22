@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Literal, Sequence
 
 from instascope_shared.cohort import clamp_scoring_window
@@ -100,6 +100,9 @@ class ContentPiece:
     views: int
     published_at: datetime
     label: str
+    # Where the student can open the piece — shown on the task history timeline.
+    url: str | None = None
+    shortcode: str | None = None
 
 
 def _naive_dt(value: datetime | None) -> datetime | None:
@@ -215,13 +218,19 @@ def piece_from_ig(post: Post) -> ContentPiece | None:
         return None
     mt = str(post.media_type.value if hasattr(post.media_type, "value") else post.media_type)
     kind = _ig_piece_kind(mt, post.caption)
+    shortcode = getattr(post, "shortcode", None) or None
     return ContentPiece(
-        piece_id=f"ig:{getattr(post, 'shortcode', None) or getattr(post, 'ig_post_id', None) or id(post)}",
+        piece_id=f"ig:{shortcode or getattr(post, 'ig_post_id', None) or id(post)}",
         platform="ig",
         kind=kind,
         views=int(post.views or 0),
         published_at=posted,
         label=f"IG {mt}",
+        url=(
+            getattr(post, "permalink", None)
+            or (f"https://www.instagram.com/p/{shortcode}/" if shortcode else None)
+        ),
+        shortcode=shortcode,
     )
 
 
@@ -233,13 +242,15 @@ def piece_from_yt(video: YouTubeVideo) -> ContentPiece | None:
         is_short=bool(getattr(video, "is_short", False)),
         duration_seconds=getattr(video, "duration_seconds", None),
     )
+    video_id = getattr(video, "video_id", None)
     return ContentPiece(
-        piece_id=f"yt:{getattr(video, 'video_id', id(video))}",
+        piece_id=f"yt:{video_id or id(video)}",
         platform="yt",
         kind=kind,
         views=int(getattr(video, "view_count", 0) or 0),
         published_at=posted,
         label="YT Short" if kind == "short" else ("YT Long" if kind == "long" else "YT"),
+        url=f"https://www.youtube.com/watch?v={video_id}" if video_id else None,
     )
 
 
@@ -266,6 +277,8 @@ def dedupe_crossposted_shorts(pieces: Sequence[ContentPiece]) -> list[ContentPie
                         views=max(ig[i].views, yt[i].views),
                         published_at=ig[i].published_at,
                         label="Crosspost short",
+                        url=ig[i].url or yt[i].url,
+                        shortcode=ig[i].shortcode,
                     )
                 )
             out.extend(ig[n:])
@@ -335,6 +348,83 @@ def collect_pieces(
     return dedupe_crossposted_shorts(raw)
 
 
+def bonus_ledger_lines(
+    insights: dict[str, Any] | None,
+    *,
+    total: int,
+    profile_id: str,
+    as_of: datetime,
+) -> list[dict[str, Any]]:
+    """One timeline entry per manual award, reconciled to the stored balance.
+
+    The ledger records what each admin entered; the balance is floored at 0 on
+    every change, and points awarded before the ledger existed (or lost to the
+    old 50-entry cap) have no rows. A single adjustment line covers any gap so
+    the timeline always sums to the points actually counted.
+
+    Deliberately omits ``added_by`` — this list is shown to students.
+    """
+    raw = (insights or {}).get("spark_bonus_log")
+    log = [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+    lines: list[dict[str, Any]] = []
+    logged = 0
+    oldest = as_of.strftime("%Y-%m-%d")
+    # Stored newest-first; number from the oldest so ids stay stable as awards grow.
+    for n, entry in enumerate(reversed(log)):
+        try:
+            pts = int(entry.get("points") or 0)
+        except (TypeError, ValueError):
+            continue
+        if pts == 0:
+            continue
+        logged += pts
+        on = str(entry.get("added_at") or "")[:10] or as_of.strftime("%Y-%m-%d")
+        oldest = min(oldest, on)
+        reason = str(entry.get("reason") or "").strip()
+        try:
+            week = datetime.strptime(on, "%Y-%m-%d").isocalendar()[1]
+        except ValueError:
+            week = as_of.isocalendar()[1]
+        lines.append(
+            {
+                "id": f"bonus-{profile_id}-{n}",
+                "week": week,
+                "title": reason or ("Manual bonus" if pts > 0 else "Manual deduction"),
+                "category": "Manual bonus",
+                "points": pts,
+                "status": "approved",
+                "date": on,
+            }
+        )
+    gap = int(total) - logged
+    if gap:
+        lines.append(
+            {
+                "id": f"bonus-{profile_id}-balance",
+                "week": as_of.isocalendar()[1],
+                "title": "Manual points balance adjustment",
+                "category": "Manual bonus",
+                "points": gap,
+                "status": "approved",
+                "date": oldest,
+            }
+        )
+    return lines
+
+
+def _cap_line(category: str, earned: int, cap: int, as_of: datetime) -> dict[str, Any]:
+    """Negative timeline entry for points earned above a category cap."""
+    return {
+        "id": f"cap-{category.lower()}",
+        "week": as_of.isocalendar()[1],
+        "title": f"{category} cap — {cap:,} pts max ({earned:,} earned)",
+        "category": category,
+        "points": cap - earned,
+        "status": "capped",
+        "date": as_of.strftime("%Y-%m-%d"),
+    }
+
+
 def consistency_from_pieces(
     pieces: Sequence[ContentPiece],
     *,
@@ -358,6 +448,9 @@ def consistency_from_pieces(
     for (year, week), counts in sorted(by_week.items()):
         total_p = counts["total"]
         base_met = counts["shorts"] >= 2 and counts["longs"] >= 1
+        # Date the award by the week that earned it (its Sunday, or today for
+        # the running week) so the timeline reads in order.
+        earned_on = min(date.fromisocalendar(year, week, 7), as_of.date()).strftime("%Y-%m-%d")
         if total_p >= 4:
             pts = CONSISTENCY_BOOST_PTS_PER_WEEK
             total += pts
@@ -369,7 +462,7 @@ def consistency_from_pieces(
                     "category": "Consistency",
                     "points": pts,
                     "status": "approved",
-                    "date": as_of.strftime("%Y-%m-%d"),
+                    "date": earned_on,
                 }
             )
         elif base_met:
@@ -383,9 +476,13 @@ def consistency_from_pieces(
                     "category": "Consistency",
                     "points": pts,
                     "status": "approved",
-                    "date": as_of.strftime("%Y-%m-%d"),
+                    "date": earned_on,
                 }
             )
+    if total > CONSISTENCY_CAP:
+        # Lines above list every week at face value; this keeps the timeline
+        # summing to the points actually counted.
+        history.append(_cap_line("Consistency", total, CONSISTENCY_CAP, as_of))
     total = min(total, CONSISTENCY_CAP)
 
     week_ago = as_of - timedelta(days=7)
@@ -460,8 +557,12 @@ def compute_points_breakdown(
                     "points": pts,
                     "status": "approved",
                     "date": piece.published_at.strftime("%Y-%m-%d"),
+                    "url": piece.url,
+                    "shortcode": piece.shortcode,
                 }
             )
+    if performance > PERFORMANCE_CAP:
+        task_history.append(_cap_line("Performance", performance, PERFORMANCE_CAP, now))
     performance_capped = min(performance, PERFORMANCE_CAP)
 
     if growth_pts_override is not None:
@@ -629,13 +730,21 @@ def package_leaderboard_row(
                 "date": now.strftime("%Y-%m-%d"),
             }
         )
+    # Manual awards are itemised from the ledger rather than one lump line.
+    task_history.extend(
+        bonus_ledger_lines(
+            insights,
+            total=scored["bonus"],
+            profile_id=str(profile.id),
+            as_of=now,
+        )
+    )
     for key, label in (
         ("collaborations", "Collaborations"),
         ("revenue", "Revenue"),
         ("recognition", "Recognition"),
         ("participation", "Program participation"),
         ("monthly_bonuses", "Monthly bonus"),
-        ("bonus", "Manual bonus"),
     ):
         pts = scored[key]
         if pts > 0:
@@ -654,6 +763,7 @@ def package_leaderboard_row(
     for h in task_history:
         h.setdefault("profile_id", str(profile.id))
         h.setdefault("shortcode", None)
+        h.setdefault("url", None)
 
     return {
         "id": str(profile.id),
@@ -705,7 +815,9 @@ def package_leaderboard_row(
         "avatar_url": profile.avatar_url,
         "next_tier": next_tier,
         "points_to_next_tier": remaining,
-        "task_history": sorted(task_history, key=lambda t: t.get("date") or "", reverse=True)[:20],
+        # Full history, newest first. Consumers that don't need it (leaderboard,
+        # Top 10) strip it; the student and admin views show all of it.
+        "task_history": sorted(task_history, key=lambda t: t.get("date") or "", reverse=True),
         "is_private": bool(profile.is_private),
         "youtube_connected": bool(getattr(profile, "youtube_connected", False)),
         "youtube_channel_id": getattr(profile, "youtube_channel_id", None),

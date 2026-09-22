@@ -141,6 +141,15 @@ async def campus_uploads(user: User = Depends(require_admin)):
     return await spark_service.get_campus_uploads(_org_id(user))
 
 
+@router.get("/admin/profiles/{profile_id}/points")
+async def admin_profile_points(profile_id: str, user: User = Depends(require_admin)):
+    """Full SPARK points + task history for one student (admin portal detail page)."""
+    data = await spark_service.get_profile_points(_org_id(user), profile_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return data
+
+
 @router.post("/profiles/{profile_id}/bonus-points")
 async def add_bonus_points(
     profile_id: str,

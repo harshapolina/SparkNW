@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import type { StudentDashboardResponse } from "@/lib/spark/api-types";
 import { formatNumber } from "@/lib/utils";
 import { TierBadge } from "@/components/spark/tier-badge";
+import { TaskHistoryTimeline } from "@/components/spark/task-history-timeline";
 import { ProgressBar, SparkAvatar } from "@/components/spark/ui";
 import { ProgrammeWindowNote } from "@/components/programme-window-note";
 
@@ -364,45 +365,7 @@ export default function StudentDashboardPage() {
           </div>
           <TierBadge tier={creator.tier} />
         </div>
-        {!taskHistory.length && <p className="text-sm text-zinc-500">Refresh the profile to earn performance points from posts.</p>}
-        <div className="space-y-0">
-          {taskHistory.map((t, i) => (
-            <div key={t.id} className="relative flex gap-4 pb-5 last:pb-0">
-              <div className="flex flex-col items-center">
-                <div
-                  className={`mt-1 h-2.5 w-2.5 rounded-full ${
-                    t.status === "approved" ? "bg-lime-400" : t.status === "missed" ? "bg-rose-500" : "bg-zinc-600"
-                  }`}
-                />
-                {i < taskHistory.length - 1 && <div className="w-px flex-1 bg-white/10" />}
-              </div>
-              <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="text-sm font-medium">{t.title}</div>
-                  <div className="text-[11px] text-zinc-500">
-                    {t.category} · {t.date}
-                    {t.shortcode ? (
-                      <>
-                        {" · "}
-                        <a
-                          href={`https://www.instagram.com/p/${t.shortcode}/`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-[#ff4d00] hover:underline"
-                        >
-                          open
-                        </a>
-                      </>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="text-sm font-semibold tabular text-[#ff4d00]">
-                  {t.points > 0 ? `+${t.points} pts` : "0 pts"}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <TaskHistoryTimeline items={taskHistory} />
       </div>
 
       {/* Personal analytics — same data the admin sees for this student */}
