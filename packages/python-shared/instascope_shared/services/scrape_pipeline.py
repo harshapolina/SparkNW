@@ -12,7 +12,10 @@ from instascope_shared.analytics.metrics import compute_post_metrics
 from instascope_shared.core.config import get_settings
 from instascope_shared.domain.instagram import growth_pct
 from instascope_shared.instagram_time import infer_posted_at
-from instascope_shared.services.spark_points import merge_spark_scoring_insights
+from instascope_shared.services.spark_points import (
+    SPARK_SCORING_INSIGHT_KEYS,
+    merge_spark_scoring_insights,
+)
 from instascope_shared.models import (
     Job,
     JobStatus,
@@ -78,17 +81,22 @@ def _is_complete_enough(
     followers: int,
     *,
     hit_cohort_floor: bool = False,
+    timeline_complete: bool = False,
     is_private: bool = False,
 ) -> bool:
     """Accept capped scrapes and first-pass samples so timeouts don't leave zeros.
 
     ``hit_cohort_floor`` means the engine walked newest→oldest down to
     SPARK_COHORT_START (2026-07-15) — that is a complete programme scrape.
+    ``timeline_complete`` means Instagram reported no further pages and nothing
+    was capped: every post the account has was read. An account whose whole
+    history is inside the programme window never reaches the floor, so without
+    this a full scrape of a new account was refused as "incomplete".
     """
     if is_private:
         # Private profiles resolve to a card; timeline posts are not available.
         return True
-    if hit_cohort_floor:
+    if hit_cohort_floor or timeline_complete:
         return True
 
     # Instagram-reported empty timeline — card alone is enough (followers may be 0).
@@ -340,6 +348,66 @@ async def _upsert_posts(profile: Profile, post_docs: list[Post]) -> int:
     return saved
 
 
+# Admin-owned insight keys that describe the student, not the Instagram account.
+_STUDENT_INSIGHT_KEYS = frozenset(SPARK_SCORING_INSIGHT_KEYS) | {"team"}
+
+
+def reset_account_state(profile: Profile) -> None:
+    """Clear everything scraped from the Instagram account behind this profile.
+
+    Keeps roster data, manual SPARK points and the YouTube link — those belong
+    to the student and survive an account change.
+    """
+    profile.ig_user_id = None
+    profile.full_name = None
+    profile.bio = None
+    profile.website = None
+    profile.avatar_url = None
+    profile.is_verified = False
+    profile.is_private = False
+    profile.is_business = False
+    profile.category = None
+    profile.highlight_reel_count = 0
+    profile.follower_following_ratio = 0.0
+    profile.followers = 0
+    profile.following = 0
+    profile.posts_count = 0
+    profile.avg_likes = 0.0
+    profile.avg_views = 0.0
+    profile.avg_comments = 0.0
+    profile.engagement_rate = 0.0
+    profile.growth_pct_today = 0.0
+    profile.insights = {
+        k: v for k, v in (profile.insights or {}).items() if k in _STUDENT_INSIGHT_KEYS
+    }
+    profile.scrape_progress = None
+    profile.last_scraped_at = None
+    profile.last_success_at = None
+
+
+async def forget_previous_account(profile: Profile) -> None:
+    """Drop the previous Instagram account's data before tracking a new one.
+
+    Its posts and follower history belong to a different Instagram user: left in
+    place they kept showing after the switch, and growth was measured from the
+    old account's follower baseline. Does not save the profile — callers do.
+    """
+    reset_account_state(profile)
+    await Post.find(Post.profile_id == str(profile.id)).delete()
+    await ProfileSnapshot.find(ProfileSnapshot.profile_id == str(profile.id)).delete()
+
+
+def _account_changed(profile: Profile, result: dict[str, Any]) -> bool:
+    """True when the scrape reached a different Instagram user than the one stored.
+
+    Instagram's user id is permanent (it survives handle renames), so a mismatch
+    means the link now points at another account — however it was changed.
+    """
+    new_id = str(result.get("ig_user_id") or "").strip()
+    old_id = str(getattr(profile, "ig_user_id", None) or "").strip()
+    return bool(new_id and old_id and new_id != old_id)
+
+
 async def apply_scrape_result(
     *,
     job: Job,
@@ -350,6 +418,16 @@ async def apply_scrape_result(
     settings = get_settings()
     today = datetime.utcnow().strftime("%Y-%m-%d")
 
+    if _account_changed(profile, result):
+        logger.warning(
+            "@%s is now a different Instagram account (user id %s -> %s) — "
+            "dropping the previous account's posts and follower history",
+            profile.username,
+            profile.ig_user_id,
+            result.get("ig_user_id"),
+        )
+        await forget_previous_account(profile)
+
     prev_followers = profile.followers
     followers = int(result.get("followers") or 0)
     following = int(result.get("following") or 0)
@@ -358,6 +436,7 @@ async def apply_scrape_result(
     posts_data: list[dict[str, Any]] = result.get("posts") or []
     raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
     hit_cohort_floor = bool(raw.get("hit_cohort_floor"))
+    timeline_complete = bool(raw.get("timeline_complete"))
     is_private = _is_private_scrape_result(result)
 
     # Hard filter: ONLY persist posts dated inside the SPARK programme window
@@ -473,6 +552,7 @@ async def apply_scrape_result(
         len(posts_data),
         followers,
         hit_cohort_floor=hit_cohort_floor,
+        timeline_complete=timeline_complete,
         is_private=is_private,
     ):
         raise ValueError(
@@ -483,6 +563,7 @@ async def apply_scrape_result(
         and not posts_data
         and _configured_max_posts() <= 0
         and not hit_cohort_floor
+        and not timeline_complete
         and not is_private
     ):
         raise ValueError(
@@ -504,6 +585,7 @@ async def apply_scrape_result(
         and int((profile.insights or {}).get("sampled_posts") or 0) > 0
         and not posts_data
         and not hit_cohort_floor
+        and not timeline_complete
         and not is_private
     ):
         raise ValueError("Refusing to overwrite insights with empty metrics")

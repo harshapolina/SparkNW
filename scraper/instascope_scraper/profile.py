@@ -1449,6 +1449,7 @@ async def _try_polaris_timeline(page, *, username: str, result: ScrapeResult) ->
         "polaris_total_nodes": total,
         "hit_cohort_floor": bool(boot.get("hit_cohort_floor")),
         "feed_exhausted": bool(boot.get("feed_exhausted")),
+        "timeline_complete": bool(boot.get("timeline_complete")),
     }
     logger.info(
         "polaris @%s OK posts=%s (in-window) total_nodes=%s followers=%s",

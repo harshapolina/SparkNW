@@ -22,8 +22,11 @@ from instascope_shared.models import (
     ProfileStatus,
 )
 from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse, UpdateProfileRequest
-from instascope_shared.services.scrape_pipeline import heal_soft_scrape_failure
-from instascope_shared.services.spark_points import SPARK_SCORING_INSIGHT_KEYS
+from instascope_shared.services.scrape_pipeline import (
+    forget_previous_account,
+    heal_soft_scrape_failure,
+)
+from instascope_shared.services.spark_points import merge_spark_scoring_insights
 from instascope_shared.services.student_roster import merge_student
 
 
@@ -169,8 +172,10 @@ async def to_profile_response_cohort(p: Profile) -> ProfileResponse:
     )
     # Prefer live cohort metrics over lifetime scrape blob stored on the profile.
     # Always overwrite averages — including zeros when the programme window is empty —
-    # so header stats never stay stale vs Insights cards.
-    resp.insights = metrics
+    # so header stats never stay stale vs Insights cards. Admin-awarded points live
+    # in insights too; replacing it wholesale made the admin card read 0 bonus and
+    # an empty award log.
+    resp.insights = merge_spark_scoring_insights(getattr(p, "insights", None), metrics)
     resp.programme_posts = int(metrics.get("sampled_posts") or metrics.get("posts_in_window") or 0)
     resp.avg_likes = float(metrics.get("avg_likes") or 0)
     resp.avg_views = float(metrics.get("avg_views") or 0)
@@ -319,54 +324,11 @@ async def update_profile_instagram(user_id: str, profile_id: str, payload: Updat
     if profile.status == ProfileStatus.UNAVAILABLE:
         profile.status = ProfileStatus.ACTIVE
     profile.last_error = None
-    _reset_account_state(profile)
+    # The new handle's first scrape rebuilds posts and follower history.
+    await forget_previous_account(profile)
     profile.updated_at = datetime.utcnow()
     await profile.save()
-
-    # The old account's posts and follower history belong to a different
-    # Instagram user. Leaving them made a failed or pending scrape keep showing
-    # the old account, and growth points were measured from the old account's
-    # follower baseline. The new handle's first scrape rebuilds both.
-    await Post.find(Post.profile_id == str(profile.id)).delete()
-    await ProfileSnapshot.find(ProfileSnapshot.profile_id == str(profile.id)).delete()
     return profile
-
-
-# Admin-owned insight keys that describe the student, not the Instagram account.
-_STUDENT_INSIGHT_KEYS = frozenset(SPARK_SCORING_INSIGHT_KEYS) | {"team"}
-
-
-def _reset_account_state(profile: Profile) -> None:
-    """Clear everything scraped from the previous Instagram account.
-
-    Keeps roster data, manual SPARK points and the YouTube link — those belong
-    to the student and survive a handle change.
-    """
-    profile.ig_user_id = None
-    profile.full_name = None
-    profile.bio = None
-    profile.website = None
-    profile.avatar_url = None
-    profile.is_verified = False
-    profile.is_private = False
-    profile.is_business = False
-    profile.category = None
-    profile.highlight_reel_count = 0
-    profile.follower_following_ratio = 0.0
-    profile.followers = 0
-    profile.following = 0
-    profile.posts_count = 0
-    profile.avg_likes = 0.0
-    profile.avg_views = 0.0
-    profile.avg_comments = 0.0
-    profile.engagement_rate = 0.0
-    profile.growth_pct_today = 0.0
-    profile.insights = {
-        k: v for k, v in (profile.insights or {}).items() if k in _STUDENT_INSIGHT_KEYS
-    }
-    profile.scrape_progress = None
-    profile.last_scraped_at = None
-    profile.last_success_at = None
 
 
 async def list_profiles(

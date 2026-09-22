@@ -9,6 +9,7 @@ from datetime import timezone
 
 from instascope_scraper.polaris import (
     PolarisUnavailable,
+    collect_timeline,
     extract_bootstrap,
     nodes_to_posts,
     parse_engagement,
@@ -229,3 +230,104 @@ async def test_collect_timeline_uncapped_when_max_posts_zero(monkeypatch):
     assert boot["capped"] is False
     assert boot["feed_exhausted"] is True
     assert len(boot["nodes"]) == 12  # 2 seeded + 10 paged
+
+
+# --- end-of-timeline detection ------------------------------------------------
+# Only Instagram's explicit has_next_page=false may mark a timeline complete.
+# A new account whose whole history is inside the programme window never
+# reaches the cohort floor, so this flag is what lets its full scrape save —
+# which makes a false positive (a stall read as "complete") the thing to avoid.
+
+
+def _page(nodes, *, has_next, cursor="NEXT"):
+    import json as _json
+
+    return {
+        "status": 200,
+        "text": _json.dumps(
+            {
+                "data": {
+                    "xig_user_by_username": {
+                        "polaris_ordered_timeline_connection": {
+                            "edges": [{"node": n} for n in nodes],
+                            "page_info": {"end_cursor": cursor if has_next else None, "has_next_page": has_next},
+                        }
+                    }
+                }
+            }
+        ),
+    }
+
+
+def _nodes(prefix, n, base=3984285244001148342):
+    return [{"pk": str(base - i * 1_000_000), "code": f"{prefix}{i:02d}"} for i in range(n)]
+
+
+class _Pages:
+    """Fake Playwright page: bootstrap HTML, then scripted /api/graphql responses."""
+
+    def __init__(self, html, responses):
+        self.html = html
+        self.responses = list(responses)
+        self.calls = 0
+
+    async def content(self):
+        return self.html
+
+    async def evaluate(self, _js, _args):
+        self.calls += 1
+        return self.responses.pop(0)
+
+
+def test_bootstrap_reads_has_next_from_page_info():
+    assert extract_bootstrap(PROFILE_HTML)["has_next"] is True
+    last = PROFILE_HTML.replace('"end_cursor":"CURSOR_ONE","has_next_page":true', '"end_cursor":null,"has_next_page":false')
+    boot = extract_bootstrap(last)
+    assert boot["has_next"] is False and boot["cursor"] is None
+
+
+@pytest.mark.asyncio
+async def test_timeline_complete_when_instagram_says_no_more_pages():
+    page = _Pages(PROFILE_HTML, [_page(_nodes("A", 12), has_next=True), _page(_nodes("B", 5), has_next=False)])
+    boot = await collect_timeline(page, "x", delay_seconds=0)
+    assert boot["timeline_complete"] is True
+    assert len(boot["nodes"]) == 2 + 12 + 5
+
+
+@pytest.mark.asyncio
+async def test_single_page_account_is_complete_without_any_request():
+    last = PROFILE_HTML.replace('"end_cursor":"CURSOR_ONE","has_next_page":true', '"end_cursor":null,"has_next_page":false')
+    page = _Pages(last, [])
+    boot = await collect_timeline(page, "x", delay_seconds=0)
+    assert boot["timeline_complete"] is True and page.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_stalled_walk_is_never_complete():
+    page = _Pages(PROFILE_HTML, [_page(_nodes("A", 12), has_next=True), {"status": 429, "text": ""}])
+    boot = await collect_timeline(page, "x", delay_seconds=0)
+    assert boot["timeline_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_empty_page_is_not_proof_of_the_end():
+    page = _Pages(PROFILE_HTML, [_page([], has_next=True)])
+    boot = await collect_timeline(page, "x", delay_seconds=0)
+    assert boot["timeline_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_capped_walk_is_not_complete_even_at_the_end():
+    page = _Pages(PROFILE_HTML, [_page(_nodes("A", 12), has_next=False)])
+    boot = await collect_timeline(page, "x", max_posts=5, delay_seconds=0)
+    assert boot["capped"] is True and boot["timeline_complete"] is False
+
+
+def test_unknown_payload_shape_leaves_the_end_unconfirmed():
+    # Nodes recoverable by regex, but no parseable connection/page_info.
+    html = (
+        '"adp_PolarisLoggedOutDesktopWWWProfilePostsTabContentQueryRelayPreloader_x","queryID":"123"'
+        '["LSD",[],{"token":"T"},1] "pk":"3984285244001148342","code":"ZZZZZ1"'
+    )
+    boot = extract_bootstrap(html)
+    assert boot["nodes"] and boot["has_next"] is None and boot["cursor"] is None

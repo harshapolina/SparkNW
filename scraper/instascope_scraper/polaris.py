@@ -215,11 +215,12 @@ def _json_object_at(text: str, start: int) -> Any:
     return None
 
 
-def _first_page_nodes(html: str) -> list[dict[str, Any]]:
-    """Full node objects for the server-rendered first page.
+def _first_page(html: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Full node objects and page_info for the server-rendered first page.
 
     Falls back to a pk/code regex when the payload shape changes, so a schema
-    tweak degrades to thinner posts instead of losing the page entirely.
+    tweak degrades to thinner posts instead of losing the page entirely. The
+    page_info is then None, meaning "unknown" rather than "no more posts".
     """
     key = '"polaris_ordered_timeline_connection":'
     idx = html.find(key)
@@ -234,12 +235,13 @@ def _first_page_nodes(html: str) -> list[dict[str, Any]]:
                     if isinstance(e, dict)
                 ]
                 nodes = [n for n in nodes if n.get("code")]
+                info = conn.get("page_info")
                 if nodes:
-                    return nodes
-    return [
-        {"pk": pk, "code": code}
-        for pk, code in dict.fromkeys(_RE_INLINE_NODE.findall(html))
-    ]
+                    return nodes, info if isinstance(info, dict) else None
+    return (
+        [{"pk": pk, "code": code} for pk, code in dict.fromkeys(_RE_INLINE_NODE.findall(html))],
+        None,
+    )
 
 
 def extract_bootstrap(html: str) -> dict[str, Any]:
@@ -254,8 +256,16 @@ def extract_bootstrap(html: str) -> dict[str, Any]:
             f"no Polaris preload payload (doc_id={bool(doc)} lsd={bool(lsd)})"
         )
 
-    cursor_match = _RE_TIMELINE_CURSOR.search(html)
-    nodes = _first_page_nodes(html)
+    nodes, page_info = _first_page(html)
+    if page_info is not None:
+        has_next = page_info.get("has_next_page")
+        cursor = page_info.get("end_cursor") if has_next else None
+    else:
+        # Payload shape unknown: a cursor means more pages, but its absence
+        # proves nothing, so the end of the timeline stays unconfirmed.
+        cursor_match = _RE_TIMELINE_CURSOR.search(html)
+        cursor = cursor_match.group(1) if cursor_match else None
+        has_next = True if cursor else None
 
     followers = _RE_FOLLOWERS.search(html)
     following = _RE_FOLLOWING.search(html)
@@ -266,7 +276,9 @@ def extract_bootstrap(html: str) -> dict[str, Any]:
     return {
         "doc_id": doc.group(1),
         "lsd": lsd.group(1),
-        "cursor": cursor_match.group(1) if cursor_match else None,
+        "cursor": cursor,
+        # True / False from Instagram's own page_info; None when unknown.
+        "has_next": has_next,
         "nodes": nodes,
         "followers": int(followers.group(1)) if followers else None,
         "following": int(following.group(1)) if following else None,
@@ -276,16 +288,22 @@ def extract_bootstrap(html: str) -> dict[str, Any]:
     }
 
 
-def _nodes_from_payload(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
-    """Return (nodes, next_cursor) from one /api/graphql timeline response."""
+def _nodes_from_payload(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None, bool | None]:
+    """Return (nodes, next_cursor, has_next) from one /api/graphql timeline response.
+
+    ``has_next`` is Instagram's own page_info flag, or None when absent.
+    """
     user = ((payload or {}).get("data") or {}).get("xig_user_by_username") or {}
     conn = user.get("polaris_ordered_timeline_connection") or {}
     edges = conn.get("edges") or []
     nodes = [e.get("node") or {} for e in edges if isinstance(e, dict)]
     nodes = [n for n in nodes if n.get("code")]
-    info = conn.get("page_info") or {}
-    nxt = info.get("end_cursor") if info.get("has_next_page") else None
-    return nodes, nxt
+    info = conn.get("page_info")
+    has_next = info.get("has_next_page") if isinstance(info, dict) else None
+    nxt = info.get("end_cursor") if has_next else None
+    return nodes, nxt, has_next if isinstance(has_next, bool) else None
 
 
 async def collect_timeline(
@@ -318,7 +336,9 @@ async def collect_timeline(
     limit = _max_pages(expected_count)
     size = _page_size()
     hit_floor = False
-    exhausted = cursor is None
+    # Only Instagram's explicit has_next_page=false proves we saw every post.
+    # A stalled or failed page is never treated as the end of the timeline.
+    complete = boot.get("has_next") is False
 
     while cursor and pages < limit:
         try:
@@ -347,9 +367,10 @@ async def collect_timeline(
             logger.warning("polaris @%s page=%s non-JSON body=%r", username, pages + 1, text[:180])
             break
 
-        nodes, cursor = _nodes_from_payload(payload)
+        nodes, cursor, has_next = _nodes_from_payload(payload)
+        if has_next is False:
+            complete = True
         if not nodes:
-            exhausted = True
             break
 
         new = 0
@@ -360,8 +381,6 @@ async def collect_timeline(
                 new += 1
 
         pages += 1
-        if cursor is None:
-            exhausted = True
 
         if max_posts > 0 and len(seen) >= max_posts:
             logger.info(
@@ -396,17 +415,18 @@ async def collect_timeline(
             await asyncio.sleep(delay_seconds)
 
     logger.info(
-        "polaris @%s collected=%s expected=%s pages=%s floor=%s exhausted=%s",
+        "polaris @%s collected=%s expected=%s pages=%s floor=%s complete=%s",
         username,
         len(seen),
         expected_count,
         pages,
         hit_floor,
-        exhausted,
+        complete,
     )
 
     nodes = list(seen.values())
-    if max_posts > 0 and len(nodes) > max_posts:
+    truncated = max_posts > 0 and len(nodes) > max_posts
+    if truncated:
         nodes.sort(
             key=lambda n: (pk_to_datetime(n.get("pk")) or datetime.min.replace(tzinfo=timezone.utc)),
             reverse=True,
@@ -415,7 +435,12 @@ async def collect_timeline(
     boot["nodes"] = nodes
     boot["pages"] = pages
     boot["hit_cohort_floor"] = hit_floor
-    boot["feed_exhausted"] = exhausted
+    # Every post Instagram has for this account is in ``nodes``: it said there
+    # were no more pages and nothing was dropped by the max_posts cap. For an
+    # account whose whole history is inside the programme window this is the
+    # only proof of completeness — it never reaches the cohort floor.
+    boot["timeline_complete"] = complete and not truncated
+    boot["feed_exhausted"] = boot["timeline_complete"]
     boot["capped"] = bool(max_posts > 0 and len(seen) >= max_posts)
     return boot
 

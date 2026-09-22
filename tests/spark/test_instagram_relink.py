@@ -14,7 +14,7 @@ import pytest
 
 import instascope_shared.services.scrape_core as core
 from instascope_shared.models import JobStatus
-from instascope_shared.services.profiles import _reset_account_state
+from instascope_shared.services.scrape_pipeline import reset_account_state
 
 
 class _Store:
@@ -192,7 +192,7 @@ def test_reset_account_state_clears_old_account_keeps_student_data():
         youtube_connected=True,
     )
 
-    _reset_account_state(profile)
+    reset_account_state(profile)
 
     assert profile.followers == 0 and profile.posts_count == 0
     assert profile.ig_user_id is None and profile.avatar_url is None and profile.bio is None
