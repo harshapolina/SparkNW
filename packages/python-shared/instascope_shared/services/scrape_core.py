@@ -7,6 +7,7 @@ Do not put queue / scheduling logic here — keep that in the API runners.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from datetime import datetime
@@ -27,6 +28,24 @@ from instascope_scraper.types import parse_proxy_url
 ScrapeSource = Literal["single", "bulk", "deep"]
 
 _PROGRESS_INTERVAL_S = 20.0
+
+logger = logging.getLogger("instascope.scrape_core")
+
+
+async def _set_profile_fields(profile: Profile, **fields: Any) -> None:
+    """Write only ``fields`` (plus updated_at) to the stored profile.
+
+    Beanie's save() $sets every field from the in-memory document. A scrape holds
+    its copy for minutes, so a full save wrote back the handle it started with —
+    reverting an Instagram link an admin changed mid-scrape — and dropped bonus
+    points awarded in the meantime.
+
+    Goes through a query rather than Document.update() on purpose: the latter
+    merges the stored copy back into ``profile``, and the progress heartbeat keeps
+    firing while apply_scrape_result is mutating that same object.
+    """
+    fields["updated_at"] = datetime.utcnow()
+    await Profile.find_one(Profile.id == profile.id).update({"$set": fields})
 
 
 def _job_timeout_seconds(*, max_posts: int = 0) -> float:
@@ -191,9 +210,7 @@ async def run_profile_scrape(
         now_m = time.monotonic()
         if not force and (now_m - last_profile_save) < _PROGRESS_INTERVAL_S:
             return
-        profile.scrape_progress = payload
-        profile.updated_at = datetime.utcnow()
-        await profile.save()
+        await _set_profile_fields(profile, scrape_progress=payload)
         last_profile_save = now_m
 
     async def _save_job_meta(payload: dict[str, Any]) -> None:
@@ -203,9 +220,23 @@ async def run_profile_scrape(
         job.updated_at = datetime.utcnow()
         await job.save()
 
-    profile.scrape_progress = last_progress
-    profile.updated_at = datetime.utcnow()
-    await profile.save()
+    # The handle this run scrapes. An admin can change the link mid-run; results
+    # for the old handle must then be dropped rather than written over the new one.
+    scrape_handle = profile.username or ""
+
+    async def _handle_changed() -> bool:
+        current = await Profile.get(profile.id)
+        return current is None or (current.username or "").lower() != scrape_handle.lower()
+
+    async def _drop_superseded() -> Job:
+        job.status = JobStatus.CANCELLED
+        job.finished_at = datetime.utcnow()
+        job.error_message = "Instagram link changed during scrape — result discarded"
+        job.updated_at = datetime.utcnow()
+        await job.save()
+        return job
+
+    await _set_profile_fields(profile, scrape_progress=last_progress)
     last_profile_save = time.monotonic()
     await _save_job_meta(last_progress)
 
@@ -249,7 +280,7 @@ async def run_profile_scrape(
             try:
                 result = await asyncio.wait_for(
                     scrape_profile(
-                        profile.username,
+                        scrape_handle,
                         headless=settings.scrape_headless,
                         proxy=proxy,
                         delay_seconds=settings.scrape_delay_seconds,
@@ -286,6 +317,19 @@ async def run_profile_scrape(
             if not _current():
                 return job
 
+            if await _handle_changed():
+                logger.info(
+                    "scrape @%s discarded — profile %s now tracks a different handle",
+                    scrape_handle,
+                    profile.id,
+                )
+                return await _drop_superseded()
+
+            # Apply on top of the latest stored copy, so admin edits made while
+            # the scrape ran (bonus points, roster fields) are not overwritten.
+            fresh = await Profile.get(profile.id)
+            if fresh is not None:
+                profile = fresh
             await apply_scrape_result(job=job, profile=profile, result=result.to_dict())
 
             if not _current():
@@ -302,21 +346,20 @@ async def run_profile_scrape(
                 prog["source"] = source
                 prog["percent"] = 100
                 prog["updated_at"] = datetime.utcnow().isoformat() + "Z"
-                profile.scrape_progress = prog
-                profile.updated_at = datetime.utcnow()
-                await profile.save()
+                await _set_profile_fields(profile, scrape_progress=prog)
         except asyncio.CancelledError:
             if _current():
-                profile.scrape_progress = progress_payload(
-                    scraped=int(last_progress.get("scraped_posts") or 0),
-                    total=int(last_progress.get("total_posts") or profile.posts_count or 0),
-                    phase="interrupted",
-                    active=False,
-                    source=source,
+                await _set_profile_fields(
+                    profile,
+                    scrape_progress=progress_payload(
+                        scraped=int(last_progress.get("scraped_posts") or 0),
+                        total=int(last_progress.get("total_posts") or profile.posts_count or 0),
+                        phase="interrupted",
+                        active=False,
+                        source=source,
+                    ),
+                    last_error="Scrape cancelled — click Refresh to retry.",
                 )
-                profile.last_error = "Scrape cancelled — click Refresh to retry."
-                profile.updated_at = datetime.utcnow()
-                await profile.save()
                 job.status = JobStatus.CANCELLED
                 job.finished_at = datetime.utcnow()
                 job.error_message = "Cancelled"
@@ -325,6 +368,9 @@ async def run_profile_scrape(
         except ScrapeError as exc:
             if not _current():
                 return job
+            if await _handle_changed():
+                return await _drop_superseded()
+            profile = await Profile.get(profile.id) or profile
             # Refresh the card from whatever we did reach, so a blocked timeline
             # does not leave followers frozen at the last full scrape. Posts are
             # deliberately left alone — see salvage_profile_card.
@@ -334,28 +380,35 @@ async def run_profile_scrape(
                 return job
             # mark_scrape_failed already cleared progress; keep phase explicit for UI.
             phase = "unavailable" if exc.unavailable else "failed"
-            profile.scrape_progress = progress_payload(
-                scraped=0,
-                total=int(profile.posts_count or 0),
-                phase=phase,
-                active=False,
-                source=source,
+            await _set_profile_fields(
+                profile,
+                scrape_progress=progress_payload(
+                    scraped=0,
+                    total=int(profile.posts_count or 0),
+                    phase=phase,
+                    active=False,
+                    source=source,
+                ),
             )
-            await profile.save()
         except Exception as exc:  # noqa: BLE001
             if not _current():
                 return job
+            if await _handle_changed():
+                return await _drop_superseded()
+            profile = await Profile.get(profile.id) or profile
             await mark_scrape_failed(job, profile, str(exc))
             if not _current():
                 return job
-            profile.scrape_progress = progress_payload(
-                scraped=0,
-                total=int(profile.posts_count or 0),
-                phase="failed",
-                active=False,
-                source=source,
+            await _set_profile_fields(
+                profile,
+                scrape_progress=progress_payload(
+                    scraped=0,
+                    total=int(profile.posts_count or 0),
+                    phase="failed",
+                    active=False,
+                    source=source,
+                ),
             )
-            await profile.save()
         finally:
             heartbeat.cancel()
             try:

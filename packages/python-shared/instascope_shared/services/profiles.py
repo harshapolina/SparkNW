@@ -23,6 +23,7 @@ from instascope_shared.models import (
 )
 from instascope_shared.schemas import AddProfileRequest, ProfileListResponse, ProfileResponse, UpdateProfileRequest
 from instascope_shared.services.scrape_pipeline import heal_soft_scrape_failure
+from instascope_shared.services.spark_points import SPARK_SCORING_INSIGHT_KEYS
 from instascope_shared.services.student_roster import merge_student
 
 
@@ -318,9 +319,54 @@ async def update_profile_instagram(user_id: str, profile_id: str, payload: Updat
     if profile.status == ProfileStatus.UNAVAILABLE:
         profile.status = ProfileStatus.ACTIVE
     profile.last_error = None
+    _reset_account_state(profile)
     profile.updated_at = datetime.utcnow()
     await profile.save()
+
+    # The old account's posts and follower history belong to a different
+    # Instagram user. Leaving them made a failed or pending scrape keep showing
+    # the old account, and growth points were measured from the old account's
+    # follower baseline. The new handle's first scrape rebuilds both.
+    await Post.find(Post.profile_id == str(profile.id)).delete()
+    await ProfileSnapshot.find(ProfileSnapshot.profile_id == str(profile.id)).delete()
     return profile
+
+
+# Admin-owned insight keys that describe the student, not the Instagram account.
+_STUDENT_INSIGHT_KEYS = frozenset(SPARK_SCORING_INSIGHT_KEYS) | {"team"}
+
+
+def _reset_account_state(profile: Profile) -> None:
+    """Clear everything scraped from the previous Instagram account.
+
+    Keeps roster data, manual SPARK points and the YouTube link — those belong
+    to the student and survive a handle change.
+    """
+    profile.ig_user_id = None
+    profile.full_name = None
+    profile.bio = None
+    profile.website = None
+    profile.avatar_url = None
+    profile.is_verified = False
+    profile.is_private = False
+    profile.is_business = False
+    profile.category = None
+    profile.highlight_reel_count = 0
+    profile.follower_following_ratio = 0.0
+    profile.followers = 0
+    profile.following = 0
+    profile.posts_count = 0
+    profile.avg_likes = 0.0
+    profile.avg_views = 0.0
+    profile.avg_comments = 0.0
+    profile.engagement_rate = 0.0
+    profile.growth_pct_today = 0.0
+    profile.insights = {
+        k: v for k, v in (profile.insights or {}).items() if k in _STUDENT_INSIGHT_KEYS
+    }
+    profile.scrape_progress = None
+    profile.last_scraped_at = None
+    profile.last_success_at = None
 
 
 async def list_profiles(
