@@ -1417,6 +1417,7 @@ async def _try_polaris_timeline(page, *, username: str, result: ScrapeResult) ->
             page,
             username,
             known_codes={str(n.get("code")) for n in grid_nodes if n.get("code")},
+            user_id=str(boot.get("ig_user_id") or result.ig_user_id or ""),
             cohort_floor_unix=floor,
             max_posts=_max_posts(),
         )
@@ -2154,6 +2155,7 @@ async def _merge_offgrid_reels(
                 username,
                 known_codes={p.shortcode for p in result.posts if p.shortcode},
                 html=await page.content(),
+                user_id=result.ig_user_id,
                 cohort_floor_unix=floor,
                 max_posts=_max_posts(),
             )

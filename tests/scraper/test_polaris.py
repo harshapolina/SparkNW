@@ -398,6 +398,67 @@ async def test_reels_tab_keeps_only_clips_missing_from_the_grid():
 
 
 @pytest.mark.asyncio
+async def test_reels_tab_uses_clips_api_when_the_page_has_no_preload():
+    """Hidden reels come from the same /api/v1/clips/user/ call the Reels tab makes."""
+    import json as _json
+
+    class ClipsPage:
+        def __init__(self):
+            self.calls = 0
+
+        async def content(self):
+            return "<html>login shell, no reels preload</html>"
+
+        async def evaluate(self, js, args):
+            assert "clips/user" in js
+            self.calls += 1
+            if self.calls == 1:
+                assert args[0] == "74770863655"
+                assert args[1] == ""
+                payload = {
+                    "items": [
+                        {"media": {"pk": "1", "code": "GRID1", "product_type": "clips"}},
+                        {
+                            "media": {
+                                "pk": "3984285244001148342",
+                                "code": "HIDDEN1",
+                                "product_type": "clips",
+                            }
+                        },
+                    ],
+                    "paging_info": {"max_id": "NEXT", "more_available": True},
+                }
+            else:
+                assert args[1] == "NEXT"
+                payload = {
+                    "items": [
+                        {
+                            "media": {
+                                "pk": "3984000000000000001",
+                                "code": "HIDDEN2",
+                                "product_type": "clips",
+                            }
+                        }
+                    ],
+                    "paging_info": {"more_available": False},
+                }
+            return {"status": 200, "text": _json.dumps(payload)}
+
+    page = ClipsPage()
+    found = await collect_reels_tab(
+        page,
+        "abhijeets_archives",
+        known_codes={"GRID1"},
+        html="<html>login shell, no reels preload</html>",
+        user_id="74770863655",
+        delay_seconds=0,
+        max_posts=0,
+    )
+    assert page.calls == 2
+    assert [n["code"] for n in found["nodes"]] == ["HIDDEN1", "HIDDEN2"]
+
+
+@pytest.mark.asyncio
 async def test_reels_tab_missing_does_not_call_graphql():
     class PostsOnly:
         async def content(self):

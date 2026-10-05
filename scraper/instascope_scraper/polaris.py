@@ -160,6 +160,31 @@ async ([docId, lsd, username, after, pageSize, userId, mode]) => {
 }
 """.replace("%FRIENDLY%", REELS_FRIENDLY_NAME).replace("%APPID%", IG_APP_ID)
 
+# The Reels tab itself loads clips with this call, including reels hidden from the grid.
+_CLIPS_API_JS = """
+async ([userId, maxId, pageSize]) => {
+  const body = new URLSearchParams({
+    include_feed_video: "true",
+    page_size: String(pageSize),
+    target_user_id: String(userId),
+  });
+  if (maxId) body.set("max_id", String(maxId));
+  const csrf = (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || "";
+  const r = await fetch("/api/v1/clips/user/", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      "x-ig-app-id": "%APPID%",
+      "x-csrftoken": csrf,
+      "x-requested-with": "XMLHttpRequest",
+    },
+    body: body.toString(),
+  });
+  return { status: r.status, text: await r.text() };
+}
+""".replace("%APPID%", IG_APP_ID)
+
 _EMBED_JS = """
 async (code) => {
   try {
@@ -572,6 +597,30 @@ def _nodes_from_clips_payload(
     return nodes, nxt, has_next if isinstance(has_next, bool) else None, True
 
 
+def _nodes_from_clips_api(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None, bool | None]:
+    """Media nodes plus the next cursor from ``POST /api/v1/clips/user/``."""
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return [], None, None
+    nodes: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        media = item.get("media") if isinstance(item.get("media"), dict) else item
+        if isinstance(media, dict) and (media.get("code") or media.get("pk") or media.get("id")):
+            nodes.append(media)
+    paging = payload.get("paging_info") if isinstance(payload.get("paging_info"), dict) else {}
+    cursor = payload.get("next_max_id") or paging.get("max_id")
+    cursor_text = str(cursor).strip() if cursor else None
+    more = payload.get("more_available")
+    if more is None:
+        more = paging.get("more_available")
+    has_next = bool(more) if isinstance(more, bool) else (True if cursor_text else None)
+    return nodes, cursor_text, has_next
+
+
 def _empty_reels() -> dict[str, Any]:
     return {
         "nodes": [],
@@ -624,12 +673,96 @@ async def _fetch_reels_page(
     return nodes, nxt, has_next, found, True
 
 
+async def _collect_reels_via_clips_api(
+    page,
+    username: str,
+    *,
+    user_id: str,
+    known: set[str],
+    cohort_floor_unix: int | None,
+    max_posts: int,
+    delay_seconds: float,
+) -> dict[str, Any]:
+    """Walk ``/api/v1/clips/user/``, the request the Reels tab sends."""
+    seen: dict[str, dict[str, Any]] = {}
+    cursor: str | None = ""
+    pages = 0
+    limit = _max_pages(0)
+    size = _page_size()
+    hit_floor = False
+    complete = False
+    capped = False
+
+    while cursor is not None and pages < limit:
+        try:
+            res = await page.evaluate(_CLIPS_API_JS, [user_id, cursor or "", size])
+        except Exception:
+            logger.exception("polaris clips api @%s evaluate failed", username)
+            break
+        status = int((res or {}).get("status") or 0)
+        text = (res or {}).get("text") or ""
+        if status != 200 or not text:
+            logger.warning("polaris clips api @%s HTTP %s body=%r", username, status, text[:180])
+            break
+        try:
+            payload = json.loads(text)
+        except Exception:
+            logger.warning("polaris clips api @%s non-JSON body=%r", username, text[:180])
+            break
+        nodes, next_cursor, has_next = _nodes_from_clips_api(payload)
+        pages += 1
+        if not nodes:
+            break
+        if has_next is False:
+            complete = True
+        for node in nodes:
+            code = str(node.get("code") or node.get("shortcode") or "")
+            if code and code not in known and code not in seen:
+                seen[code] = _as_reel(node)
+        cursor = next_cursor if has_next else None
+        if max_posts > 0 and len(seen) >= max_posts:
+            capped = True
+            break
+        if cohort_floor_unix is not None:
+            oldest = min(
+                (
+                    dt.timestamp()
+                    for dt in (pk_to_datetime(n.get("pk")) for n in nodes)
+                    if dt is not None
+                ),
+                default=None,
+            )
+            if oldest is not None and oldest < cohort_floor_unix:
+                hit_floor = True
+                break
+        if delay_seconds > 0 and cursor:
+            await asyncio.sleep(delay_seconds)
+
+    logger.info(
+        "polaris clips api @%s extra=%s pages=%s floor=%s complete=%s",
+        username,
+        len(seen),
+        pages,
+        hit_floor,
+        complete,
+    )
+    return {
+        "nodes": list(seen.values()),
+        "available": bool(seen) or complete,
+        "complete": complete and not capped,
+        "hit_cohort_floor": hit_floor,
+        "capped": capped,
+        "pages": pages,
+    }
+
+
 async def collect_reels_tab(
     page,
     username: str,
     *,
     known_codes: set[str] | None = None,
     html: str | None = None,
+    user_id: str | None = None,
     cohort_floor_unix: int | None = None,
     max_posts: int = 0,
     delay_seconds: float = 0.7,
@@ -644,6 +777,22 @@ async def collect_reels_tab(
     Missing or blocked Reels tab → empty result. Callers keep the grid posts.
     """
     known = {c for c in (known_codes or set()) if c}
+    passed_user_id = str(user_id or "").strip() or None
+
+    async def _via_clips_api(uid: str | None) -> dict[str, Any] | None:
+        if not uid:
+            return None
+        found = await _collect_reels_via_clips_api(
+            page,
+            username,
+            user_id=uid,
+            known=known,
+            cohort_floor_unix=cohort_floor_unix,
+            max_posts=max_posts,
+            delay_seconds=delay_seconds,
+        )
+        return found if found.get("nodes") else None
+
     if html is None:
         try:
             html = await page.content()
@@ -652,20 +801,27 @@ async def collect_reels_tab(
     boot = extract_reels_bootstrap(html or "")
     if boot is None:
         goto = getattr(page, "goto", None)
-        if not callable(goto):
-            return _empty_reels()
-        try:
-            await goto(
-                f"https://www.instagram.com/{username}/reels/",
-                wait_until="domcontentloaded",
-                timeout=45_000,
-            )
-            html = await page.content()
-        except Exception:
-            logger.info("polaris reels @%s tab not loaded — grid posts unchanged", username)
-            return _empty_reels()
-        boot = extract_reels_bootstrap(html or "")
+        if callable(goto):
+            try:
+                await goto(
+                    f"https://www.instagram.com/{username}/reels/",
+                    wait_until="domcontentloaded",
+                    timeout=45_000,
+                )
+                html = await page.content()
+            except Exception:
+                logger.info("polaris reels @%s tab navigation failed", username)
+                html = html or ""
+            else:
+                boot = extract_reels_bootstrap(html or "")
         if boot is None:
+            uid = passed_user_id
+            if not uid and html:
+                match = _RE_USER_ID.search(html)
+                uid = match.group(1) if match else None
+            found = await _via_clips_api(uid)
+            if found:
+                return found
             logger.info("polaris reels @%s no clips payload — grid posts unchanged", username)
             return _empty_reels()
 
@@ -679,7 +835,7 @@ async def collect_reels_tab(
     pages = 0
     limit = _max_pages(0)
     size = _page_size()
-    user_id = boot.get("ig_user_id")
+    resolved_user_id = boot.get("ig_user_id") or passed_user_id
     mode = "timeline"
     hit_floor = False
     complete = boot.get("has_next") is False
@@ -687,12 +843,12 @@ async def collect_reels_tab(
 
     while cursor and pages < limit:
         nodes, next_cursor, has_next, found, ok = await _fetch_reels_page(
-            page, boot, username, cursor, size, user_id, mode
+            page, boot, username, cursor, size, resolved_user_id, mode
         )
         if ok and not found and mode == "timeline":
             mode = "clips"
             nodes, next_cursor, has_next, found, ok = await _fetch_reels_page(
-                page, boot, username, cursor, size, user_id, mode
+                page, boot, username, cursor, size, resolved_user_id, mode
             )
         if not ok or not found:
             break
@@ -749,6 +905,10 @@ async def collect_reels_tab(
         hit_floor,
         complete,
     )
+    if not seen:
+        found = await _via_clips_api(resolved_user_id)
+        if found:
+            return found
     return {
         "nodes": list(seen.values()),
         "available": True,
