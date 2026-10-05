@@ -410,6 +410,69 @@ async def test_reels_tab_missing_does_not_call_graphql():
     assert found["nodes"] == [] and found["available"] is False
 
 
+def test_grid_posts_stay_when_hidden_reels_are_appended():
+    from instascope_scraper.profile import _append_new_posts
+    from instascope_scraper.types import ScrapedPost
+
+    def post(code: str, media: str = "image") -> ScrapedPost:
+        return ScrapedPost(
+            ig_post_id=code,
+            shortcode=code,
+            media_type=media,
+            caption=None,
+            thumbnail_url=None,
+            permalink=None,
+            likes=1,
+            comments=0,
+            views=0,
+            posted_at="2026-08-01T00:00:00+00:00",
+        )
+
+    merged = _append_new_posts(
+        [post("GRID1"), post("GRID2")],
+        [post("GRID1", "reel"), post("REEL9", "reel")],
+    )
+    assert [p.shortcode for p in merged] == ["GRID1", "GRID2", "REEL9"]
+    assert merged[0].media_type == "image"
+    assert merged[2].media_type == "reel"
+
+
+@pytest.mark.asyncio
+async def test_finished_grid_does_not_open_reels_twice():
+    from instascope_scraper.profile import _merge_offgrid_reels
+    from instascope_scraper.types import ScrapedPost, ScrapeResult
+
+    grid = ScrapedPost(
+        ig_post_id="GRID1",
+        shortcode="GRID1",
+        media_type="image",
+        caption=None,
+        thumbnail_url=None,
+        permalink=None,
+        likes=1,
+        comments=0,
+        views=0,
+        posted_at=None,
+    )
+    result = ScrapeResult(
+        username="abhijeets_archives",
+        ig_user_id=None,
+        full_name=None,
+        bio=None,
+        website=None,
+        avatar_url=None,
+        is_verified=False,
+        followers=500,
+        following=573,
+        posts_count=5,
+        posts=[grid],
+        raw={"reels_tab_checked": True},
+    )
+    out = await _merge_offgrid_reels("abhijeets_archives", result, headless=True, proxy=None)
+    assert [p.shortcode for p in out.posts] == ["GRID1"]
+    assert out.posts_count == 5
+
+
 def test_unknown_payload_shape_leaves_the_end_unconfirmed():
     # Nodes recoverable by regex, but no parseable connection/page_info.
     html = (

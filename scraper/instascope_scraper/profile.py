@@ -1469,6 +1469,7 @@ async def _try_polaris_timeline(page, *, username: str, result: ScrapeResult) ->
         "hit_cohort_floor": bool(boot.get("hit_cohort_floor")),
         "feed_exhausted": bool(boot.get("feed_exhausted")),
         "timeline_complete": bool(boot.get("timeline_complete")),
+        "reels_tab_checked": reels is not None,
     }
     logger.info(
         "polaris @%s OK posts=%s (in-window) total_nodes=%s followers=%s",
@@ -2086,6 +2087,108 @@ def _complete(result: ScrapeResult) -> bool:
     )
 
 
+def _append_new_posts(existing: list[ScrapedPost], extra: list[ScrapedPost]) -> list[ScrapedPost]:
+    """Keep every grid post, then add reels whose shortcode is not already there."""
+    seen = {p.shortcode for p in existing if p.shortcode}
+    merged = list(existing)
+    for post in extra:
+        if post.shortcode and post.shortcode not in seen:
+            merged.append(post)
+            seen.add(post.shortcode)
+    return merged
+
+
+async def _merge_offgrid_reels(
+    username: str,
+    result: ScrapeResult,
+    *,
+    headless: bool,
+    proxy: Optional[ProxyConfig],
+) -> ScrapeResult:
+    """Add Reels-tab posts that were removed from the profile grid.
+
+    A finished grid (for example 5 posts) is not the whole account: creators can
+    leave reels on the Reels tab only. The grid result is kept if this tab
+    cannot be read.
+    """
+    if result.is_private:
+        return result
+    raw = result.raw if isinstance(result.raw, dict) else {}
+    if raw.get("reels_tab_checked") or raw.get("unavailable"):
+        return result
+    if (os.getenv("SCRAPE_POLARIS", "1") or "1").strip().lower() in {"0", "false", "no"}:
+        return result
+
+    try:
+        from instascope_scraper import polaris
+        from instascope_scraper.http_profile import _cohort_floor_unix, _max_posts
+    except Exception:
+        logger.exception("offgrid reels @%s import failed — keeping grid posts", username)
+        return result
+
+    try:
+        floor = _cohort_floor_unix()
+    except Exception:
+        floor = None
+
+    extra_posts: list[ScrapedPost] = []
+    try:
+        async with browser_session(headless=headless, proxy=proxy) as browser:
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1365, "height": 900},
+                locale="en-US",
+            )
+            await attach_bandwidth_limits(context)
+            page = await context.new_page()
+            await page.goto(
+                f"https://www.instagram.com/{username}/reels/",
+                wait_until="domcontentloaded",
+                timeout=45_000,
+            )
+            reels = await polaris.collect_reels_tab(
+                page,
+                username,
+                known_codes={p.shortcode for p in result.posts if p.shortcode},
+                html=await page.content(),
+                cohort_floor_unix=floor,
+                max_posts=_max_posts(),
+            )
+            extra_posts = polaris.nodes_to_posts(
+                list(reels.get("nodes") or []),
+                username=username,
+                cohort_floor_unix=floor,
+            )
+            if extra_posts:
+                await polaris.enrich_engagement(
+                    page,
+                    extra_posts,
+                    username=username,
+                    limit=_enrich_limit(len(extra_posts)),
+                    delay_seconds=float(os.getenv("SCRAPE_ENRICH_DELAY_SECONDS") or "0.4"),
+                )
+    except Exception:
+        logger.exception("offgrid reels @%s failed — keeping grid posts", username)
+        extra_posts = []
+
+    merged = _append_new_posts(result.posts, extra_posts)
+    added = len(merged) - len(result.posts)
+    result.posts = merged
+    if added > 0:
+        result.posts_count = max(int(result.posts_count or 0), len(merged))
+    result.raw = {
+        **raw,
+        "reels_tab_checked": True,
+        "offgrid_reels": added,
+    }
+    if added:
+        logger.info("offgrid reels @%s added %s reel(s) not on the grid", username, added)
+    return result
+
+
 async def _scrape_live(
     username: str,
     *,
@@ -2101,6 +2204,9 @@ async def _scrape_live(
 
     async def _done(result: ScrapeResult, path: str) -> ScrapeResult:
         nonlocal proxy_url
+        result = await _merge_offgrid_reels(
+            username, result, headless=headless, proxy=proxy
+        )
         return await _finish_scrape_result(
             username, result, path=path, proxy_url=proxy_url
         )
@@ -2695,6 +2801,9 @@ async def _scrape_live_browser(
     proxy_url = proxy_to_httpx_url(proxy)
 
     async def _done(result: ScrapeResult, path: str) -> ScrapeResult:
+        result = await _merge_offgrid_reels(
+            username, result, headless=headless, proxy=proxy
+        )
         return await _finish_scrape_result(
             username, result, path=path, proxy_url=proxy_url
         )
