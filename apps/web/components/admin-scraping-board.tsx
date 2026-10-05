@@ -1006,8 +1006,8 @@ function AdminScrapingBoardInner({
               No YouTube rows yet. Import a roster, or connect channels on creator pages.
             </div>
           ) : (
-            <div className="thin-scroll max-h-[min(70vh,720px)] overflow-y-auto overscroll-contain rounded-xl border border-white/[0.04]">
-              <table className="w-full table-fixed text-left text-sm">
+            <div className="overflow-x-auto rounded-xl border border-white/[0.04]">
+              <table className="w-full min-w-[880px] table-fixed border-separate border-spacing-0 text-left text-sm">
                 <colgroup>
                   <col className="w-10" />
                   <col className="w-[22%]" />
@@ -1326,8 +1326,8 @@ function AdminScrapingBoardInner({
               .
             </div>
           ) : (
-            <div className="thin-scroll max-h-[min(70vh,720px)] overflow-y-auto overscroll-contain rounded-xl border border-white/[0.04]">
-            <table className="w-full table-fixed text-left text-sm">
+            <div className="overflow-x-auto rounded-xl border border-white/[0.04]">
+            <table className="w-full min-w-[980px] table-fixed border-separate border-spacing-0 text-left text-sm">
               <colgroup>
                 <col className="w-10" />
                 <col className="w-[22%]" />
