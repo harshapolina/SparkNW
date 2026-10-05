@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { FormEvent, Suspense, useCallback, useEffect, useMemo, useState, type ComponentType } from "react";
+import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from "react";
 import {
   AlertCircle,
   BadgeCheck,
@@ -39,7 +39,10 @@ import {
 import { NumberedPagination } from "@/components/numbered-pagination";
 import {
   readAdminScrapingListState,
+  readAdminScrapingSelectionRecord,
+  togglePageSelection,
   writeAdminScrapingListState,
+  writeAdminScrapingSelection,
 } from "@/lib/admin-scraping-list-state";
 
 export type ScrapingBoardView = "overall" | "instagram" | "youtube";
@@ -132,6 +135,31 @@ function BoardFilterBar({
   );
 }
 
+function PageSelectCheckbox({
+  checked,
+  indeterminate,
+  onChange,
+}: {
+  checked: boolean;
+  indeterminate: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (ref.current) ref.current.indeterminate = indeterminate;
+  }, [indeterminate]);
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      checked={checked}
+      aria-label={checked ? "Deselect this page" : "Select this page"}
+      title="Select or clear this page only. Other pages stay selected."
+      onChange={(e) => onChange(e.target.checked)}
+    />
+  );
+}
+
 const VIEW_COPY: Record<
   ScrapingBoardView,
   { title: string; subtitle: string }
@@ -153,7 +181,15 @@ const VIEW_COPY: Record<
   },
 };
 
-function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
+function AdminScrapingBoardInner({
+  view,
+  selected,
+  setSelected,
+}: {
+  view: ScrapingBoardView;
+  selected: string[];
+  setSelected: (next: string[] | ((prev: string[]) => string[])) => void;
+}) {
   const qc = useQueryClient();
   const router = useRouter();
   const pathname = usePathname();
@@ -206,8 +242,52 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
   const [studentId, setStudentId] = useState("");
   const [fullName, setFullName] = useState("");
   const [university, setUniversity] = useState("");
-  const [selected, setSelected] = useState<string[]>([]);
   const [error, setError] = useState("");
+  const selectionFilterRef = useRef<string | null>(null);
+  const qRef = useRef(q);
+  const statusRef = useRef(statusFilter);
+  qRef.current = q;
+  statusRef.current = statusFilter;
+
+  const commitSelected = useCallback((next: string[] | ((prev: string[]) => string[])) => {
+    setSelected((prev) => {
+      const resolved = typeof next === "function" ? next(prev) : next;
+      writeAdminScrapingSelection({
+        q: qRef.current,
+        status: statusRef.current,
+        ids: resolved,
+      });
+      return resolved;
+    });
+  }, [setSelected]);
+
+  // Checked rows follow the search/status, not the page. Page changes keep them.
+  // A new search or status starts a fresh selection.
+  useEffect(() => {
+    if (view === "youtube") return;
+    const bare =
+      !searchParams.has("page") && !searchParams.has("q") && !searchParams.has("status");
+    const pendingList = bare ? readAdminScrapingListState() : null;
+    if (pendingList && (pendingList.page > 1 || pendingList.q || pendingList.status)) return;
+
+    const key = `${q}\n${statusFilter}`;
+    const stored = readAdminScrapingSelectionRecord();
+    const sameFilter = !!stored && stored.q === q && stored.status === statusFilter;
+
+    if (selectionFilterRef.current === null) {
+      selectionFilterRef.current = key;
+      if (sameFilter && stored.ids.length) {
+        setSelected((prev) => (prev.length ? prev : stored.ids));
+      } else if (stored && !sameFilter) {
+        setSelected([]);
+        writeAdminScrapingSelection({ q, status: statusFilter, ids: [] });
+      }
+      return;
+    }
+    if (selectionFilterRef.current === key) return;
+    selectionFilterRef.current = key;
+    commitSelected([]);
+  }, [q, statusFilter, view, searchParams, commitSelected, setSelected]);
 
   const queryString = useMemo(() => {
     const params = new URLSearchParams({ page: String(page), page_size: "20" });
@@ -539,7 +619,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
     },
     onSuccess: (r) => {
       const count = selected.length;
-      setSelected([]);
+      commitSelected([]);
       setError("");
       if (r?.action === "refresh") {
         setBulkNote(
@@ -563,6 +643,9 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
   });
 
   const allIds = useMemo(() => data?.items.map((p) => p.id) || [], [data]);
+  const pageSelectedCount = allIds.filter((id) => selected.includes(id)).length;
+  const allPageSelected = allIds.length > 0 && pageSelectedCount === allIds.length;
+  const somePageSelected = pageSelectedCount > 0 && !allPageSelected;
 
   function onAdd(e: FormEvent) {
     e.preventDefault();
@@ -1176,7 +1259,8 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
             <div className="min-w-0">
               <h2 className="text-sm font-semibold tracking-tight text-zinc-100">Instagram creator board</h2>
               <p className="mt-0.5 text-[11px] text-zinc-500">
-                Search, filter by status, then run bulk scrape actions on selected rows.
+                Search, filter by status, then run bulk scrape actions on selected rows. Checks stay
+                selected when you change pages.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -1196,7 +1280,7 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                   className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 disabled:opacity-40 hover:border-white/20"
                 >
                   <Icon size={14} />
-                  {label}
+                  {action === "export" && selected.length > 0 ? `${label} (${selected.length})` : label}
                 </button>
               ))}
               <button
@@ -1259,10 +1343,10 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
               <thead className="sticky top-0 z-10 bg-[#121212]/90 backdrop-blur-sm">
                 <tr className="border-b border-white/[0.06] text-[10px] uppercase tracking-[0.12em] text-zinc-500">
                   <th className="px-3 py-3">
-                    <input
-                      type="checkbox"
-                      checked={!!allIds.length && selected.length === allIds.length}
-                      onChange={(e) => setSelected(e.target.checked ? allIds : [])}
+                    <PageSelectCheckbox
+                      checked={allPageSelected}
+                      indeterminate={somePageSelected}
+                      onChange={(checked) => commitSelected((prev) => togglePageSelection(prev, allIds, checked))}
                     />
                   </th>
                   <th className="px-3 py-3 font-medium">Creator</th>
@@ -1286,8 +1370,12 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
                         type="checkbox"
                         checked={selected.includes(p.id)}
                         onChange={(e) =>
-                          setSelected((prev) =>
-                            e.target.checked ? [...prev, p.id] : prev.filter((id) => id !== p.id)
+                          commitSelected((prev) =>
+                            e.target.checked
+                              ? prev.includes(p.id)
+                                ? prev
+                                : [...prev, p.id]
+                              : prev.filter((id) => id !== p.id)
                           )
                         }
                       />
@@ -1423,11 +1511,28 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
         </div>
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-zinc-500">
-          <span>
-            {data?.total || 0} creators · {selected.length} selected
-            {data && data.page_size
-              ? ` · page ${page} of ${Math.max(1, Math.ceil(data.total / data.page_size))}`
-              : ""}
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span>
+              {data?.total || 0} creators
+              {data && data.page_size
+                ? ` · page ${page} of ${Math.max(1, Math.ceil(data.total / data.page_size))}`
+                : ""}
+            </span>
+            <span className={selected.length ? "font-medium text-emerald-400" : ""}>
+              {selected.length} selected
+              {selected.length > 0 && pageSelectedCount !== selected.length
+                ? ` · ${pageSelectedCount} on this page, ${selected.length - pageSelectedCount} on other pages`
+                : ""}
+            </span>
+            {selected.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => commitSelected([])}
+                className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 hover:border-white/25 hover:text-white"
+              >
+                Clear
+              </button>
+            ) : null}
           </span>
           <NumberedPagination
             page={page}
@@ -1444,9 +1549,10 @@ function AdminScrapingBoardInner({ view }: { view: ScrapingBoardView }) {
 }
 
 export function AdminScrapingBoard({ view }: { view: ScrapingBoardView }) {
+  const [selected, setSelected] = useState<string[]>([]);
   return (
     <Suspense fallback={<div className="h-64 animate-pulse rounded-2xl bg-zinc-900" />}>
-      <AdminScrapingBoardInner view={view} />
+      <AdminScrapingBoardInner view={view} selected={selected} setSelected={setSelected} />
     </Suspense>
   );
 }

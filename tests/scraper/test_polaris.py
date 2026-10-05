@@ -9,8 +9,10 @@ from datetime import timezone
 
 from instascope_scraper.polaris import (
     PolarisUnavailable,
+    collect_reels_tab,
     collect_timeline,
     extract_bootstrap,
+    extract_reels_bootstrap,
     nodes_to_posts,
     parse_engagement,
     pk_to_datetime,
@@ -321,6 +323,91 @@ async def test_capped_walk_is_not_complete_even_at_the_end():
     page = _Pages(PROFILE_HTML, [_page(_nodes("A", 12), has_next=False)])
     boot = await collect_timeline(page, "x", max_posts=5, delay_seconds=0)
     assert boot["capped"] is True and boot["timeline_complete"] is False
+
+
+REELS_HTML = (
+    '<script type="application/json" data-sjs>{"require":[["RelayPreloader","init",null,'
+    '[{"actorID":"0","preloaderID":"adp_PolarisLoggedOutDesktopWWWProfileReelsTabContentQueryRelayPreloader_abc",'
+    '"queryID":"99900011122233344"}]]]}</script>'
+    '<script>["LSD",[],{"token":"REELS_LSD_TOKEN"},247]</script>'
+    '"xig_user_by_username":{"pk":"74770863655",'
+    '"polaris_clips_connection":{"edges":['
+    '{"node":{"pk":"3984285244001148342","code":"ONGRID01","product_type":"clips"}},'
+    '{"node":{"pk":"3984285244001140000","code":"HIDDEN01"}}'
+    '],"page_info":{"end_cursor":"REELS_CURSOR","has_next_page":true}}}}'
+)
+
+
+def _clips_page(nodes, *, has_next, cursor="REELS_NEXT"):
+    import json as _json
+
+    return {
+        "status": 200,
+        "text": _json.dumps(
+            {
+                "data": {
+                    "xig_user_by_username": {
+                        "polaris_clips_connection": {
+                            "edges": [{"node": n} for n in nodes],
+                            "page_info": {
+                                "end_cursor": cursor if has_next else None,
+                                "has_next_page": has_next,
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+    }
+
+
+def test_posts_html_has_no_reels_tab():
+    assert extract_reels_bootstrap(PROFILE_HTML) is None
+
+
+def test_extract_reels_bootstrap_reads_clips_hidden_from_the_grid():
+    boot = extract_reels_bootstrap(REELS_HTML)
+    assert boot is not None
+    assert boot["doc_id"] == "99900011122233344"
+    assert boot["lsd"] == "REELS_LSD_TOKEN"
+    assert boot["cursor"] == "REELS_CURSOR"
+    assert boot["has_next"] is True
+    assert [n["code"] for n in boot["nodes"]] == ["ONGRID01", "HIDDEN01"]
+
+
+@pytest.mark.asyncio
+async def test_reels_tab_keeps_only_clips_missing_from_the_grid():
+    """A page of grid duplicates must not stop the walk — hidden reels are later."""
+    page = _Pages(
+        REELS_HTML,
+        [_clips_page([{"pk": "3984000000000000001", "code": "HIDDEN02"}], has_next=False)],
+    )
+    found = await collect_reels_tab(
+        page,
+        "someone",
+        known_codes={"ONGRID01"},
+        html=REELS_HTML,
+        delay_seconds=0,
+        max_posts=0,
+    )
+    assert page.calls == 1
+    assert [n["code"] for n in found["nodes"]] == ["HIDDEN01", "HIDDEN02"]
+    assert found["available"] is True and found["complete"] is True
+    posts = nodes_to_posts(found["nodes"], username="someone")
+    assert [p.media_type for p in posts] == ["reel", "reel"]
+
+
+@pytest.mark.asyncio
+async def test_reels_tab_missing_does_not_call_graphql():
+    class PostsOnly:
+        async def content(self):
+            return PROFILE_HTML
+
+        async def evaluate(self, *_args):
+            raise AssertionError("reels graphql should not run without a reels payload")
+
+    found = await collect_reels_tab(PostsOnly(), "someone", html=PROFILE_HTML, delay_seconds=0)
+    assert found["nodes"] == [] and found["available"] is False
 
 
 def test_unknown_payload_shape_leaves_the_end_unconfirmed():

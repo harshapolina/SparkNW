@@ -241,21 +241,35 @@ export default function ProfileDetailPage() {
       });
     },
     onSuccess: (done) => {
-      if (done.status === "failed" || done.status === "unavailable") {
+      const progPhase = (done.scrape_progress?.phase || "").toLowerCase();
+      const isFailedScrape =
+        done.status === "failed" ||
+        done.status === "unavailable" ||
+        progPhase === "failed" ||
+        progPhase === "interrupted";
+
+      if (isFailedScrape) {
         setLiveProgress(null);
         setRefreshError(
           humanizeScrapeError(done.last_error) ||
             (done.status === "unavailable"
               ? "This Instagram profile does not exist."
-              : "Scrape failed")
+              : "Scrape could not reach Instagram. Cached profile data was preserved — try Refresh again in a moment.")
         );
       } else {
+        const scrapedCount =
+          (done.scrape_progress?.scraped_posts && done.scrape_progress.scraped_posts > 0)
+            ? done.scrape_progress.scraped_posts
+            : (done.programme_posts ?? done.posts_count);
+        const totalCount =
+          done.scrape_progress?.total_posts || done.posts_count || scrapedCount;
+
         setRefreshError("");
         setLiveProgress({
           active: false,
           phase: "done",
-          scraped_posts: done.scrape_progress?.scraped_posts ?? done.posts_count,
-          total_posts: done.scrape_progress?.total_posts ?? done.posts_count,
+          scraped_posts: scrapedCount,
+          total_posts: totalCount,
           percent: 100,
           source: done.scrape_progress?.source,
         });

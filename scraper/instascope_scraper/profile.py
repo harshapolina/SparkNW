@@ -1409,6 +1409,25 @@ async def _try_polaris_timeline(page, *, username: str, result: ScrapeResult) ->
         logger.exception("polaris @%s collect failed — falling back", username)
         return False
 
+    # Grid walk is unchanged. Reels removed from that grid still sit on the
+    # Reels tab — merge those in, and keep the grid result if the tab is blocked.
+    grid_nodes = list(boot.get("nodes") or [])
+    try:
+        reels = await polaris.collect_reels_tab(
+            page,
+            username,
+            known_codes={str(n.get("code")) for n in grid_nodes if n.get("code")},
+            cohort_floor_unix=floor,
+            max_posts=_max_posts(),
+        )
+    except Exception:
+        logger.exception("polaris reels @%s failed — keeping grid posts", username)
+        reels = None
+    extra = list((reels or {}).get("nodes") or [])
+    if extra:
+        boot["nodes"] = grid_nodes + extra
+        logger.info("polaris @%s added %s reel(s) that are not on the grid", username, len(extra))
+
     posts = polaris.nodes_to_posts(
         boot.get("nodes") or [], username=username, cohort_floor_unix=floor
     )
