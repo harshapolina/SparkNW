@@ -672,21 +672,22 @@ async def apply_scrape_result(
     prev_insights = profile.insights if isinstance(profile.insights, dict) else {}
     profile.insights = merge_spark_scoring_insights(prev_insights, metrics)
     profile.status = ProfileStatus.ACTIVE
-    profile.last_scraped_at = datetime.utcnow()
-    profile.last_success_at = datetime.utcnow()
     profile.last_error = None
     prev_source = (getattr(profile, "scrape_progress", None) or {}).get("source")
-    done_progress: dict[str, Any] = {
-        "active": False,
-        "phase": "done",
+    # Stay "saving" until the posts are in Mongo. Publishing "done" first made
+    # the admin page freeze on the previous programme count (one page of 12)
+    # while the Reels were still being written.
+    saving_progress: dict[str, Any] = {
+        "active": True,
+        "phase": "saving",
         "scraped_posts": len(post_docs) or len(posts_data),
         "total_posts": posts_count or len(posts_data),
         "posts_left": 0,
-        "percent": 100,
+        "percent": 99,
     }
     if prev_source:
-        done_progress["source"] = prev_source
-    profile.scrape_progress = done_progress
+        saving_progress["source"] = prev_source
+    profile.scrape_progress = saving_progress
     profile.updated_at = datetime.utcnow()
     # Preserve SPARK roster fields if present (never wipe on scrape)
     student = getattr(profile, "student", None)
@@ -706,6 +707,23 @@ async def apply_scrape_result(
         # Clear stale lifetime rows left by older scrapes.
         await Post.find(Post.profile_id == str(profile.id)).delete()
     # else: keep existing posts (card-only / incomplete path should have raised earlier)
+
+    done_progress: dict[str, Any] = {
+        "active": False,
+        "phase": "done",
+        "scraped_posts": len(post_docs) or len(posts_data),
+        "total_posts": posts_count or len(posts_data),
+        "posts_left": 0,
+        "percent": 100,
+    }
+    if prev_source:
+        done_progress["source"] = prev_source
+    now = datetime.utcnow()
+    profile.scrape_progress = done_progress
+    profile.last_scraped_at = now
+    profile.last_success_at = now
+    profile.updated_at = now
+    await profile.save()
 
     try:
         existing_snap = await ProfileSnapshot.find_one(

@@ -5,7 +5,7 @@ Sep 2026: the profile HTML carries a Relay preload blob, and the embed document
 carries engagement counts either escaped or plain depending on the route.
 """
 
-from datetime import timezone
+from datetime import datetime, timezone
 
 from instascope_scraper.polaris import (
     PolarisUnavailable,
@@ -103,6 +103,14 @@ def test_nodes_to_posts_drops_posts_before_the_cohort_floor():
     assert nodes_to_posts(nodes, username="x", cohort_floor_unix=floor) == []
     keep = nodes_to_posts(nodes, username="x", cohort_floor_unix=0)
     assert len(keep) == 2
+
+
+def test_reel_date_follows_the_shortcode_when_the_pk_is_not_a_media_id():
+    """A short pk decodes to 2011 and must not hide a reel that is in the window."""
+    node = {"pk": "123456789012345", "code": "DdLBlHchN22", "product_type": "clips"}
+    posts = nodes_to_posts([node], username="x")
+    assert len(posts) == 1
+    assert posts[0].posted_at and posts[0].posted_at.startswith("2026-09-12")
 
 
 def test_nodes_to_posts_dedupes_by_shortcode():
@@ -395,6 +403,42 @@ async def test_reels_tab_keeps_only_clips_missing_from_the_grid():
     assert found["available"] is True and found["complete"] is True
     posts = nodes_to_posts(found["nodes"], username="someone")
     assert [p.media_type for p in posts] == ["reel", "reel"]
+
+
+@pytest.mark.asyncio
+async def test_reels_tab_keeps_paging_when_one_reel_on_the_page_is_old():
+    """Page size is 12. One pre-programme reel must not hide the next page."""
+    floor = datetime(2026, 7, 15, tzinfo=timezone.utc).timestamp()
+    page = _Pages(
+        REELS_HTML,
+        [
+            _clips_page(
+                [
+                    {"code": "NEW1", "taken_at": int(datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp())},
+                    {"code": "OLD1", "pk": "123456789012345", "taken_at": int(datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp())},
+                ],
+                has_next=True,
+                cursor="PAGE2",
+            ),
+            _clips_page(
+                [{"code": "NEW2", "taken_at": int(datetime(2026, 8, 1, tzinfo=timezone.utc).timestamp())}],
+                has_next=False,
+            ),
+        ],
+    )
+    found = await collect_reels_tab(
+        page,
+        "someone",
+        html=REELS_HTML,
+        delay_seconds=0,
+        cohort_floor_unix=floor,
+    )
+    assert page.calls == 2
+    codes = [n["code"] for n in found["nodes"]]
+    assert "NEW1" in codes and "NEW2" in codes
+    kept = [p.shortcode for p in nodes_to_posts(found["nodes"], username="someone", cohort_floor_unix=floor)]
+    assert "NEW1" in kept and "NEW2" in kept
+    assert "OLD1" not in kept
 
 
 @pytest.mark.asyncio

@@ -203,8 +203,9 @@ class PolarisUnavailable(RuntimeError):
 
 def pk_to_datetime(pk: Any) -> datetime | None:
     """Instagram media pk -> UTC creation time (the id embeds a ms timestamp)."""
+    # Clips payloads often send ``pk`` as ``"<media_id>_<user_id>"``.
     try:
-        value = int(str(pk))
+        value = int(str(pk).split("_", 1)[0])
     except (TypeError, ValueError):
         return None
     if value <= 0:
@@ -641,6 +642,86 @@ def _as_reel(node: dict[str, Any]) -> dict[str, Any]:
     return copied
 
 
+def _taken_unix(node: dict[str, Any]) -> float | None:
+    """Explicit Instagram timestamp, ignoring ids. Seconds since epoch."""
+    for key in ("taken_at_timestamp", "taken_at", "device_timestamp", "media_created_at"):
+        raw = node.get(key)
+        if raw is None or raw is False or raw == "":
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 10_000_000_000_000:
+            value /= 1_000_000.0
+        elif value > 10_000_000_000:
+            value /= 1_000.0
+        if 1_262_304_000 <= value <= 2_100_000_000:
+            return value
+    caption = node.get("caption")
+    if isinstance(caption, dict):
+        nested = dict(node)
+        nested.pop("caption", None)
+        for key in ("created_at", "created_at_utc"):
+            if caption.get(key) is not None:
+                return _taken_unix({key if key != "created_at_utc" else "taken_at": caption.get(key)})
+    return None
+
+
+def _shortcode_unix(node: dict[str, Any]) -> float | None:
+    from instascope_scraper.instagram_time import infer_posted_at_iso
+
+    code = str(node.get("code") or node.get("shortcode") or "").strip()
+    iso = infer_posted_at_iso(shortcode=code or None)
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _pk_unix(node: dict[str, Any]) -> float | None:
+    for key in ("pk", "id", "pk_id"):
+        dt = pk_to_datetime(node.get(key))
+        if dt is not None:
+            return dt.timestamp()
+    return None
+
+
+def _node_unix(node: dict[str, Any]) -> float | None:
+    """Best creation time for a reel node.
+
+    A short numeric ``pk`` decodes to ~2011 and used to mark a whole later
+    Reels page as older than the programme. The shortcode is the media id, so
+    it wins when it disagrees with that pk. Grid nodes whose pk already matches
+    the shortcode keep the same date as before.
+    """
+    taken = _taken_unix(node)
+    if taken is not None:
+        return taken
+    code_ts = _shortcode_unix(node)
+    pk_ts = _pk_unix(node)
+    if code_ts is not None and pk_ts is not None and abs(code_ts - pk_ts) > 86_400:
+        return code_ts
+    return pk_ts if pk_ts is not None else code_ts
+
+
+def _reels_page_past_floor(nodes: list[dict[str, Any]], cohort_floor_unix: int | None) -> bool:
+    """True only when every dated reel on this page is before the programme.
+
+    One old or pinned reel must not end the walk — Instagram pages are 12
+    items, and stopping on the oldest id kept a single page of in-window reels.
+    A page with no recoverable dates is not a floor either; keep paging.
+    """
+    if cohort_floor_unix is None or not nodes:
+        return False
+    times = [ts for ts in (_node_unix(n) for n in nodes) if ts is not None]
+    if not times:
+        return False
+    return max(times) < cohort_floor_unix
+
+
 async def _fetch_reels_page(
     page,
     boot: dict[str, Any],
@@ -719,22 +800,15 @@ async def _collect_reels_via_clips_api(
             code = str(node.get("code") or node.get("shortcode") or "")
             if code and code not in known and code not in seen:
                 seen[code] = _as_reel(node)
+        if next_cursor and next_cursor == cursor:
+            break
         cursor = next_cursor if has_next else None
         if max_posts > 0 and len(seen) >= max_posts:
             capped = True
             break
-        if cohort_floor_unix is not None:
-            oldest = min(
-                (
-                    dt.timestamp()
-                    for dt in (pk_to_datetime(n.get("pk")) for n in nodes)
-                    if dt is not None
-                ),
-                default=None,
-            )
-            if oldest is not None and oldest < cohort_floor_unix:
-                hit_floor = True
-                break
+        if _reels_page_past_floor(nodes, cohort_floor_unix):
+            hit_floor = True
+            break
         if delay_seconds > 0 and cursor:
             await asyncio.sleep(delay_seconds)
 
@@ -863,6 +937,8 @@ async def collect_reels_tab(
             if code and code not in known and code not in seen:
                 seen[code] = _as_reel(node)
 
+        if next_cursor and next_cursor == cursor:
+            break
         cursor = next_cursor
 
         if max_posts > 0 and len(seen) >= max_posts:
@@ -875,24 +951,15 @@ async def collect_reels_tab(
             )
             break
 
-        if cohort_floor_unix is not None:
-            oldest = min(
-                (
-                    dt.timestamp()
-                    for dt in (pk_to_datetime(n.get("pk")) for n in nodes)
-                    if dt is not None
-                ),
-                default=None,
+        if _reels_page_past_floor(nodes, cohort_floor_unix):
+            hit_floor = True
+            logger.info(
+                "polaris reels @%s reached cohort floor after page=%s extra=%s",
+                username,
+                pages,
+                len(seen),
             )
-            if oldest is not None and oldest < cohort_floor_unix:
-                hit_floor = True
-                logger.info(
-                    "polaris reels @%s reached cohort floor after page=%s extra=%s",
-                    username,
-                    pages,
-                    len(seen),
-                )
-                break
+            break
 
         if delay_seconds > 0 and cursor:
             await asyncio.sleep(delay_seconds)
@@ -905,10 +972,21 @@ async def collect_reels_tab(
         hit_floor,
         complete,
     )
-    if not seen:
+    # GraphQL often dies after the first preloaded page of 12. The clips
+    # request is what the Reels tab pages with, so finish the walk there
+    # unless this pass already reached the programme floor or the last page.
+    if not seen or (not hit_floor and not complete):
         found = await _via_clips_api(resolved_user_id)
-        if found:
-            return found
+        if found and found.get("nodes"):
+            for node in found["nodes"]:
+                code = str(node.get("code") or "")
+                if code and code not in known and code not in seen:
+                    seen[code] = _as_reel(node)
+            if not hit_floor:
+                hit_floor = bool(found.get("hit_cohort_floor"))
+            if not complete:
+                complete = bool(found.get("complete"))
+            pages += int(found.get("pages") or 0)
     return {
         "nodes": list(seen.values()),
         "available": True,
@@ -956,15 +1034,17 @@ def nodes_to_posts(
             continue
         seen.add(code)
 
-        dt = pk_to_datetime(node.get("pk"))
+        ts = _node_unix(node)
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc) if ts is not None else None
         if cohort_floor_unix is not None and dt is not None:
             if dt.timestamp() < cohort_floor_unix:
                 continue
 
         media_type, is_video = _media_type(node)
+        media_pk = node.get("pk") or node.get("id")
         posts.append(
             ScrapedPost(
-                ig_post_id=str(node.get("pk") or code),
+                ig_post_id=str(media_pk or code),
                 shortcode=code,
                 media_type=media_type,
                 caption=_caption_text(node),
