@@ -10,6 +10,7 @@ import {
   Ban,
   Camera,
   CheckCircle2,
+  CheckSquare,
   CircleDashed,
   Download,
   Gauge,
@@ -1276,6 +1277,24 @@ function AdminScrapingBoardInner({
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={
+                  selectAllMatching.isPending ||
+                  !(data?.total) ||
+                  selected.length >= (data?.total || 0)
+                }
+                onClick={() => selectAllMatching.mutate()}
+                title="Checks every creator in this list, including ones not on this page"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-[#ff3b30] px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+              >
+                <CheckSquare size={14} />
+                {selectAllMatching.isPending
+                  ? "Selecting…"
+                  : selected.length >= (data?.total || 0) && (data?.total || 0) > 0
+                    ? "All selected"
+                    : `Select all${data?.total ? ` (${data.total})` : ""}`}
+              </button>
               {(
                 [
                   ["refresh", "Refresh / Scrape", RefreshCw],
@@ -1535,7 +1554,7 @@ function AdminScrapingBoardInner({
                 type="button"
                 disabled={selectAllMatching.isPending || selected.length >= (data?.total || 0)}
                 onClick={() => selectAllMatching.mutate()}
-                className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-200 hover:border-white/25 hover:text-white disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#ff3b30] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#ff554c] disabled:opacity-50"
                 title="Checks every creator in this list, including ones not on this page"
               >
                 {selectAllMatching.isPending
