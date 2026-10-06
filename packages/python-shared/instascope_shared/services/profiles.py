@@ -331,16 +331,12 @@ async def update_profile_instagram(user_id: str, profile_id: str, payload: Updat
     return profile
 
 
-async def list_profiles(
+def _profile_list_filter(
     user_id: str,
     *,
     q: Optional[str] = None,
     status_filter: Optional[str] = None,
-    sort_by: str = "updated_at",
-    sort_dir: str = "desc",
-    page: int = 1,
-    page_size: int = 20,
-) -> ProfileListResponse:
+) -> dict:
     filt: dict = {"user_id": user_id}
     if status_filter:
         key = status_filter.strip().lower()
@@ -364,7 +360,10 @@ async def list_profiles(
             {"student.university": rx},
             {"student.email": rx},
         ]
+    return filt
 
+
+def _profile_list_sort(sort_by: str, sort_dir: str) -> list[tuple[str, int]]:
     sort_field_map = {
         "username": "username",
         "followers": "followers",
@@ -378,13 +377,54 @@ async def list_profiles(
     }
     sort_field = sort_field_map.get(sort_by, "updated_at")
     direction = 1 if sort_dir == "asc" else -1
+    # Tie-break on _id so two rows with the same timestamp cannot swap pages.
+    if sort_field == "_id":
+        return [("_id", direction)]
+    return [(sort_field, direction), ("_id", direction)]
+
+
+async def list_profile_ids(
+    user_id: str,
+    *,
+    q: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    sort_by: str = "updated_at",
+    sort_dir: str = "desc",
+) -> list[str]:
+    """Every profile id matching the board filter, in list order.
+
+    Page-by-page checks miss accounts that move to another page while a scrape
+    updates ``updated_at``. Callers that mean "all 127" should use this.
+    """
+    filt = _profile_list_filter(user_id, q=q, status_filter=status_filter)
+    docs = (
+        await Profile.get_motor_collection()
+        .find(filt, {"_id": 1})
+        .sort(_profile_list_sort(sort_by, sort_dir))
+        .to_list(length=20_000)
+    )
+    return [str(doc["_id"]) for doc in docs if doc.get("_id") is not None]
+
+
+async def list_profiles(
+    user_id: str,
+    *,
+    q: Optional[str] = None,
+    status_filter: Optional[str] = None,
+    sort_by: str = "updated_at",
+    sort_dir: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+) -> ProfileListResponse:
+    filt = _profile_list_filter(user_id, q=q, status_filter=status_filter)
+    sort = _profile_list_sort(sort_by, sort_dir)
 
     collection = Profile.get_motor_collection()
     total = await collection.count_documents(filt)
     start = max(page - 1, 0) * page_size
     page_items = (
         await Profile.find(filt)
-        .sort([(sort_field, direction)])
+        .sort(sort)
         .skip(start)
         .limit(page_size)
         .to_list()

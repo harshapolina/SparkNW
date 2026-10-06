@@ -519,6 +519,18 @@ function AdminScrapingBoardInner({
     refetchInterval: () => ((scrapeStatusQ.data?.active_count || 0) > 0 ? 3000 : false),
   });
 
+  const selectAllMatching = useMutation({
+    mutationFn: async () => {
+      const params = new URLSearchParams();
+      if (q.trim()) params.set("q", q.trim());
+      if (statusFilter) params.set("status", statusFilter);
+      const qs = params.toString();
+      return api<{ ids: string[]; total: number }>(`/profiles/ids${qs ? `?${qs}` : ""}`);
+    },
+    onSuccess: (res) => commitSelected(res.ids),
+    onError: (e: Error) => setError(e.message),
+  });
+
   const [bulkNote, setBulkNote] = useState("");
   const [addProgress, setAddProgress] = useState<{
     percent: number;
@@ -1518,6 +1530,21 @@ function AdminScrapingBoardInner({
                 ? ` · page ${page} of ${Math.max(1, Math.ceil(data.total / data.page_size))}`
                 : ""}
             </span>
+            {(data?.total || 0) > 0 ? (
+              <button
+                type="button"
+                disabled={selectAllMatching.isPending || selected.length >= (data?.total || 0)}
+                onClick={() => selectAllMatching.mutate()}
+                className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-200 hover:border-white/25 hover:text-white disabled:opacity-50"
+                title="Checks every creator in this list, including ones not on this page"
+              >
+                {selectAllMatching.isPending
+                  ? "Selecting…"
+                  : selected.length >= (data?.total || 0)
+                    ? "All selected"
+                    : `Select all ${data?.total}`}
+              </button>
+            ) : null}
             <span className={selected.length ? "font-medium text-emerald-400" : ""}>
               {selected.length} selected
               {selected.length > 0 && pageSelectedCount !== selected.length
