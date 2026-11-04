@@ -137,6 +137,17 @@ def month_keys_inclusive(start: datetime, end: datetime) -> list[str]:
     return keys
 
 
+_UNASSIGNED_CAMPUS_LABELS = frozenset({"—", "-", "–", "−", "", "unknown", "unassigned", "n/a", "na"})
+
+
+def _is_named_campus(campus: str) -> bool:
+    """True for real roster campuses — hide orphan / unmatched upload buckets."""
+    label = (campus or "").strip()
+    if not label:
+        return False
+    return label.lower() not in _UNASSIGNED_CAMPUS_LABELS and label not in _UNASSIGNED_CAMPUS_LABELS
+
+
 def _boards_from_campus_maps(
     ig: dict[str, dict[str, int]],
     yt: dict[str, dict[str, int]],
@@ -145,8 +156,10 @@ def _boards_from_campus_maps(
     def empty() -> dict[str, int]:
         return {m: 0 for m in months}
 
+    # Drop the "—" unmatched-profile bucket so the board is campus-wise only
+    # (same shape admins export from the cleaned sheet).
     campuses = sorted(
-        set(ig) | set(yt),
+        (c for c in (set(ig) | set(yt)) if _is_named_campus(c)),
         key=lambda c: (
             -(sum(ig.get(c, {}).values()) + sum(yt.get(c, {}).values())),
             c.lower(),

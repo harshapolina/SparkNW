@@ -44,3 +44,25 @@ def test_campus_uploads_counts_all_ig_posts_and_yt_uploads():
     assert out["overall"]["grand_total"] == 6
     assert out["instagram"]["grand_total"] == 4
     assert out["youtube"]["grand_total"] == 2
+
+
+def test_campus_uploads_hides_unassigned_orphan_bucket():
+    """Uploads with no matching profile must not appear as a campus row."""
+    campus_by_pid = {"a": "CDU (Hyderabad)"}
+    posts = [
+        SimpleNamespace(profile_id="a", posted_at=datetime(2026, 7, 20)),
+        SimpleNamespace(profile_id="missing", posted_at=datetime(2026, 7, 21)),
+        SimpleNamespace(profile_id="missing", posted_at=datetime(2026, 8, 1)),
+    ]
+    out = build_campus_uploads(
+        campus_by_pid=campus_by_pid,
+        posts=posts,
+        videos=[],
+        start=datetime(2026, 7, 15),
+        end=datetime(2026, 8, 18),
+    )
+    campuses = [r["campus"] for r in out["overall"]["rows"]]
+    assert campuses == ["CDU (Hyderabad)"]
+    assert "—" not in campuses
+    assert out["overall"]["grand_total"] == 1
+    assert out["overall"]["totals"] == [1, 0]

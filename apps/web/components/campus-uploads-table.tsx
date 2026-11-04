@@ -16,9 +16,12 @@ type EditRow = {
 };
 
 const HINT: Record<Platform, string> = {
-  instagram: "Every Instagram upload in the programme window — posts, reels, and carousels. July counts from 15 Jul.",
-  youtube: "Every YouTube upload in the programme window — videos and Shorts. July counts from 15 Jul.",
-  overall: "Instagram + YouTube uploads combined, by campus and month. July counts from 15 Jul.",
+  instagram:
+    "Instagram uploads by named campus — posts, reels, and carousels. July counts from 15 Jul. Unassigned uploads are excluded.",
+  youtube:
+    "YouTube uploads by named campus — videos and Shorts. July counts from 15 Jul. Unassigned uploads are excluded.",
+  overall:
+    "Instagram + YouTube uploads combined, by named campus and month. July counts from 15 Jul. Unassigned uploads are excluded.",
 };
 
 const TITLE: Record<Platform, string> = {
@@ -47,12 +50,23 @@ function parseCount(raw: string): number {
   return Math.round(n);
 }
 
+const UNASSIGNED = new Set(["—", "-", "–", "−", "", "unknown", "unassigned", "n/a", "na"]);
+
+function isNamedCampus(campus: string): boolean {
+  const label = (campus || "").trim();
+  if (!label) return false;
+  return !UNASSIGNED.has(label) && !UNASSIGNED.has(label.toLowerCase());
+}
+
 function boardToEditRows(board: CampusUploadsBoard | undefined): EditRow[] {
-  return (board?.rows || []).map((r, i) => ({
-    id: `${r.campus || "campus"}-${i}`,
-    campus: r.campus,
-    counts: [...r.counts],
-  }));
+  // Campus-wise only — drop orphan "—" rows even if an older API still sends them.
+  return (board?.rows || [])
+    .filter((r) => isNamedCampus(r.campus))
+    .map((r, i) => ({
+      id: `${r.campus || "campus"}-${i}`,
+      campus: r.campus,
+      counts: [...r.counts],
+    }));
 }
 
 function summarize(rows: EditRow[], monthCount: number) {
