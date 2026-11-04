@@ -48,6 +48,10 @@ function scrapeTerminal(profile: Profile, since?: string | null): boolean {
     return true;
   }
 
+  if (prog?.active) {
+    return false;
+  }
+
   if (prog && prog.active === false && TERMINAL_PHASES.has(phase)) {
     return true;
   }

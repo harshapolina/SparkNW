@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from instascope_scraper.caps import caps_env
@@ -130,6 +130,26 @@ def _is_complete_enough(
         need = posts_count if posts_count <= 12 else max(posts_count - 2, 1)
         return scraped >= need
     return scraped > 0 or followers > 0
+
+
+def _can_merge_partial(
+    scraped: int,
+    followers: int,
+    posts_count: int = 0,
+) -> bool:
+    """True when a mid-pagination scrape still has a substantial post set to upsert.
+
+    The scraper still walks newest→oldest through the full programme window
+    (15 Jul 2026 → today) exactly as before. This helper is only the save
+    fallback when Instagram rate-limits before the Jul 15 floor is reached
+    (real case: @nihaa.creates stopped at 94/140 and Refresh showed scrape failed).
+
+    First-page samples (~12) must NEVER merge-save as success — that would stop
+    retries. Require at least 48 posts (several pages) so thin scrapes still fail
+    and Refresh keeps trying for the rest of the programme window.
+    """
+    del posts_count  # lifetime count is not a gate — programme scrapes stop early on purpose
+    return int(followers or 0) > 0 and int(scraped or 0) >= 48
 
 
 def _is_confirmed_empty_profile(result: dict[str, Any]) -> bool:
@@ -259,11 +279,19 @@ async def heal_soft_scrape_failure(profile: Profile) -> bool:
     return True
 
 
-async def _upsert_posts(profile: Profile, post_docs: list[Post]) -> int:
+async def _upsert_posts(
+    profile: Profile,
+    post_docs: list[Post],
+    *,
+    prune_missing: bool = True,
+) -> int:
     """Persist posts by ``ig_post_id`` (global unique), reclaiming collisions.
 
     Delete-then-insert fails when the same Instagram post id already exists under
     another profile row (re-imports / duplicate roster). Upsert fixes that.
+
+    When ``prune_missing`` is False (merge partial), keep posts this scrape did
+    not return so an incomplete Refresh cannot wipe older programme rows.
     """
     by_id: dict[str, Post] = {}
     for doc in post_docs:
@@ -276,13 +304,14 @@ async def _upsert_posts(profile: Profile, post_docs: list[Post]) -> int:
         return 0
 
     keep_ids = list(by_id.keys())
-    # Drop stale rows for this profile that are no longer in the scrape set.
-    await Post.find(
-        {
-            "profile_id": str(profile.id),
-            "ig_post_id": {"$nin": keep_ids},
-        }
-    ).delete()
+    if prune_missing:
+        # Drop stale rows for this profile that are no longer in the scrape set.
+        await Post.find(
+            {
+                "profile_id": str(profile.id),
+                "ig_post_id": {"$nin": keep_ids},
+            }
+        ).delete()
 
     saved = 0
     for doc in docs:
@@ -497,6 +526,34 @@ async def apply_scrape_result(
         elif dropped_old:
             raw = {**raw, "hit_cohort_floor": True}
             hit_cohort_floor = True
+        elif posts_data and not hit_cohort_floor and not timeline_complete:
+            # Pagination often dies one page before a pre-floor post. If the
+            # oldest kept row is already at/near 15 Jul, treat the programme
+            # window as complete so Refresh can save instead of failing at 94/140.
+            oldest = None
+            for row in posts_data:
+                raw_dt = row.get("posted_at")
+                dt = None
+                if isinstance(raw_dt, datetime):
+                    dt = raw_dt.replace(tzinfo=None) if raw_dt.tzinfo else raw_dt
+                elif isinstance(raw_dt, str) and raw_dt.strip():
+                    try:
+                        parsed = datetime.fromisoformat(raw_dt.replace("Z", "+00:00"))
+                        dt = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+                    except ValueError:
+                        dt = None
+                if dt is not None and (oldest is None or dt < oldest):
+                    oldest = dt
+            if oldest is not None and oldest <= floor_dt + timedelta(days=3):
+                hit_cohort_floor = True
+                raw = {**raw, "hit_cohort_floor": True}
+                logger.info(
+                    "programme floor inferred @%s oldest=%s floor=%s posts=%s",
+                    result.get("username") or profile.username,
+                    oldest.isoformat(),
+                    floor_dt.isoformat(),
+                    len(posts_data),
+                )
     except Exception:
         logger.exception(
             "programme-window post filter failed — applying hard 2026-07-15 floor"
@@ -547,17 +604,31 @@ async def apply_scrape_result(
     # When SCRAPE_MAX_POSTS is capped (API inline/bulk), completeness is vs that cap.
     # Cohort floor (Jul 15 2026) means we intentionally stopped — treat as complete.
     # Private accounts: 0 scraped posts with posts_count > 0 is normal (locked grid).
-    if not _is_complete_enough(
+    scrape_complete = _is_complete_enough(
         posts_count,
         len(posts_data),
         followers,
         hit_cohort_floor=hit_cohort_floor,
         timeline_complete=timeline_complete,
         is_private=is_private,
-    ):
-        raise ValueError(
-            f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count or '?'} posts)"
-        )
+    )
+    # Mid-pagination / rate-limit: merge a deep partial instead of failing Refresh.
+    # Scraper still targets the full programme window; this only affects save.
+    # Full scrapes still prune missing rows; merge keeps older programme posts.
+    merge_partial = False
+    if not scrape_complete:
+        if _can_merge_partial(len(posts_data), followers, posts_count):
+            merge_partial = True
+            logger.warning(
+                "merge-saving deep partial scrape @%s posts=%s/%s (keeping existing rows)",
+                result.get("username") or profile.username,
+                len(posts_data),
+                posts_count or "?",
+            )
+        else:
+            raise ValueError(
+                f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count or '?'} posts)"
+            )
     if (
         posts_count > 0
         and not posts_data
@@ -589,6 +660,7 @@ async def apply_scrape_result(
         and not is_private
     ):
         raise ValueError("Refusing to overwrite insights with empty metrics")
+    # Merge partials: do not shrink insights to only this page — recompute after upsert.
 
     # Build post documents BEFORE wiping Mongo — never delete on a failed/empty save.
     post_docs: list[Post] = []
@@ -672,10 +744,83 @@ async def apply_scrape_result(
     prev_insights = profile.insights if isinstance(profile.insights, dict) else {}
     profile.insights = merge_spark_scoring_insights(prev_insights, metrics)
     profile.status = ProfileStatus.ACTIVE
-    profile.last_scraped_at = datetime.utcnow()
-    profile.last_success_at = datetime.utcnow()
     profile.last_error = None
     prev_source = (getattr(profile, "scrape_progress", None) or {}).get("source")
+    # Stay "saving" until the posts are in Mongo. Publishing "done" first made
+    # the admin page freeze on the previous programme count (one page of 12)
+    # while the Reels were still being written.
+    saving_progress: dict[str, Any] = {
+        "active": True,
+        "phase": "saving",
+        "scraped_posts": len(post_docs) or len(posts_data),
+        "total_posts": posts_count or len(posts_data),
+        "posts_left": 0,
+        "percent": 99,
+    }
+    if prev_source:
+        saving_progress["source"] = prev_source
+    profile.scrape_progress = saving_progress
+    profile.updated_at = datetime.utcnow()
+    # Preserve SPARK roster fields if present (never wipe on scrape)
+    student = getattr(profile, "student", None)
+    if isinstance(student, dict) and student:
+        profile.student = student  # type: ignore[attr-defined]
+    await profile.save()
+
+    posts_saved = 0
+    if post_docs:
+        posts_saved = await _upsert_posts(
+            profile, post_docs, prune_missing=not merge_partial
+        )
+        if posts_saved <= 0:
+            raise ValueError(
+                f"Failed to save any of {len(post_docs)} scraped posts to the database"
+            )
+        if merge_partial:
+            # Insights must reflect the full programme set after merge, not just
+            # the page Instagram returned before rate-limiting.
+            stored = await Post.find(Post.profile_id == str(profile.id)).to_list()
+            metric_rows: list[dict[str, Any]] = []
+            for row in stored:
+                metric_rows.append(
+                    {
+                        "media_type": getattr(
+                            getattr(row, "media_type", None), "value", None
+                        )
+                        or str(getattr(row, "media_type", "") or ""),
+                        "likes": int(getattr(row, "likes", 0) or 0),
+                        "comments": int(getattr(row, "comments", 0) or 0),
+                        "views": int(getattr(row, "views", 0) or 0),
+                        "caption": getattr(row, "caption", None),
+                        "posted_at": getattr(row, "posted_at", None),
+                        "shortcode": getattr(row, "shortcode", None),
+                        "is_video": str(
+                            getattr(getattr(row, "media_type", None), "value", None)
+                            or getattr(row, "media_type", "")
+                            or ""
+                        ).lower()
+                        in {"reel", "video", "clip", "igtv"},
+                    }
+                )
+            metrics = compute_post_metrics(metric_rows, followers=followers)
+            avg_likes = float(metrics["avg_likes"])
+            avg_views = float(metrics["avg_views"])
+            avg_comments = float(metrics["avg_comments"])
+            eng = float(metrics["engagement_rate"])
+            profile.avg_likes = avg_likes
+            profile.avg_views = avg_views
+            profile.avg_comments = avg_comments
+            profile.engagement_rate = eng
+            prev_insights = profile.insights if isinstance(profile.insights, dict) else {}
+            profile.insights = merge_spark_scoring_insights(prev_insights, metrics)
+            profile.updated_at = datetime.utcnow()
+            await profile.save()
+    elif posts_count == 0 or hit_cohort_floor:
+        # Empty IG account OR programme window has no posts (all older than cohort).
+        # Clear stale lifetime rows left by older scrapes.
+        await Post.find(Post.profile_id == str(profile.id)).delete()
+    # else: keep existing posts (card-only / incomplete path should have raised earlier)
+
     done_progress: dict[str, Any] = {
         "active": False,
         "phase": "done",
@@ -686,26 +831,12 @@ async def apply_scrape_result(
     }
     if prev_source:
         done_progress["source"] = prev_source
+    now = datetime.utcnow()
     profile.scrape_progress = done_progress
-    profile.updated_at = datetime.utcnow()
-    # Preserve SPARK roster fields if present (never wipe on scrape)
-    student = getattr(profile, "student", None)
-    if isinstance(student, dict) and student:
-        profile.student = student  # type: ignore[attr-defined]
+    profile.last_scraped_at = now
+    profile.last_success_at = now
+    profile.updated_at = now
     await profile.save()
-
-    posts_saved = 0
-    if post_docs:
-        posts_saved = await _upsert_posts(profile, post_docs)
-        if posts_saved <= 0:
-            raise ValueError(
-                f"Failed to save any of {len(post_docs)} scraped posts to the database"
-            )
-    elif posts_count == 0 or hit_cohort_floor:
-        # Empty IG account OR programme window has no posts (all older than cohort).
-        # Clear stale lifetime rows left by older scrapes.
-        await Post.find(Post.profile_id == str(profile.id)).delete()
-    # else: keep existing posts (card-only / incomplete path should have raised earlier)
 
     try:
         existing_snap = await ProfileSnapshot.find_one(

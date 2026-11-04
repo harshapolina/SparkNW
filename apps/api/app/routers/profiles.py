@@ -89,6 +89,25 @@ async def list_profiles(
     )
 
 
+@router.get("/ids")
+async def list_profile_ids(
+    user: User = Depends(get_current_user),
+    q: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    sort_by: str = "updated_at",
+    sort_dir: str = "desc",
+):
+    """All ids for the current board filter. Used by Select all."""
+    ids = await profile_service.list_profile_ids(
+        str(user.id),
+        q=q,
+        status_filter=status_filter,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+    return {"ids": ids, "total": len(ids)}
+
+
 # ---------------------------------------------------------------------------
 # Bulk routes MUST be registered before /{profile_id}/... or FastAPI treats
 # "bulk" as a profile_id (e.g. POST /profiles/bulk/refresh → refresh("bulk")).

@@ -5,12 +5,14 @@ Sep 2026: the profile HTML carries a Relay preload blob, and the embed document
 carries engagement counts either escaped or plain depending on the route.
 """
 
-from datetime import timezone
+from datetime import datetime, timezone
 
 from instascope_scraper.polaris import (
     PolarisUnavailable,
+    collect_reels_tab,
     collect_timeline,
     extract_bootstrap,
+    extract_reels_bootstrap,
     nodes_to_posts,
     parse_engagement,
     pk_to_datetime,
@@ -103,9 +105,34 @@ def test_nodes_to_posts_drops_posts_before_the_cohort_floor():
     assert len(keep) == 2
 
 
+def test_reel_date_follows_the_shortcode_when_the_pk_is_not_a_media_id():
+    """A short pk decodes to 2011 and must not hide a reel that is in the window."""
+    node = {"pk": "123456789012345", "code": "DdLBlHchN22", "product_type": "clips"}
+    posts = nodes_to_posts([node], username="x")
+    assert len(posts) == 1
+    assert posts[0].posted_at and posts[0].posted_at.startswith("2026-09-12")
+
+
 def test_nodes_to_posts_dedupes_by_shortcode():
     node = {"pk": "3984285244001148342", "code": "DUP", "__typename": "XIGPolarisImageMedia"}
     assert len(nodes_to_posts([node, dict(node)], username="x")) == 1
+
+
+def test_nodes_to_posts_keeps_reel_play_counts():
+    """Reels-tab payloads carry play_count — zeroing them blocked SPARK performance pts."""
+    node = {
+        "pk": "4020821087569961272",
+        "code": "DfM03nWAeE4",
+        "product_type": "clips",
+        "play_count": 8800,
+        "like_count": 142,
+        "comment_count": 11,
+    }
+    posts = nodes_to_posts([node], username="nihaa.creates")
+    assert len(posts) == 1
+    assert posts[0].views == 8800
+    assert posts[0].likes == 142
+    assert posts[0].comments == 11
 
 
 def test_parse_engagement_escaped_embed():
@@ -321,6 +348,251 @@ async def test_capped_walk_is_not_complete_even_at_the_end():
     page = _Pages(PROFILE_HTML, [_page(_nodes("A", 12), has_next=False)])
     boot = await collect_timeline(page, "x", max_posts=5, delay_seconds=0)
     assert boot["capped"] is True and boot["timeline_complete"] is False
+
+
+REELS_HTML = (
+    '<script type="application/json" data-sjs>{"require":[["RelayPreloader","init",null,'
+    '[{"actorID":"0","preloaderID":"adp_PolarisLoggedOutDesktopWWWProfileReelsTabContentQueryRelayPreloader_abc",'
+    '"queryID":"99900011122233344"}]]]}</script>'
+    '<script>["LSD",[],{"token":"REELS_LSD_TOKEN"},247]</script>'
+    '"xig_user_by_username":{"pk":"74770863655",'
+    '"polaris_clips_connection":{"edges":['
+    '{"node":{"pk":"3984285244001148342","code":"ONGRID01","product_type":"clips"}},'
+    '{"node":{"pk":"3984285244001140000","code":"HIDDEN01"}}'
+    '],"page_info":{"end_cursor":"REELS_CURSOR","has_next_page":true}}}}'
+)
+
+
+def _clips_page(nodes, *, has_next, cursor="REELS_NEXT"):
+    import json as _json
+
+    return {
+        "status": 200,
+        "text": _json.dumps(
+            {
+                "data": {
+                    "xig_user_by_username": {
+                        "polaris_clips_connection": {
+                            "edges": [{"node": n} for n in nodes],
+                            "page_info": {
+                                "end_cursor": cursor if has_next else None,
+                                "has_next_page": has_next,
+                            },
+                        }
+                    }
+                }
+            }
+        ),
+    }
+
+
+def test_posts_html_has_no_reels_tab():
+    assert extract_reels_bootstrap(PROFILE_HTML) is None
+
+
+def test_extract_reels_bootstrap_reads_clips_hidden_from_the_grid():
+    boot = extract_reels_bootstrap(REELS_HTML)
+    assert boot is not None
+    assert boot["doc_id"] == "99900011122233344"
+    assert boot["lsd"] == "REELS_LSD_TOKEN"
+    assert boot["cursor"] == "REELS_CURSOR"
+    assert boot["has_next"] is True
+    assert [n["code"] for n in boot["nodes"]] == ["ONGRID01", "HIDDEN01"]
+
+
+@pytest.mark.asyncio
+async def test_reels_tab_keeps_only_clips_missing_from_the_grid():
+    """A page of grid duplicates must not stop the walk — hidden reels are later."""
+    page = _Pages(
+        REELS_HTML,
+        [_clips_page([{"pk": "3984000000000000001", "code": "HIDDEN02"}], has_next=False)],
+    )
+    found = await collect_reels_tab(
+        page,
+        "someone",
+        known_codes={"ONGRID01"},
+        html=REELS_HTML,
+        delay_seconds=0,
+        max_posts=0,
+    )
+    assert page.calls == 1
+    assert [n["code"] for n in found["nodes"]] == ["HIDDEN01", "HIDDEN02"]
+    assert found["available"] is True and found["complete"] is True
+    posts = nodes_to_posts(found["nodes"], username="someone")
+    assert [p.media_type for p in posts] == ["reel", "reel"]
+
+
+@pytest.mark.asyncio
+async def test_reels_tab_keeps_paging_when_one_reel_on_the_page_is_old():
+    """Page size is 12. One pre-programme reel must not hide the next page."""
+    floor = datetime(2026, 7, 15, tzinfo=timezone.utc).timestamp()
+    page = _Pages(
+        REELS_HTML,
+        [
+            _clips_page(
+                [
+                    {"code": "NEW1", "taken_at": int(datetime(2026, 9, 1, tzinfo=timezone.utc).timestamp())},
+                    {"code": "OLD1", "pk": "123456789012345", "taken_at": int(datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp())},
+                ],
+                has_next=True,
+                cursor="PAGE2",
+            ),
+            _clips_page(
+                [{"code": "NEW2", "taken_at": int(datetime(2026, 8, 1, tzinfo=timezone.utc).timestamp())}],
+                has_next=False,
+            ),
+        ],
+    )
+    found = await collect_reels_tab(
+        page,
+        "someone",
+        html=REELS_HTML,
+        delay_seconds=0,
+        cohort_floor_unix=floor,
+    )
+    assert page.calls == 2
+    codes = [n["code"] for n in found["nodes"]]
+    assert "NEW1" in codes and "NEW2" in codes
+    kept = [p.shortcode for p in nodes_to_posts(found["nodes"], username="someone", cohort_floor_unix=floor)]
+    assert "NEW1" in kept and "NEW2" in kept
+    assert "OLD1" not in kept
+
+
+@pytest.mark.asyncio
+async def test_reels_tab_uses_clips_api_when_the_page_has_no_preload():
+    """Hidden reels come from the same /api/v1/clips/user/ call the Reels tab makes."""
+    import json as _json
+
+    class ClipsPage:
+        def __init__(self):
+            self.calls = 0
+
+        async def content(self):
+            return "<html>login shell, no reels preload</html>"
+
+        async def evaluate(self, js, args):
+            assert "clips/user" in js
+            self.calls += 1
+            if self.calls == 1:
+                assert args[0] == "74770863655"
+                assert args[1] == ""
+                payload = {
+                    "items": [
+                        {"media": {"pk": "1", "code": "GRID1", "product_type": "clips"}},
+                        {
+                            "media": {
+                                "pk": "3984285244001148342",
+                                "code": "HIDDEN1",
+                                "product_type": "clips",
+                            }
+                        },
+                    ],
+                    "paging_info": {"max_id": "NEXT", "more_available": True},
+                }
+            else:
+                assert args[1] == "NEXT"
+                payload = {
+                    "items": [
+                        {
+                            "media": {
+                                "pk": "3984000000000000001",
+                                "code": "HIDDEN2",
+                                "product_type": "clips",
+                            }
+                        }
+                    ],
+                    "paging_info": {"more_available": False},
+                }
+            return {"status": 200, "text": _json.dumps(payload)}
+
+    page = ClipsPage()
+    found = await collect_reels_tab(
+        page,
+        "abhijeets_archives",
+        known_codes={"GRID1"},
+        html="<html>login shell, no reels preload</html>",
+        user_id="74770863655",
+        delay_seconds=0,
+        max_posts=0,
+    )
+    assert page.calls == 2
+    assert [n["code"] for n in found["nodes"]] == ["HIDDEN1", "HIDDEN2"]
+
+
+@pytest.mark.asyncio
+async def test_reels_tab_missing_does_not_call_graphql():
+    class PostsOnly:
+        async def content(self):
+            return PROFILE_HTML
+
+        async def evaluate(self, *_args):
+            raise AssertionError("reels graphql should not run without a reels payload")
+
+    found = await collect_reels_tab(PostsOnly(), "someone", html=PROFILE_HTML, delay_seconds=0)
+    assert found["nodes"] == [] and found["available"] is False
+
+
+def test_grid_posts_stay_when_hidden_reels_are_appended():
+    from instascope_scraper.profile import _append_new_posts
+    from instascope_scraper.types import ScrapedPost
+
+    def post(code: str, media: str = "image") -> ScrapedPost:
+        return ScrapedPost(
+            ig_post_id=code,
+            shortcode=code,
+            media_type=media,
+            caption=None,
+            thumbnail_url=None,
+            permalink=None,
+            likes=1,
+            comments=0,
+            views=0,
+            posted_at="2026-08-01T00:00:00+00:00",
+        )
+
+    merged = _append_new_posts(
+        [post("GRID1"), post("GRID2")],
+        [post("GRID1", "reel"), post("REEL9", "reel")],
+    )
+    assert [p.shortcode for p in merged] == ["GRID1", "GRID2", "REEL9"]
+    assert merged[0].media_type == "image"
+    assert merged[2].media_type == "reel"
+
+
+@pytest.mark.asyncio
+async def test_finished_grid_does_not_open_reels_twice():
+    from instascope_scraper.profile import _merge_offgrid_reels
+    from instascope_scraper.types import ScrapedPost, ScrapeResult
+
+    grid = ScrapedPost(
+        ig_post_id="GRID1",
+        shortcode="GRID1",
+        media_type="image",
+        caption=None,
+        thumbnail_url=None,
+        permalink=None,
+        likes=1,
+        comments=0,
+        views=0,
+        posted_at=None,
+    )
+    result = ScrapeResult(
+        username="abhijeets_archives",
+        ig_user_id=None,
+        full_name=None,
+        bio=None,
+        website=None,
+        avatar_url=None,
+        is_verified=False,
+        followers=500,
+        following=573,
+        posts_count=5,
+        posts=[grid],
+        raw={"reels_tab_checked": True},
+    )
+    out = await _merge_offgrid_reels("abhijeets_archives", result, headless=True, proxy=None)
+    assert [p.shortcode for p in out.posts] == ["GRID1"]
+    assert out.posts_count == 5
 
 
 def test_unknown_payload_shape_leaves_the_end_unconfirmed():

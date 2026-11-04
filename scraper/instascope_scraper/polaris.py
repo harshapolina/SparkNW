@@ -43,6 +43,7 @@ from instascope_scraper.types import ScrapedPost
 logger = logging.getLogger("instascope.scraper.polaris")
 
 FRIENDLY_NAME = "PolarisLoggedOutDesktopWWWProfilePostsTabContentQuery"
+REELS_FRIENDLY_NAME = "PolarisLoggedOutDesktopWWWProfileReelsTabContentQuery"
 IG_APP_ID = "936619743392459"
 
 # Instagram media ids are Snowflake-like: the high bits hold a ms timestamp.
@@ -51,6 +52,9 @@ _PK_SHIFT = 23
 
 _RE_DOC_ID = re.compile(
     r'PostsTabContentQueryRelayPreloader_[^"]*","queryID":"(\d+)"'
+)
+_RE_REELS_DOC_ID = re.compile(
+    r'ReelsTabContentQueryRelayPreloader_[^"]*","queryID":"(\d+)"'
 )
 _RE_LSD = re.compile(r'"LSD",\[\],\{"token":"([^"]+)"')
 _RE_TIMELINE_CURSOR = re.compile(
@@ -119,6 +123,68 @@ async ([docId, lsd, username, after, pageSize]) => {
 }
 """.replace("%FRIENDLY%", FRIENDLY_NAME).replace("%APPID%", IG_APP_ID)
 
+# Same Relay call as the posts tab, aimed at the Reels tab query. `mode` selects
+# the variable shape: "timeline" matches the posts tab, "clips" is the shape the
+# reels preloader sends (include_feed_video / target_user_id).
+_REELS_PAGE_JS = """
+async ([docId, lsd, username, after, pageSize, userId, mode]) => {
+  const clips = mode === "clips";
+  const data = { include_feed_video: true, page_size: pageSize };
+  if (userId) data.target_user_id = userId;
+  if (after) data.max_id = after;
+  const variables = clips
+    ? { username: username, after: after, before: null, first: pageSize, last: null, data: data }
+    : { username: username, after: after, before: null, first: pageSize, last: null };
+  const body = new URLSearchParams({
+    av: "0", __d: "www", __user: "0", __a: "1", __req: "b", dpr: "1",
+    lsd: lsd, jazoest: "2996",
+    fb_api_caller_class: "RelayModern",
+    fb_api_req_friendly_name: "%FRIENDLY%",
+    server_timestamps: "true",
+    doc_id: docId,
+    variables: JSON.stringify(variables),
+  });
+  const r = await fetch("/api/graphql", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      "x-fb-lsd": lsd,
+      "x-ig-app-id": "%APPID%",
+      "x-fb-friendly-name": "%FRIENDLY%",
+      "x-requested-with": "XMLHttpRequest",
+    },
+    body: body.toString(),
+    credentials: "include",
+  });
+  return { status: r.status, text: await r.text() };
+}
+""".replace("%FRIENDLY%", REELS_FRIENDLY_NAME).replace("%APPID%", IG_APP_ID)
+
+# The Reels tab itself loads clips with this call, including reels hidden from the grid.
+_CLIPS_API_JS = """
+async ([userId, maxId, pageSize]) => {
+  const body = new URLSearchParams({
+    include_feed_video: "true",
+    page_size: String(pageSize),
+    target_user_id: String(userId),
+  });
+  if (maxId) body.set("max_id", String(maxId));
+  const csrf = (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || "";
+  const r = await fetch("/api/v1/clips/user/", {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded",
+      "x-ig-app-id": "%APPID%",
+      "x-csrftoken": csrf,
+      "x-requested-with": "XMLHttpRequest",
+    },
+    body: body.toString(),
+  });
+  return { status: r.status, text: await r.text() };
+}
+""".replace("%APPID%", IG_APP_ID)
+
 _EMBED_JS = """
 async (code) => {
   try {
@@ -137,8 +203,9 @@ class PolarisUnavailable(RuntimeError):
 
 def pk_to_datetime(pk: Any) -> datetime | None:
     """Instagram media pk -> UTC creation time (the id embeds a ms timestamp)."""
+    # Clips payloads often send ``pk`` as ``"<media_id>_<user_id>"``.
     try:
-        value = int(str(pk))
+        value = int(str(pk).split("_", 1)[0])
     except (TypeError, ValueError):
         return None
     if value <= 0:
@@ -445,6 +512,491 @@ async def collect_timeline(
     return boot
 
 
+def _clips_connection_in_html(html: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Nodes and page_info from a server-rendered ``polaris_clips_connection``."""
+    key = '"polaris_clips_connection":'
+    idx = html.find(key)
+    if idx < 0:
+        return [], None
+    brace = html.find("{", idx + len(key))
+    if brace < 0:
+        return [], None
+    conn = _json_object_at(html, brace)
+    if not isinstance(conn, dict):
+        return [], None
+    nodes: list[dict[str, Any]] = []
+    for edge in conn.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        node = edge.get("node") if isinstance(edge.get("node"), dict) else None
+        if node is None:
+            continue
+        if not node.get("code"):
+            media = node.get("media")
+            if isinstance(media, dict) and media.get("code"):
+                node = media
+        if node.get("code"):
+            nodes.append(node)
+    info = conn.get("page_info")
+    return nodes, info if isinstance(info, dict) else None
+
+
+def extract_reels_bootstrap(html: str) -> dict[str, Any] | None:
+    """Reels-tab doc_id, lsd, and first clips page. None when this HTML has no Reels tab."""
+    if not html:
+        return None
+    doc = _RE_REELS_DOC_ID.search(html)
+    lsd = _RE_LSD.search(html)
+    if not doc or not lsd:
+        return None
+    nodes, page_info = _clips_connection_in_html(html)
+    if page_info is None and not nodes:
+        return None
+    if page_info is not None:
+        has_next = page_info.get("has_next_page")
+        cursor = page_info.get("end_cursor") if has_next else None
+    else:
+        has_next = None
+        cursor = None
+    user_id = _RE_USER_ID.search(html)
+    return {
+        "doc_id": doc.group(1),
+        "lsd": lsd.group(1),
+        "cursor": cursor,
+        "has_next": has_next if isinstance(has_next, bool) else None,
+        "nodes": nodes,
+        "ig_user_id": user_id.group(1) if user_id else None,
+    }
+
+
+def _nodes_from_clips_payload(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None, bool | None, bool]:
+    """Return (nodes, next_cursor, has_next, found_connection) for a Reels-tab response."""
+    user = ((payload or {}).get("data") or {}).get("xig_user_by_username") or {}
+    if not isinstance(user, dict) or "polaris_clips_connection" not in user:
+        return [], None, None, False
+    conn = user.get("polaris_clips_connection") or {}
+    if not isinstance(conn, dict):
+        return [], None, None, False
+    nodes: list[dict[str, Any]] = []
+    for edge in conn.get("edges") or []:
+        if not isinstance(edge, dict):
+            continue
+        node = edge.get("node") if isinstance(edge.get("node"), dict) else None
+        if node is None:
+            continue
+        if not node.get("code"):
+            media = node.get("media")
+            if isinstance(media, dict) and media.get("code"):
+                node = media
+        if node.get("code"):
+            nodes.append(node)
+    info = conn.get("page_info")
+    has_next = info.get("has_next_page") if isinstance(info, dict) else None
+    nxt = info.get("end_cursor") if has_next else None
+    return nodes, nxt, has_next if isinstance(has_next, bool) else None, True
+
+
+def _nodes_from_clips_api(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None, bool | None]:
+    """Media nodes plus the next cursor from ``POST /api/v1/clips/user/``."""
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return [], None, None
+    nodes: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        media = item.get("media") if isinstance(item.get("media"), dict) else item
+        if isinstance(media, dict) and (media.get("code") or media.get("pk") or media.get("id")):
+            nodes.append(media)
+    paging = payload.get("paging_info") if isinstance(payload.get("paging_info"), dict) else {}
+    cursor = payload.get("next_max_id") or paging.get("max_id")
+    cursor_text = str(cursor).strip() if cursor else None
+    more = payload.get("more_available")
+    if more is None:
+        more = paging.get("more_available")
+    has_next = bool(more) if isinstance(more, bool) else (True if cursor_text else None)
+    return nodes, cursor_text, has_next
+
+
+def _empty_reels() -> dict[str, Any]:
+    return {
+        "nodes": [],
+        "available": False,
+        "complete": True,
+        "hit_cohort_floor": False,
+        "capped": False,
+        "pages": 0,
+    }
+
+
+def _as_reel(node: dict[str, Any]) -> dict[str, Any]:
+    """Reels-tab items are clips even when the payload omits product_type."""
+    if node.get("product_type"):
+        return node
+    copied = dict(node)
+    copied["product_type"] = "clips"
+    return copied
+
+
+def _taken_unix(node: dict[str, Any]) -> float | None:
+    """Explicit Instagram timestamp, ignoring ids. Seconds since epoch."""
+    for key in ("taken_at_timestamp", "taken_at", "device_timestamp", "media_created_at"):
+        raw = node.get(key)
+        if raw is None or raw is False or raw == "":
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 10_000_000_000_000:
+            value /= 1_000_000.0
+        elif value > 10_000_000_000:
+            value /= 1_000.0
+        if 1_262_304_000 <= value <= 2_100_000_000:
+            return value
+    caption = node.get("caption")
+    if isinstance(caption, dict):
+        nested = dict(node)
+        nested.pop("caption", None)
+        for key in ("created_at", "created_at_utc"):
+            if caption.get(key) is not None:
+                return _taken_unix({key if key != "created_at_utc" else "taken_at": caption.get(key)})
+    return None
+
+
+def _shortcode_unix(node: dict[str, Any]) -> float | None:
+    from instascope_scraper.instagram_time import infer_posted_at_iso
+
+    code = str(node.get("code") or node.get("shortcode") or "").strip()
+    iso = infer_posted_at_iso(shortcode=code or None)
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _pk_unix(node: dict[str, Any]) -> float | None:
+    for key in ("pk", "id", "pk_id"):
+        dt = pk_to_datetime(node.get(key))
+        if dt is not None:
+            return dt.timestamp()
+    return None
+
+
+def _node_unix(node: dict[str, Any]) -> float | None:
+    """Best creation time for a reel node.
+
+    A short numeric ``pk`` decodes to ~2011 and used to mark a whole later
+    Reels page as older than the programme. The shortcode is the media id, so
+    it wins when it disagrees with that pk. Grid nodes whose pk already matches
+    the shortcode keep the same date as before.
+    """
+    taken = _taken_unix(node)
+    if taken is not None:
+        return taken
+    code_ts = _shortcode_unix(node)
+    pk_ts = _pk_unix(node)
+    if code_ts is not None and pk_ts is not None and abs(code_ts - pk_ts) > 86_400:
+        return code_ts
+    return pk_ts if pk_ts is not None else code_ts
+
+
+def _reels_page_past_floor(nodes: list[dict[str, Any]], cohort_floor_unix: int | None) -> bool:
+    """True only when every dated reel on this page is before the programme.
+
+    One old or pinned reel must not end the walk — Instagram pages are 12
+    items, and stopping on the oldest id kept a single page of in-window reels.
+    A page with no recoverable dates is not a floor either; keep paging.
+    """
+    if cohort_floor_unix is None or not nodes:
+        return False
+    times = [ts for ts in (_node_unix(n) for n in nodes) if ts is not None]
+    if not times:
+        return False
+    return max(times) < cohort_floor_unix
+
+
+async def _fetch_reels_page(
+    page,
+    boot: dict[str, Any],
+    username: str,
+    cursor: str,
+    size: int,
+    user_id: str | None,
+    mode: str,
+) -> tuple[list[dict[str, Any]], str | None, bool | None, bool, bool]:
+    """One Reels-tab GraphQL page. Last flag is False when the request itself failed."""
+    try:
+        res = await page.evaluate(
+            _REELS_PAGE_JS,
+            [boot["doc_id"], boot["lsd"], username, cursor, size, user_id or "", mode],
+        )
+    except Exception:
+        logger.exception("polaris reels @%s evaluate failed", username)
+        return [], None, None, False, False
+    status = int((res or {}).get("status") or 0)
+    text = (res or {}).get("text") or ""
+    if status != 200 or not text:
+        logger.warning("polaris reels @%s HTTP %s body=%r", username, status, text[:180])
+        return [], None, None, False, False
+    try:
+        payload = json.loads(text)
+    except Exception:
+        logger.warning("polaris reels @%s non-JSON body=%r", username, text[:180])
+        return [], None, None, False, False
+    nodes, nxt, has_next, found = _nodes_from_clips_payload(payload)
+    return nodes, nxt, has_next, found, True
+
+
+async def _collect_reels_via_clips_api(
+    page,
+    username: str,
+    *,
+    user_id: str,
+    known: set[str],
+    cohort_floor_unix: int | None,
+    max_posts: int,
+    delay_seconds: float,
+) -> dict[str, Any]:
+    """Walk ``/api/v1/clips/user/``, the request the Reels tab sends."""
+    seen: dict[str, dict[str, Any]] = {}
+    cursor: str | None = ""
+    pages = 0
+    limit = _max_pages(0)
+    size = _page_size()
+    hit_floor = False
+    complete = False
+    capped = False
+
+    while cursor is not None and pages < limit:
+        try:
+            res = await page.evaluate(_CLIPS_API_JS, [user_id, cursor or "", size])
+        except Exception:
+            logger.exception("polaris clips api @%s evaluate failed", username)
+            break
+        status = int((res or {}).get("status") or 0)
+        text = (res or {}).get("text") or ""
+        if status != 200 or not text:
+            logger.warning("polaris clips api @%s HTTP %s body=%r", username, status, text[:180])
+            break
+        try:
+            payload = json.loads(text)
+        except Exception:
+            logger.warning("polaris clips api @%s non-JSON body=%r", username, text[:180])
+            break
+        nodes, next_cursor, has_next = _nodes_from_clips_api(payload)
+        pages += 1
+        if not nodes:
+            break
+        if has_next is False:
+            complete = True
+        for node in nodes:
+            code = str(node.get("code") or node.get("shortcode") or "")
+            if code and code not in known and code not in seen:
+                seen[code] = _as_reel(node)
+        if next_cursor and next_cursor == cursor:
+            break
+        cursor = next_cursor if has_next else None
+        if max_posts > 0 and len(seen) >= max_posts:
+            capped = True
+            break
+        if _reels_page_past_floor(nodes, cohort_floor_unix):
+            hit_floor = True
+            break
+        if delay_seconds > 0 and cursor:
+            await asyncio.sleep(delay_seconds)
+
+    logger.info(
+        "polaris clips api @%s extra=%s pages=%s floor=%s complete=%s",
+        username,
+        len(seen),
+        pages,
+        hit_floor,
+        complete,
+    )
+    return {
+        "nodes": list(seen.values()),
+        "available": bool(seen) or complete,
+        "complete": complete and not capped,
+        "hit_cohort_floor": hit_floor,
+        "capped": capped,
+        "pages": pages,
+    }
+
+
+async def collect_reels_tab(
+    page,
+    username: str,
+    *,
+    known_codes: set[str] | None = None,
+    html: str | None = None,
+    user_id: str | None = None,
+    cohort_floor_unix: int | None = None,
+    max_posts: int = 0,
+    delay_seconds: float = 0.7,
+) -> dict[str, Any]:
+    """Reels that are not on the profile grid.
+
+    Instagram's posts tab (``polaris_ordered_timeline_connection``) hides anything
+    the creator removed from the grid. Those reels still live on the Reels tab
+    (``polaris_clips_connection``). This walk only returns codes that are not
+    already in ``known_codes``, so the grid scrape is left as-is.
+
+    Missing or blocked Reels tab → empty result. Callers keep the grid posts.
+    """
+    known = {c for c in (known_codes or set()) if c}
+    passed_user_id = str(user_id or "").strip() or None
+
+    async def _via_clips_api(uid: str | None) -> dict[str, Any] | None:
+        if not uid:
+            return None
+        found = await _collect_reels_via_clips_api(
+            page,
+            username,
+            user_id=uid,
+            known=known,
+            cohort_floor_unix=cohort_floor_unix,
+            max_posts=max_posts,
+            delay_seconds=delay_seconds,
+        )
+        return found if found.get("nodes") else None
+
+    if html is None:
+        try:
+            html = await page.content()
+        except Exception:
+            html = ""
+    boot = extract_reels_bootstrap(html or "")
+    if boot is None:
+        goto = getattr(page, "goto", None)
+        if callable(goto):
+            try:
+                await goto(
+                    f"https://www.instagram.com/{username}/reels/",
+                    wait_until="domcontentloaded",
+                    timeout=45_000,
+                )
+                html = await page.content()
+            except Exception:
+                logger.info("polaris reels @%s tab navigation failed", username)
+                html = html or ""
+            else:
+                boot = extract_reels_bootstrap(html or "")
+        if boot is None:
+            uid = passed_user_id
+            if not uid and html:
+                match = _RE_USER_ID.search(html)
+                uid = match.group(1) if match else None
+            found = await _via_clips_api(uid)
+            if found:
+                return found
+            logger.info("polaris reels @%s no clips payload — grid posts unchanged", username)
+            return _empty_reels()
+
+    seen: dict[str, dict[str, Any]] = {}
+    for node in boot["nodes"]:
+        code = str(node.get("code") or "")
+        if code and code not in known:
+            seen[code] = _as_reel(node)
+
+    cursor = boot["cursor"]
+    pages = 0
+    limit = _max_pages(0)
+    size = _page_size()
+    resolved_user_id = boot.get("ig_user_id") or passed_user_id
+    mode = "timeline"
+    hit_floor = False
+    complete = boot.get("has_next") is False
+    capped = False
+
+    while cursor and pages < limit:
+        nodes, next_cursor, has_next, found, ok = await _fetch_reels_page(
+            page, boot, username, cursor, size, resolved_user_id, mode
+        )
+        if ok and not found and mode == "timeline":
+            mode = "clips"
+            nodes, next_cursor, has_next, found, ok = await _fetch_reels_page(
+                page, boot, username, cursor, size, resolved_user_id, mode
+            )
+        if not ok or not found:
+            break
+        if has_next is False:
+            complete = True
+        pages += 1
+        if not nodes:
+            break
+
+        for node in nodes:
+            code = str(node.get("code") or "")
+            if code and code not in known and code not in seen:
+                seen[code] = _as_reel(node)
+
+        if next_cursor and next_cursor == cursor:
+            break
+        cursor = next_cursor
+
+        if max_posts > 0 and len(seen) >= max_posts:
+            capped = True
+            logger.info(
+                "polaris reels @%s hit max_posts=%s after page=%s",
+                username,
+                max_posts,
+                pages,
+            )
+            break
+
+        if _reels_page_past_floor(nodes, cohort_floor_unix):
+            hit_floor = True
+            logger.info(
+                "polaris reels @%s reached cohort floor after page=%s extra=%s",
+                username,
+                pages,
+                len(seen),
+            )
+            break
+
+        if delay_seconds > 0 and cursor:
+            await asyncio.sleep(delay_seconds)
+
+    logger.info(
+        "polaris reels @%s extra=%s pages=%s floor=%s complete=%s",
+        username,
+        len(seen),
+        pages,
+        hit_floor,
+        complete,
+    )
+    # GraphQL often dies after the first preloaded page of 12. The clips
+    # request is what the Reels tab pages with, so finish the walk there
+    # unless this pass already reached the programme floor or the last page.
+    if not seen or (not hit_floor and not complete):
+        found = await _via_clips_api(resolved_user_id)
+        if found and found.get("nodes"):
+            for node in found["nodes"]:
+                code = str(node.get("code") or "")
+                if code and code not in known and code not in seen:
+                    seen[code] = _as_reel(node)
+            if not hit_floor:
+                hit_floor = bool(found.get("hit_cohort_floor"))
+            if not complete:
+                complete = bool(found.get("complete"))
+            pages += int(found.get("pages") or 0)
+    return {
+        "nodes": list(seen.values()),
+        "available": True,
+        "complete": complete and not capped,
+        "hit_cohort_floor": hit_floor,
+        "capped": capped,
+        "pages": pages,
+    }
+
+
 def _media_type(node: dict[str, Any]) -> tuple[str, bool]:
     typename = str(node.get("__typename") or "")
     product = str(node.get("product_type") or "")
@@ -467,13 +1019,51 @@ def _caption_text(node: dict[str, Any]) -> str | None:
     return None
 
 
+def _engagement_int(node: dict[str, Any], *keys: str) -> int:
+    best = 0
+    for key in keys:
+        raw = node.get(key)
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n > best:
+            best = n
+    return best
+
+
+def _node_views(node: dict[str, Any]) -> int:
+    """Play/view count from a Reels-tab / clips media node."""
+    best = _engagement_int(
+        node,
+        "play_count",
+        "ig_play_count",
+        "video_play_count",
+        "video_view_count",
+        "view_count",
+        "fb_play_count",
+    )
+    nested = node.get("clips_metadata")
+    if isinstance(nested, dict):
+        best = max(best, _node_views(nested))
+    return best
+
+
 def nodes_to_posts(
     nodes: list[dict[str, Any]],
     *,
     username: str,
     cohort_floor_unix: int | None = None,
 ) -> list[ScrapedPost]:
-    """Map Polaris timeline nodes onto ScrapedPost, deriving dates from the pk."""
+    """Map Polaris timeline nodes onto ScrapedPost, deriving dates from the pk.
+
+    Important: keep play_count / likes / comments from the Reels-tab payload.
+    Older code zeroed them here, so accounts scraped mainly via the Reels tab
+    (e.g. @nihaa.creates) stored views=0 and never earned performance points
+    even when Instagram showed thousands of plays.
+    """
     posts: list[ScrapedPost] = []
     seen: set[str] = set()
     for node in nodes:
@@ -482,25 +1072,30 @@ def nodes_to_posts(
             continue
         seen.add(code)
 
-        dt = pk_to_datetime(node.get("pk"))
+        ts = _node_unix(node)
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc) if ts is not None else None
         if cohort_floor_unix is not None and dt is not None:
             if dt.timestamp() < cohort_floor_unix:
                 continue
 
         media_type, is_video = _media_type(node)
+        media_pk = node.get("pk") or node.get("id")
+        likes = _engagement_int(node, "like_count", "likes")
+        comments = _engagement_int(node, "comment_count", "comments")
+        views = _node_views(node)
         posts.append(
             ScrapedPost(
-                ig_post_id=str(node.get("pk") or code),
+                ig_post_id=str(media_pk or code),
                 shortcode=code,
                 media_type=media_type,
                 caption=_caption_text(node),
                 thumbnail_url=node.get("display_uri") or None,
                 permalink=f"https://www.instagram.com/p/{code}/",
-                likes=0,
-                comments=0,
-                views=0,
+                likes=likes,
+                comments=comments,
+                views=views,
                 posted_at=dt.isoformat() if dt else None,
-                is_video=is_video,
+                is_video=is_video or views > 0,
                 accessibility_caption=node.get("accessibility_caption") or None,
             )
         )

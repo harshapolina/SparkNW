@@ -778,23 +778,50 @@ async def _expand_all_posts(
     return posts, hit_cohort_floor
 
 
+def _clone_post_with_engagement(
+    post: ScrapedPost,
+    *,
+    views: int | None = None,
+    likes: int | None = None,
+    comments: int | None = None,
+) -> ScrapedPost:
+    return ScrapedPost(
+        ig_post_id=post.ig_post_id,
+        shortcode=post.shortcode,
+        media_type=post.media_type,
+        caption=post.caption,
+        thumbnail_url=post.thumbnail_url,
+        permalink=post.permalink,
+        likes=int(post.likes or 0) if likes is None else int(likes),
+        comments=int(post.comments or 0) if comments is None else int(comments),
+        views=int(post.views or 0) if views is None else int(views),
+        posted_at=post.posted_at,
+        is_video=post.is_video,
+        accessibility_caption=post.accessibility_caption,
+    )
+
+
 async def _enrich_views_via_http(
     posts: list[ScrapedPost],
     *,
     username: str,
     proxy_url: str | None,
 ) -> list[ScrapedPost]:
-    """Fill reel play counts via /api/v1/media/{id}/info/ over HTTP+proxy."""
+    """Fill reel play counts via media-info, then embed/captioned fallback.
+
+    Feed/card seeds often leave views=0 even when the public Reels grid shows
+    thousands of plays. Media-info is preferred; when Instagram rate-limits it
+    we still try the public embed document so performance points can score.
+    """
     import httpx
     from instascope_scraper.http_profile import _apply_csrf, _bootstrap_session, _client_headers, _new_client
+    from instascope_scraper.polaris import parse_engagement
 
-    # Always refresh reel play counts via media-info when possible. Feed/card
-    # seeds can look "good enough" yet still be far below the public UI count.
     delay = float(os.getenv("SCRAPE_ENRICH_DELAY_SECONDS") or "0.5")
     targets = [
         p
         for p in posts
-        if (p.media_type in {"reel", "video"} or p.is_video) and p.ig_post_id
+        if (p.media_type in {"reel", "video"} or p.is_video) and (p.ig_post_id or p.shortcode)
     ]
     if not targets:
         return posts
@@ -802,46 +829,82 @@ async def _enrich_views_via_http(
     headers = _client_headers(username)
     timeout = httpx.Timeout(30.0)
     by_code = {p.shortcode: p for p in posts}
+    filled = 0
 
     async with _new_client(headers=headers, proxy=proxy_url, timeout=timeout) as client:
         await _bootstrap_session(client, username)
         for post in targets:
             await asyncio.sleep(delay)
-            media_id = str(post.ig_post_id).split("_")[0]
-            url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
-            req_headers = _client_headers(username)
-            _apply_csrf(client, req_headers)
-            try:
-                res = await client.get(url, headers=req_headers)
-                if res.status_code != 200:
-                    continue
-                payload = res.json()
-            except Exception:
-                continue
-            items = payload.get("items") if isinstance(payload, dict) else None
-            if not isinstance(items, list):
-                continue
-            best = post.views
-            for it in items:
-                if isinstance(it, dict):
-                    best = max(best, _views_from_mapping(it))
-            if best > post.views:
-                updated = ScrapedPost(
-                    ig_post_id=post.ig_post_id,
-                    shortcode=post.shortcode,
-                    media_type=post.media_type,
-                    caption=post.caption,
-                    thumbnail_url=post.thumbnail_url,
-                    permalink=post.permalink,
-                    likes=post.likes,
-                    comments=post.comments,
-                    views=best,
-                    posted_at=post.posted_at,
-                    is_video=post.is_video,
-                    accessibility_caption=post.accessibility_caption,
-                )
-                by_code[post.shortcode] = updated
+            best_views = int(post.views or 0)
+            best_likes = int(post.likes or 0)
+            best_comments = int(post.comments or 0)
 
+            if post.ig_post_id:
+                media_id = str(post.ig_post_id).split("_")[0]
+                url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
+                req_headers = _client_headers(username)
+                _apply_csrf(client, req_headers)
+                try:
+                    res = await client.get(url, headers=req_headers)
+                    if res.status_code == 200:
+                        payload = res.json()
+                        items = payload.get("items") if isinstance(payload, dict) else None
+                        if isinstance(items, list):
+                            for it in items:
+                                if isinstance(it, dict):
+                                    best_views = max(best_views, _views_from_mapping(it))
+                                    try:
+                                        best_likes = max(best_likes, int(it.get("like_count") or 0))
+                                    except (TypeError, ValueError):
+                                        pass
+                                    try:
+                                        best_comments = max(
+                                            best_comments, int(it.get("comment_count") or 0)
+                                        )
+                                    except (TypeError, ValueError):
+                                        pass
+                except Exception:
+                    pass
+
+            # Public embed often still returns play counts when media-info is blocked.
+            if best_views <= 0 and post.shortcode:
+                embed_url = f"https://www.instagram.com/p/{post.shortcode}/embed/captioned/"
+                try:
+                    embed_res = await client.get(
+                        embed_url,
+                        headers={
+                            **_client_headers(username),
+                            "accept": "text/html,application/xhtml+xml",
+                        },
+                    )
+                    if embed_res.status_code == 200:
+                        data = parse_engagement(embed_res.text or "")
+                        best_views = max(best_views, int(data.get("views") or 0))
+                        best_likes = max(best_likes, int(data.get("likes") or 0))
+                        best_comments = max(best_comments, int(data.get("comments") or 0))
+                except Exception:
+                    pass
+
+            if (
+                best_views > int(post.views or 0)
+                or best_likes > int(post.likes or 0)
+                or best_comments > int(post.comments or 0)
+            ):
+                by_code[post.shortcode] = _clone_post_with_engagement(
+                    post,
+                    views=best_views,
+                    likes=best_likes,
+                    comments=best_comments,
+                )
+                if best_views > int(post.views or 0):
+                    filled += 1
+
+    logger.info(
+        "http view enrich @%s filled_views=%s/%s",
+        username,
+        filled,
+        len(targets),
+    )
     return [by_code.get(p.shortcode, p) for p in posts]
 
 
@@ -1409,6 +1472,26 @@ async def _try_polaris_timeline(page, *, username: str, result: ScrapeResult) ->
         logger.exception("polaris @%s collect failed — falling back", username)
         return False
 
+    # Grid walk is unchanged. Reels removed from that grid still sit on the
+    # Reels tab — merge those in, and keep the grid result if the tab is blocked.
+    grid_nodes = list(boot.get("nodes") or [])
+    try:
+        reels = await polaris.collect_reels_tab(
+            page,
+            username,
+            known_codes={str(n.get("code")) for n in grid_nodes if n.get("code")},
+            user_id=str(boot.get("ig_user_id") or result.ig_user_id or ""),
+            cohort_floor_unix=floor,
+            max_posts=_max_posts(),
+        )
+    except Exception:
+        logger.exception("polaris reels @%s failed — keeping grid posts", username)
+        reels = None
+    extra = list((reels or {}).get("nodes") or [])
+    if extra:
+        boot["nodes"] = grid_nodes + extra
+        logger.info("polaris @%s added %s reel(s) that are not on the grid", username, len(extra))
+
     posts = polaris.nodes_to_posts(
         boot.get("nodes") or [], username=username, cohort_floor_unix=floor
     )
@@ -1450,6 +1533,7 @@ async def _try_polaris_timeline(page, *, username: str, result: ScrapeResult) ->
         "hit_cohort_floor": bool(boot.get("hit_cohort_floor")),
         "feed_exhausted": bool(boot.get("feed_exhausted")),
         "timeline_complete": bool(boot.get("timeline_complete")),
+        "reels_tab_checked": reels is not None,
     }
     logger.info(
         "polaris @%s OK posts=%s (in-window) total_nodes=%s followers=%s",
@@ -2067,6 +2151,109 @@ def _complete(result: ScrapeResult) -> bool:
     )
 
 
+def _append_new_posts(existing: list[ScrapedPost], extra: list[ScrapedPost]) -> list[ScrapedPost]:
+    """Keep every grid post, then add reels whose shortcode is not already there."""
+    seen = {p.shortcode for p in existing if p.shortcode}
+    merged = list(existing)
+    for post in extra:
+        if post.shortcode and post.shortcode not in seen:
+            merged.append(post)
+            seen.add(post.shortcode)
+    return merged
+
+
+async def _merge_offgrid_reels(
+    username: str,
+    result: ScrapeResult,
+    *,
+    headless: bool,
+    proxy: Optional[ProxyConfig],
+) -> ScrapeResult:
+    """Add Reels-tab posts that were removed from the profile grid.
+
+    A finished grid (for example 5 posts) is not the whole account: creators can
+    leave reels on the Reels tab only. The grid result is kept if this tab
+    cannot be read.
+    """
+    if result.is_private:
+        return result
+    raw = result.raw if isinstance(result.raw, dict) else {}
+    if raw.get("reels_tab_checked") or raw.get("unavailable"):
+        return result
+    if (os.getenv("SCRAPE_POLARIS", "1") or "1").strip().lower() in {"0", "false", "no"}:
+        return result
+
+    try:
+        from instascope_scraper import polaris
+        from instascope_scraper.http_profile import _cohort_floor_unix, _max_posts
+    except Exception:
+        logger.exception("offgrid reels @%s import failed — keeping grid posts", username)
+        return result
+
+    try:
+        floor = _cohort_floor_unix()
+    except Exception:
+        floor = None
+
+    extra_posts: list[ScrapedPost] = []
+    try:
+        async with browser_session(headless=headless, proxy=proxy) as browser:
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1365, "height": 900},
+                locale="en-US",
+            )
+            await attach_bandwidth_limits(context)
+            page = await context.new_page()
+            await page.goto(
+                f"https://www.instagram.com/{username}/reels/",
+                wait_until="domcontentloaded",
+                timeout=45_000,
+            )
+            reels = await polaris.collect_reels_tab(
+                page,
+                username,
+                known_codes={p.shortcode for p in result.posts if p.shortcode},
+                html=await page.content(),
+                user_id=result.ig_user_id,
+                cohort_floor_unix=floor,
+                max_posts=_max_posts(),
+            )
+            extra_posts = polaris.nodes_to_posts(
+                list(reels.get("nodes") or []),
+                username=username,
+                cohort_floor_unix=floor,
+            )
+            if extra_posts:
+                await polaris.enrich_engagement(
+                    page,
+                    extra_posts,
+                    username=username,
+                    limit=_enrich_limit(len(extra_posts)),
+                    delay_seconds=float(os.getenv("SCRAPE_ENRICH_DELAY_SECONDS") or "0.4"),
+                )
+    except Exception:
+        logger.exception("offgrid reels @%s failed — keeping grid posts", username)
+        extra_posts = []
+
+    merged = _append_new_posts(result.posts, extra_posts)
+    added = len(merged) - len(result.posts)
+    result.posts = merged
+    if added > 0:
+        result.posts_count = max(int(result.posts_count or 0), len(merged))
+    result.raw = {
+        **raw,
+        "reels_tab_checked": True,
+        "offgrid_reels": added,
+    }
+    if added:
+        logger.info("offgrid reels @%s added %s reel(s) not on the grid", username, added)
+    return result
+
+
 async def _scrape_live(
     username: str,
     *,
@@ -2082,6 +2269,9 @@ async def _scrape_live(
 
     async def _done(result: ScrapeResult, path: str) -> ScrapeResult:
         nonlocal proxy_url
+        result = await _merge_offgrid_reels(
+            username, result, headless=headless, proxy=proxy
+        )
         return await _finish_scrape_result(
             username, result, path=path, proxy_url=proxy_url
         )
@@ -2676,6 +2866,9 @@ async def _scrape_live_browser(
     proxy_url = proxy_to_httpx_url(proxy)
 
     async def _done(result: ScrapeResult, path: str) -> ScrapeResult:
+        result = await _merge_offgrid_reels(
+            username, result, headless=headless, proxy=proxy
+        )
         return await _finish_scrape_result(
             username, result, path=path, proxy_url=proxy_url
         )

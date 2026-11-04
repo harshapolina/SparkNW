@@ -139,8 +139,8 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
   }
 
   return (
-    <div className="flex min-h-screen bg-[#050505] text-white [background-image:radial-gradient(1200px_500px_at_10%_-10%,rgba(255,59,48,0.12),transparent),radial-gradient(800px_400px_at_100%_0%,rgba(88,28,135,0.12),transparent)]">
-      <aside className="sticky top-0 hidden h-screen w-[232px] shrink-0 flex-col border-r border-white/[0.06] bg-[#0a0a0a]/90 backdrop-blur-xl lg:flex">
+    <div className="flex h-screen overflow-hidden bg-[#050505] text-white [background-image:radial-gradient(1200px_500px_at_10%_-10%,rgba(255,59,48,0.12),transparent),radial-gradient(800px_400px_at_100%_0%,rgba(88,28,135,0.12),transparent)]">
+      <aside className="hidden h-full w-[232px] shrink-0 flex-col border-r border-white/[0.06] bg-[#0a0a0a]/90 backdrop-blur-xl lg:flex">
         <div className="px-4 py-5">
           <Link href="/admin-dashboard" className="inline-flex items-center">
             <BrandLogo height={26} priority />
@@ -270,7 +270,7 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
           </button>
         </div>
       </aside>
-      <div className="min-w-0 flex-1">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-white/[0.06] bg-[#0a0a0a]/95 px-4 py-3 backdrop-blur lg:hidden">
           <div className="flex min-w-0 items-center gap-2">
             <button
@@ -340,7 +340,7 @@ export default function AdminPortalLayout({ children }: { children: React.ReactN
             </aside>
           </div>
         ) : null}
-        <main className="min-w-0 px-4 py-6 md:px-7 md:py-7">{children}</main>
+        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-6 md:px-7 md:py-7">{children}</main>
       </div>
     </div>
   );
