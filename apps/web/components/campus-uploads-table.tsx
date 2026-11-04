@@ -182,8 +182,8 @@ export function CampusUploadsTable({
           </p>
         </div>
         <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end lg:w-auto">
-          <label className="flex w-full max-w-xs items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3 py-2">
-            <Search size={14} className="text-zinc-500" />
+          <label className="flex h-9 w-full max-w-xs items-center gap-2 rounded-xl border border-white/10 bg-black/40 px-3">
+            <Search size={14} className="shrink-0 text-zinc-500" />
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
@@ -195,7 +195,7 @@ export function CampusUploadsTable({
             type="button"
             onClick={resetEdits}
             disabled={!dirty || !board}
-            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 hover:border-white/20 disabled:opacity-40"
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 text-xs font-medium text-zinc-300 hover:border-white/20 disabled:opacity-40"
           >
             <RotateCcw size={14} />
             Reset
@@ -204,7 +204,7 @@ export function CampusUploadsTable({
             type="button"
             onClick={exportCsv}
             disabled={!summary.rows.length}
-            className="inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 py-2 text-xs font-medium text-zinc-300 hover:border-[#ff3b30]/40 hover:text-white disabled:opacity-40"
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-black px-3 text-xs font-medium text-zinc-300 hover:border-[#ff3b30]/40 hover:text-white disabled:opacity-40"
           >
             <Download size={14} />
             Export CSV
@@ -246,17 +246,27 @@ export function CampusUploadsTable({
         </p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
+          <table className="min-w-full table-fixed border-collapse text-left text-sm">
+            <colgroup>
+              <col className="w-[280px]" />
+              {months.map((m) => (
+                <col key={m.id} className="w-[104px]" />
+              ))}
+              <col className="w-[96px]" />
+              <col className="w-[52px]" />
+            </colgroup>
             <thead className="sticky top-0 z-10 bg-[#1a1a1a]">
               <tr className="border-b border-white/10 text-[11px] font-semibold uppercase tracking-[0.12em] text-zinc-400">
-                <th className="sticky left-0 z-20 bg-[#1a1a1a] px-5 py-3">Campus</th>
+                <th className="sticky left-0 z-20 bg-[#1a1a1a] px-4 py-3 text-left">Campus</th>
                 {months.map((m) => (
-                  <th key={m.id} className="min-w-[108px] px-3 py-3 text-right">
+                  <th key={m.id} className="px-2 py-3 text-center">
                     {m.label}
                   </th>
                 ))}
-                <th className="min-w-[88px] px-5 py-3 text-right">Total</th>
-                <th className="px-3 py-3 text-right"> </th>
+                <th className="px-3 py-3 text-right">Total</th>
+                <th className="px-2 py-3 text-center">
+                  <span className="sr-only">Remove</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -268,33 +278,33 @@ export function CampusUploadsTable({
                     idx % 2 === 0 ? "bg-black/20" : "bg-transparent"
                   )}
                 >
-                  <td className="sticky left-0 max-w-[280px] bg-[#121212] px-3 py-2">
+                  <td className="sticky left-0 z-10 bg-[#121212] px-4 py-2 align-middle">
                     <input
                       value={row.campus}
                       onChange={(e) => updateCampus(row.id, e.target.value)}
-                      className="w-full truncate rounded-lg border border-white/10 bg-black/40 px-2 py-1.5 text-sm font-medium text-zinc-100 outline-none focus:border-[#ff3b30]/50"
+                      className="box-border h-9 w-full rounded-lg border border-white/10 bg-black/40 px-2.5 text-sm font-medium text-zinc-100 outline-none focus:border-[#ff3b30]/50"
                       aria-label="Campus name"
                     />
                   </td>
                   {row.counts.map((n, i) => (
-                    <td key={months[i]?.id || i} className="px-2 py-2 text-right">
+                    <td key={months[i]?.id || i} className="px-2 py-2 text-center align-middle">
                       <input
                         type="text"
                         inputMode="numeric"
                         value={String(n)}
                         onChange={(e) => updateCount(row.id, i, e.target.value)}
                         className={cn(
-                          "inline-flex w-[4.25rem] rounded-lg border border-transparent px-2 py-1 text-right tabular outline-none focus:border-[#ff3b30]/40 focus:bg-black/50",
+                          "box-border mx-auto block h-9 w-full max-w-[4.5rem] rounded-lg border border-white/10 px-2 text-center text-sm tabular outline-none focus:border-[#ff3b30]/50 focus:bg-black/50",
                           heatClass(n, maxCell)
                         )}
                         aria-label={`${row.campus} ${months[i]?.label || "month"}`}
                       />
                     </td>
                   ))}
-                  <td className="px-5 py-3 text-right">
-                    <div className="flex flex-col items-end gap-1">
-                      <span className="font-semibold tabular">{formatNumber(row.total)}</span>
-                      <span className="h-1 w-16 overflow-hidden rounded-full bg-white/10">
+                  <td className="px-3 py-2 text-right align-middle">
+                    <div className="flex h-9 flex-col items-end justify-center gap-1">
+                      <span className="leading-none font-semibold tabular">{formatNumber(row.total)}</span>
+                      <span className="h-1 w-14 overflow-hidden rounded-full bg-white/10">
                         <span
                           className="block h-full rounded-full bg-gradient-to-r from-[#f58529] to-[#dd2a7b]"
                           style={{
@@ -307,11 +317,11 @@ export function CampusUploadsTable({
                       </span>
                     </div>
                   </td>
-                  <td className="px-3 py-2 text-right">
+                  <td className="px-2 py-2 text-center align-middle">
                     <button
                       type="button"
                       onClick={() => removeRow(row.id)}
-                      className="inline-flex rounded-lg border border-white/10 p-1.5 text-zinc-500 hover:border-rose-500/40 hover:text-rose-300"
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 text-zinc-500 hover:border-rose-500/40 hover:text-rose-300"
                       title="Remove row"
                       aria-label={`Remove ${row.campus}`}
                     >
@@ -323,16 +333,21 @@ export function CampusUploadsTable({
             </tbody>
             <tfoot>
               <tr className="border-t border-white/10 bg-[#161616]">
-                <td className="sticky left-0 bg-[#161616] px-5 py-3 font-semibold">All campuses</td>
+                <td className="sticky left-0 bg-[#161616] px-4 py-3 font-semibold align-middle">
+                  All campuses
+                </td>
                 {summary.totals.map((n, i) => (
-                  <td key={months[i]?.id || i} className="px-3 py-3 text-right font-semibold tabular">
+                  <td
+                    key={months[i]?.id || i}
+                    className="px-2 py-3 text-center font-semibold tabular align-middle"
+                  >
                     {formatNumber(n)}
                   </td>
                 ))}
-                <td className="px-5 py-3 text-right text-base font-semibold tabular text-[#ff3b30]">
+                <td className="px-3 py-3 text-right text-base font-semibold tabular text-[#ff3b30] align-middle">
                   {formatNumber(summary.grand_total)}
                 </td>
-                <td />
+                <td className="px-2 py-3" />
               </tr>
             </tfoot>
           </table>
