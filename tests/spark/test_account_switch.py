@@ -37,7 +37,7 @@ def test_rate_limited_partial_can_merge_without_counting_as_complete(monkeypatch
     assert sp._can_merge_partial(0, 731, 140) is False
     assert sp._can_merge_partial(12, 731, 140) is False
     assert sp._can_merge_partial(47, 731, 140) is False
-    assert sp._can_merge_partial(60, 731, 140) is False  # < half of 140
+    assert sp._can_merge_partial(48, 731, 140) is True
     assert sp._can_merge_partial(94, 0, 140) is False
 
 

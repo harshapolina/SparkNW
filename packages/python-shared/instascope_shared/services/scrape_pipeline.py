@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from instascope_scraper.caps import caps_env
@@ -141,21 +141,15 @@ def _can_merge_partial(
 
     The scraper still walks newest→oldest through the full programme window
     (15 Jul 2026 → today) exactly as before. This helper is only the save
-    fallback when Instagram rate-limits before the Jul 15 floor is reached.
+    fallback when Instagram rate-limits before the Jul 15 floor is reached
+    (real case: @nihaa.creates stopped at 94/140 and Refresh showed scrape failed).
 
     First-page samples (~12) must NEVER merge-save as success — that would stop
-    retries and leave most programme posts missing. Require a deep partial
-    (at least 48 posts, and at least half of Instagram's lifetime count when
-    that count is known) so Refresh keeps retrying thin scrapes.
+    retries. Require at least 48 posts (several pages) so thin scrapes still fail
+    and Refresh keeps trying for the rest of the programme window.
     """
-    scraped_n = int(scraped or 0)
-    followers_n = int(followers or 0)
-    posts_n = int(posts_count or 0)
-    if followers_n <= 0 or scraped_n < 48:
-        return False
-    if posts_n > 48 and scraped_n < max(48, posts_n // 2):
-        return False
-    return True
+    del posts_count  # lifetime count is not a gate — programme scrapes stop early on purpose
+    return int(followers or 0) > 0 and int(scraped or 0) >= 48
 
 
 def _is_confirmed_empty_profile(result: dict[str, Any]) -> bool:
@@ -532,6 +526,34 @@ async def apply_scrape_result(
         elif dropped_old:
             raw = {**raw, "hit_cohort_floor": True}
             hit_cohort_floor = True
+        elif posts_data and not hit_cohort_floor and not timeline_complete:
+            # Pagination often dies one page before a pre-floor post. If the
+            # oldest kept row is already at/near 15 Jul, treat the programme
+            # window as complete so Refresh can save instead of failing at 94/140.
+            oldest = None
+            for row in posts_data:
+                raw_dt = row.get("posted_at")
+                dt = None
+                if isinstance(raw_dt, datetime):
+                    dt = raw_dt.replace(tzinfo=None) if raw_dt.tzinfo else raw_dt
+                elif isinstance(raw_dt, str) and raw_dt.strip():
+                    try:
+                        parsed = datetime.fromisoformat(raw_dt.replace("Z", "+00:00"))
+                        dt = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+                    except ValueError:
+                        dt = None
+                if dt is not None and (oldest is None or dt < oldest):
+                    oldest = dt
+            if oldest is not None and oldest <= floor_dt + timedelta(days=3):
+                hit_cohort_floor = True
+                raw = {**raw, "hit_cohort_floor": True}
+                logger.info(
+                    "programme floor inferred @%s oldest=%s floor=%s posts=%s",
+                    result.get("username") or profile.username,
+                    oldest.isoformat(),
+                    floor_dt.isoformat(),
+                    len(posts_data),
+                )
     except Exception:
         logger.exception(
             "programme-window post filter failed — applying hard 2026-07-15 floor"
