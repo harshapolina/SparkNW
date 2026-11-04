@@ -1019,13 +1019,51 @@ def _caption_text(node: dict[str, Any]) -> str | None:
     return None
 
 
+def _engagement_int(node: dict[str, Any], *keys: str) -> int:
+    best = 0
+    for key in keys:
+        raw = node.get(key)
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if n > best:
+            best = n
+    return best
+
+
+def _node_views(node: dict[str, Any]) -> int:
+    """Play/view count from a Reels-tab / clips media node."""
+    best = _engagement_int(
+        node,
+        "play_count",
+        "ig_play_count",
+        "video_play_count",
+        "video_view_count",
+        "view_count",
+        "fb_play_count",
+    )
+    nested = node.get("clips_metadata")
+    if isinstance(nested, dict):
+        best = max(best, _node_views(nested))
+    return best
+
+
 def nodes_to_posts(
     nodes: list[dict[str, Any]],
     *,
     username: str,
     cohort_floor_unix: int | None = None,
 ) -> list[ScrapedPost]:
-    """Map Polaris timeline nodes onto ScrapedPost, deriving dates from the pk."""
+    """Map Polaris timeline nodes onto ScrapedPost, deriving dates from the pk.
+
+    Important: keep play_count / likes / comments from the Reels-tab payload.
+    Older code zeroed them here, so accounts scraped mainly via the Reels tab
+    (e.g. @nihaa.creates) stored views=0 and never earned performance points
+    even when Instagram showed thousands of plays.
+    """
     posts: list[ScrapedPost] = []
     seen: set[str] = set()
     for node in nodes:
@@ -1042,6 +1080,9 @@ def nodes_to_posts(
 
         media_type, is_video = _media_type(node)
         media_pk = node.get("pk") or node.get("id")
+        likes = _engagement_int(node, "like_count", "likes")
+        comments = _engagement_int(node, "comment_count", "comments")
+        views = _node_views(node)
         posts.append(
             ScrapedPost(
                 ig_post_id=str(media_pk or code),
@@ -1050,11 +1091,11 @@ def nodes_to_posts(
                 caption=_caption_text(node),
                 thumbnail_url=node.get("display_uri") or None,
                 permalink=f"https://www.instagram.com/p/{code}/",
-                likes=0,
-                comments=0,
-                views=0,
+                likes=likes,
+                comments=comments,
+                views=views,
                 posted_at=dt.isoformat() if dt else None,
-                is_video=is_video,
+                is_video=is_video or views > 0,
                 accessibility_caption=node.get("accessibility_caption") or None,
             )
         )

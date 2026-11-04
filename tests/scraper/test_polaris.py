@@ -118,6 +118,23 @@ def test_nodes_to_posts_dedupes_by_shortcode():
     assert len(nodes_to_posts([node, dict(node)], username="x")) == 1
 
 
+def test_nodes_to_posts_keeps_reel_play_counts():
+    """Reels-tab payloads carry play_count — zeroing them blocked SPARK performance pts."""
+    node = {
+        "pk": "4020821087569961272",
+        "code": "DfM03nWAeE4",
+        "product_type": "clips",
+        "play_count": 8800,
+        "like_count": 142,
+        "comment_count": 11,
+    }
+    posts = nodes_to_posts([node], username="nihaa.creates")
+    assert len(posts) == 1
+    assert posts[0].views == 8800
+    assert posts[0].likes == 142
+    assert posts[0].comments == 11
+
+
 def test_parse_engagement_escaped_embed():
     html = (
         r'stuff \"edge_liked_by\":{\"count\":5644} more '

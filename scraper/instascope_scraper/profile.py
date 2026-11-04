@@ -778,23 +778,50 @@ async def _expand_all_posts(
     return posts, hit_cohort_floor
 
 
+def _clone_post_with_engagement(
+    post: ScrapedPost,
+    *,
+    views: int | None = None,
+    likes: int | None = None,
+    comments: int | None = None,
+) -> ScrapedPost:
+    return ScrapedPost(
+        ig_post_id=post.ig_post_id,
+        shortcode=post.shortcode,
+        media_type=post.media_type,
+        caption=post.caption,
+        thumbnail_url=post.thumbnail_url,
+        permalink=post.permalink,
+        likes=int(post.likes or 0) if likes is None else int(likes),
+        comments=int(post.comments or 0) if comments is None else int(comments),
+        views=int(post.views or 0) if views is None else int(views),
+        posted_at=post.posted_at,
+        is_video=post.is_video,
+        accessibility_caption=post.accessibility_caption,
+    )
+
+
 async def _enrich_views_via_http(
     posts: list[ScrapedPost],
     *,
     username: str,
     proxy_url: str | None,
 ) -> list[ScrapedPost]:
-    """Fill reel play counts via /api/v1/media/{id}/info/ over HTTP+proxy."""
+    """Fill reel play counts via media-info, then embed/captioned fallback.
+
+    Feed/card seeds often leave views=0 even when the public Reels grid shows
+    thousands of plays. Media-info is preferred; when Instagram rate-limits it
+    we still try the public embed document so performance points can score.
+    """
     import httpx
     from instascope_scraper.http_profile import _apply_csrf, _bootstrap_session, _client_headers, _new_client
+    from instascope_scraper.polaris import parse_engagement
 
-    # Always refresh reel play counts via media-info when possible. Feed/card
-    # seeds can look "good enough" yet still be far below the public UI count.
     delay = float(os.getenv("SCRAPE_ENRICH_DELAY_SECONDS") or "0.5")
     targets = [
         p
         for p in posts
-        if (p.media_type in {"reel", "video"} or p.is_video) and p.ig_post_id
+        if (p.media_type in {"reel", "video"} or p.is_video) and (p.ig_post_id or p.shortcode)
     ]
     if not targets:
         return posts
@@ -802,46 +829,82 @@ async def _enrich_views_via_http(
     headers = _client_headers(username)
     timeout = httpx.Timeout(30.0)
     by_code = {p.shortcode: p for p in posts}
+    filled = 0
 
     async with _new_client(headers=headers, proxy=proxy_url, timeout=timeout) as client:
         await _bootstrap_session(client, username)
         for post in targets:
             await asyncio.sleep(delay)
-            media_id = str(post.ig_post_id).split("_")[0]
-            url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
-            req_headers = _client_headers(username)
-            _apply_csrf(client, req_headers)
-            try:
-                res = await client.get(url, headers=req_headers)
-                if res.status_code != 200:
-                    continue
-                payload = res.json()
-            except Exception:
-                continue
-            items = payload.get("items") if isinstance(payload, dict) else None
-            if not isinstance(items, list):
-                continue
-            best = post.views
-            for it in items:
-                if isinstance(it, dict):
-                    best = max(best, _views_from_mapping(it))
-            if best > post.views:
-                updated = ScrapedPost(
-                    ig_post_id=post.ig_post_id,
-                    shortcode=post.shortcode,
-                    media_type=post.media_type,
-                    caption=post.caption,
-                    thumbnail_url=post.thumbnail_url,
-                    permalink=post.permalink,
-                    likes=post.likes,
-                    comments=post.comments,
-                    views=best,
-                    posted_at=post.posted_at,
-                    is_video=post.is_video,
-                    accessibility_caption=post.accessibility_caption,
-                )
-                by_code[post.shortcode] = updated
+            best_views = int(post.views or 0)
+            best_likes = int(post.likes or 0)
+            best_comments = int(post.comments or 0)
 
+            if post.ig_post_id:
+                media_id = str(post.ig_post_id).split("_")[0]
+                url = f"https://www.instagram.com/api/v1/media/{media_id}/info/"
+                req_headers = _client_headers(username)
+                _apply_csrf(client, req_headers)
+                try:
+                    res = await client.get(url, headers=req_headers)
+                    if res.status_code == 200:
+                        payload = res.json()
+                        items = payload.get("items") if isinstance(payload, dict) else None
+                        if isinstance(items, list):
+                            for it in items:
+                                if isinstance(it, dict):
+                                    best_views = max(best_views, _views_from_mapping(it))
+                                    try:
+                                        best_likes = max(best_likes, int(it.get("like_count") or 0))
+                                    except (TypeError, ValueError):
+                                        pass
+                                    try:
+                                        best_comments = max(
+                                            best_comments, int(it.get("comment_count") or 0)
+                                        )
+                                    except (TypeError, ValueError):
+                                        pass
+                except Exception:
+                    pass
+
+            # Public embed often still returns play counts when media-info is blocked.
+            if best_views <= 0 and post.shortcode:
+                embed_url = f"https://www.instagram.com/p/{post.shortcode}/embed/captioned/"
+                try:
+                    embed_res = await client.get(
+                        embed_url,
+                        headers={
+                            **_client_headers(username),
+                            "accept": "text/html,application/xhtml+xml",
+                        },
+                    )
+                    if embed_res.status_code == 200:
+                        data = parse_engagement(embed_res.text or "")
+                        best_views = max(best_views, int(data.get("views") or 0))
+                        best_likes = max(best_likes, int(data.get("likes") or 0))
+                        best_comments = max(best_comments, int(data.get("comments") or 0))
+                except Exception:
+                    pass
+
+            if (
+                best_views > int(post.views or 0)
+                or best_likes > int(post.likes or 0)
+                or best_comments > int(post.comments or 0)
+            ):
+                by_code[post.shortcode] = _clone_post_with_engagement(
+                    post,
+                    views=best_views,
+                    likes=best_likes,
+                    comments=best_comments,
+                )
+                if best_views > int(post.views or 0):
+                    filled += 1
+
+    logger.info(
+        "http view enrich @%s filled_views=%s/%s",
+        username,
+        filled,
+        len(targets),
+    )
     return [by_code.get(p.shortcode, p) for p in posts]
 
 
