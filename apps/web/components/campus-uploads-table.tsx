@@ -52,21 +52,95 @@ function parseCount(raw: string): number {
 
 const UNASSIGNED = new Set(["—", "-", "–", "−", "", "unknown", "unassigned", "n/a", "na"]);
 
-function isNamedCampus(campus: string): boolean {
+/** Exact campus rows from the cleaned sheet — only these appear in the list. */
+const SCREENSHOT_CAMPUSES = [
+  "NIAT - KKH (Hyderabad)",
+  "CDU (Hyderabad)",
+  "Noida International University (Noida)",
+  "Sanjay Ghodawat University (Kolhapur)",
+  "Vivekananda Global University (Jaipur)",
+  "Takshashila University",
+  "Ajeenkya D. Y. Patil University (Pune)",
+  "Aurora Deemed University (Hyderabad)",
+  "S-Vyasa (Bangalore)",
+  "Yenepoya University (Mangalore)",
+  "NRI (Vijayawada)",
+  "Annamacharya University",
+  "Chalapathi Institute of Technology (Guntur)",
+  "Malla Reddy (Hyderabad)",
+  "NIAT - Chevella",
+  "NSRIT",
+  "Crescent University (Chennai)",
+  "AMET University (Chennai)",
+] as const;
+
+const SCREENSHOT_SET = new Set<string>(SCREENSHOT_CAMPUSES);
+
+function campusKey(label: string): string {
+  return label
+    .trim()
+    .toLowerCase()
+    .replace(/[–—−]/g, "-")
+    .replace(/\s*,\s*/g, ", ")
+    .replace(/\s+/g, " ");
+}
+
+/** Club 3 CDUs / 2 KKHs / dual-college labels into the sheet names. */
+const CAMPUS_ALIASES: Record<string, string> = Object.fromEntries([
+  ...SCREENSHOT_CAMPUSES.map((name) => [campusKey(name), name] as const),
+  [campusKey("KKH"), "NIAT - KKH (Hyderabad)"],
+  [campusKey("NIAT - KKH"), "NIAT - KKH (Hyderabad)"],
+  [campusKey("NIAT KKH (Hyderabad)"), "NIAT - KKH (Hyderabad)"],
+  [campusKey("CDU"), "CDU (Hyderabad)"],
+  [campusKey("CDU, HYD"), "CDU (Hyderabad)"],
+  [campusKey("CDU HYD"), "CDU (Hyderabad)"],
+  [campusKey("Noida intemational University (Noida)"), "Noida International University (Noida)"],
+  [campusKey("Noida International University"), "Noida International University (Noida)"],
+  [campusKey("NIAT, VGU Campus"), "Vivekananda Global University (Jaipur)"],
+  [campusKey("NIAT, VIVEKANANDA"), "Vivekananda Global University (Jaipur)"],
+  [campusKey("NIAT, Aurora"), "Aurora Deemed University (Hyderabad)"],
+  [campusKey("NIAT X NRI"), "NRI (Vijayawada)"],
+  [campusKey("NIAT, NRI"), "NRI (Vijayawada)"],
+  [campusKey("NIAT , CHALAPATHI"), "Chalapathi Institute of Technology (Guntur)"],
+  [campusKey("NIAT, CHALAPATHI"), "Chalapathi Institute of Technology (Guntur)"],
+  [campusKey("NIAT, AMET University"), "AMET University (Chennai)"],
+  [campusKey("NIAT, AMET"), "AMET University (Chennai)"],
+  [campusKey("AMET University ( Chennai)"), "AMET University (Chennai)"],
+  [campusKey("AMET University"), "AMET University (Chennai)"],
+]);
+
+function normalizeCampus(campus: string): string | null {
   const label = (campus || "").trim();
-  if (!label) return false;
-  return !UNASSIGNED.has(label) && !UNASSIGNED.has(label.toLowerCase());
+  if (!label || UNASSIGNED.has(label) || UNASSIGNED.has(label.toLowerCase())) return null;
+  const canon = CAMPUS_ALIASES[campusKey(label)] || label;
+  return SCREENSHOT_SET.has(canon) ? canon : null;
 }
 
 function boardToEditRows(board: CampusUploadsBoard | undefined): EditRow[] {
-  // Campus-wise only — drop orphan "—" rows even if an older API still sends them.
-  return (board?.rows || [])
-    .filter((r) => isNamedCampus(r.campus))
-    .map((r, i) => ({
-      id: `${r.campus || "campus"}-${i}`,
-      campus: r.campus,
-      counts: [...r.counts],
-    }));
+  // Club alias rows (KKH→NIAT-KKH, CDU/CDU,HYD→CDU Hyderabad) and drop "—" / unknowns.
+  const merged = new Map<string, number[]>();
+  for (const r of board?.rows || []) {
+    const campus = normalizeCampus(r.campus);
+    if (!campus) continue;
+    const counts = [...(r.counts || [])];
+    const prev = merged.get(campus);
+    if (!prev) {
+      merged.set(campus, counts);
+      continue;
+    }
+    const width = Math.max(prev.length, counts.length);
+    const next = Array.from({ length: width }, (_, i) => (prev[i] || 0) + (counts[i] || 0));
+    merged.set(campus, next);
+  }
+  return [...merged.entries()]
+    .map(([campus, counts], i) => ({
+      id: `${campus}-${i}`,
+      campus,
+      counts,
+      total: counts.reduce((a, b) => a + (Number(b) || 0), 0),
+    }))
+    .sort((a, b) => b.total - a.total || a.campus.localeCompare(b.campus))
+    .map(({ id, campus, counts }) => ({ id, campus, counts }));
 }
 
 function summarize(rows: EditRow[], monthCount: number) {
