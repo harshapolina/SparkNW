@@ -132,6 +132,17 @@ def _is_complete_enough(
     return scraped > 0 or followers > 0
 
 
+def _can_merge_partial(scraped: int, followers: int) -> bool:
+    """True when a mid-pagination scrape still has usable posts to upsert.
+
+    Incomplete programme scrapes used to be refused entirely, so Refresh kept
+    failing on accounts like @nihaa.creates (94/140) and left stale zero-view
+    rows untouched. Merge-save keeps existing posts and only upserts what this
+    scrape returned (views/likes use max so zeros never wipe real counts).
+    """
+    return int(followers or 0) > 0 and int(scraped or 0) >= 12
+
+
 def _is_confirmed_empty_profile(result: dict[str, Any]) -> bool:
     """True when the scrape resolved a real IG profile that simply has 0 posts."""
     # Private cards often report a posts_count but no scrapeable timeline.
@@ -259,11 +270,19 @@ async def heal_soft_scrape_failure(profile: Profile) -> bool:
     return True
 
 
-async def _upsert_posts(profile: Profile, post_docs: list[Post]) -> int:
+async def _upsert_posts(
+    profile: Profile,
+    post_docs: list[Post],
+    *,
+    prune_missing: bool = True,
+) -> int:
     """Persist posts by ``ig_post_id`` (global unique), reclaiming collisions.
 
     Delete-then-insert fails when the same Instagram post id already exists under
     another profile row (re-imports / duplicate roster). Upsert fixes that.
+
+    When ``prune_missing`` is False (merge partial), keep posts this scrape did
+    not return so an incomplete Refresh cannot wipe older programme rows.
     """
     by_id: dict[str, Post] = {}
     for doc in post_docs:
@@ -276,13 +295,14 @@ async def _upsert_posts(profile: Profile, post_docs: list[Post]) -> int:
         return 0
 
     keep_ids = list(by_id.keys())
-    # Drop stale rows for this profile that are no longer in the scrape set.
-    await Post.find(
-        {
-            "profile_id": str(profile.id),
-            "ig_post_id": {"$nin": keep_ids},
-        }
-    ).delete()
+    if prune_missing:
+        # Drop stale rows for this profile that are no longer in the scrape set.
+        await Post.find(
+            {
+                "profile_id": str(profile.id),
+                "ig_post_id": {"$nin": keep_ids},
+            }
+        ).delete()
 
     saved = 0
     for doc in docs:
@@ -547,17 +567,30 @@ async def apply_scrape_result(
     # When SCRAPE_MAX_POSTS is capped (API inline/bulk), completeness is vs that cap.
     # Cohort floor (Jul 15 2026) means we intentionally stopped — treat as complete.
     # Private accounts: 0 scraped posts with posts_count > 0 is normal (locked grid).
-    if not _is_complete_enough(
+    scrape_complete = _is_complete_enough(
         posts_count,
         len(posts_data),
         followers,
         hit_cohort_floor=hit_cohort_floor,
         timeline_complete=timeline_complete,
         is_private=is_private,
-    ):
-        raise ValueError(
-            f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count or '?'} posts)"
-        )
+    )
+    # Mid-pagination / rate-limit: merge what we got instead of failing Refresh.
+    # Full scrapes still prune missing rows; merge keeps older programme posts.
+    merge_partial = False
+    if not scrape_complete:
+        if _can_merge_partial(len(posts_data), followers):
+            merge_partial = True
+            logger.warning(
+                "merge-saving partial scrape @%s posts=%s/%s (keeping existing rows)",
+                result.get("username") or profile.username,
+                len(posts_data),
+                posts_count or "?",
+            )
+        else:
+            raise ValueError(
+                f"Refusing to save incomplete scrape ({len(posts_data)}/{posts_count or '?'} posts)"
+            )
     if (
         posts_count > 0
         and not posts_data
@@ -589,6 +622,7 @@ async def apply_scrape_result(
         and not is_private
     ):
         raise ValueError("Refusing to overwrite insights with empty metrics")
+    # Merge partials: do not shrink insights to only this page — recompute after upsert.
 
     # Build post documents BEFORE wiping Mongo — never delete on a failed/empty save.
     post_docs: list[Post] = []
@@ -697,11 +731,52 @@ async def apply_scrape_result(
 
     posts_saved = 0
     if post_docs:
-        posts_saved = await _upsert_posts(profile, post_docs)
+        posts_saved = await _upsert_posts(
+            profile, post_docs, prune_missing=not merge_partial
+        )
         if posts_saved <= 0:
             raise ValueError(
                 f"Failed to save any of {len(post_docs)} scraped posts to the database"
             )
+        if merge_partial:
+            # Insights must reflect the full programme set after merge, not just
+            # the page Instagram returned before rate-limiting.
+            stored = await Post.find(Post.profile_id == str(profile.id)).to_list()
+            metric_rows: list[dict[str, Any]] = []
+            for row in stored:
+                metric_rows.append(
+                    {
+                        "media_type": getattr(
+                            getattr(row, "media_type", None), "value", None
+                        )
+                        or str(getattr(row, "media_type", "") or ""),
+                        "likes": int(getattr(row, "likes", 0) or 0),
+                        "comments": int(getattr(row, "comments", 0) or 0),
+                        "views": int(getattr(row, "views", 0) or 0),
+                        "caption": getattr(row, "caption", None),
+                        "posted_at": getattr(row, "posted_at", None),
+                        "shortcode": getattr(row, "shortcode", None),
+                        "is_video": str(
+                            getattr(getattr(row, "media_type", None), "value", None)
+                            or getattr(row, "media_type", "")
+                            or ""
+                        ).lower()
+                        in {"reel", "video", "clip", "igtv"},
+                    }
+                )
+            metrics = compute_post_metrics(metric_rows, followers=followers)
+            avg_likes = float(metrics["avg_likes"])
+            avg_views = float(metrics["avg_views"])
+            avg_comments = float(metrics["avg_comments"])
+            eng = float(metrics["engagement_rate"])
+            profile.avg_likes = avg_likes
+            profile.avg_views = avg_views
+            profile.avg_comments = avg_comments
+            profile.engagement_rate = eng
+            prev_insights = profile.insights if isinstance(profile.insights, dict) else {}
+            profile.insights = merge_spark_scoring_insights(prev_insights, metrics)
+            profile.updated_at = datetime.utcnow()
+            await profile.save()
     elif posts_count == 0 or hit_cohort_floor:
         # Empty IG account OR programme window has no posts (all older than cohort).
         # Clear stale lifetime rows left by older scrapes.

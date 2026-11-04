@@ -28,6 +28,17 @@ def test_first_page_sample_is_still_refused(monkeypatch):
     assert sp._is_complete_enough(91, 12, 8934) is False
 
 
+def test_rate_limited_partial_can_merge_without_counting_as_complete(monkeypatch):
+    """@nihaa.creates case: 94/140 must merge-save, not wipe or refuse forever."""
+    monkeypatch.setenv("SCRAPE_STOP_AT_COHORT", "1")
+    assert sp._is_complete_enough(140, 94, 731) is False
+    assert sp._can_merge_partial(94, 731) is True
+    # Tiny / empty scrapes still refuse — do not merge garbage.
+    assert sp._can_merge_partial(0, 731) is False
+    assert sp._can_merge_partial(11, 731) is False
+    assert sp._can_merge_partial(94, 0) is False
+
+
 @pytest.mark.parametrize(
     ("stored", "scraped", "changed"),
     [
