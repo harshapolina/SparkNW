@@ -132,15 +132,30 @@ def _is_complete_enough(
     return scraped > 0 or followers > 0
 
 
-def _can_merge_partial(scraped: int, followers: int) -> bool:
-    """True when a mid-pagination scrape still has usable posts to upsert.
+def _can_merge_partial(
+    scraped: int,
+    followers: int,
+    posts_count: int = 0,
+) -> bool:
+    """True when a mid-pagination scrape still has a substantial post set to upsert.
 
-    Incomplete programme scrapes used to be refused entirely, so Refresh kept
-    failing on accounts like @nihaa.creates (94/140) and left stale zero-view
-    rows untouched. Merge-save keeps existing posts and only upserts what this
-    scrape returned (views/likes use max so zeros never wipe real counts).
+    The scraper still walks newest→oldest through the full programme window
+    (15 Jul 2026 → today) exactly as before. This helper is only the save
+    fallback when Instagram rate-limits before the Jul 15 floor is reached.
+
+    First-page samples (~12) must NEVER merge-save as success — that would stop
+    retries and leave most programme posts missing. Require a deep partial
+    (at least 48 posts, and at least half of Instagram's lifetime count when
+    that count is known) so Refresh keeps retrying thin scrapes.
     """
-    return int(followers or 0) > 0 and int(scraped or 0) >= 12
+    scraped_n = int(scraped or 0)
+    followers_n = int(followers or 0)
+    posts_n = int(posts_count or 0)
+    if followers_n <= 0 or scraped_n < 48:
+        return False
+    if posts_n > 48 and scraped_n < max(48, posts_n // 2):
+        return False
+    return True
 
 
 def _is_confirmed_empty_profile(result: dict[str, Any]) -> bool:
@@ -575,14 +590,15 @@ async def apply_scrape_result(
         timeline_complete=timeline_complete,
         is_private=is_private,
     )
-    # Mid-pagination / rate-limit: merge what we got instead of failing Refresh.
+    # Mid-pagination / rate-limit: merge a deep partial instead of failing Refresh.
+    # Scraper still targets the full programme window; this only affects save.
     # Full scrapes still prune missing rows; merge keeps older programme posts.
     merge_partial = False
     if not scrape_complete:
-        if _can_merge_partial(len(posts_data), followers):
+        if _can_merge_partial(len(posts_data), followers, posts_count):
             merge_partial = True
             logger.warning(
-                "merge-saving partial scrape @%s posts=%s/%s (keeping existing rows)",
+                "merge-saving deep partial scrape @%s posts=%s/%s (keeping existing rows)",
                 result.get("username") or profile.username,
                 len(posts_data),
                 posts_count or "?",
