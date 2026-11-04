@@ -7,6 +7,7 @@ performance multiplier, audience growth, plus judged/manual categories).
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -105,22 +106,99 @@ SPARK_CAMPUSES = (
     "CDU Vizag",
 )
 
+# Clean campus-wise board — only these labels (merged dual-college roster rows fold in).
+SCREENSHOT_CAMPUSES = (
+    "NIAT - KKH (Hyderabad)",
+    "CDU (Hyderabad)",
+    "Noida International University (Noida)",
+    "Sanjay Ghodawat University (Kolhapur)",
+    "Vivekananda Global University (Jaipur)",
+    "Takshashila University",
+    "Ajeenkya D. Y. Patil University (Pune)",
+    "Aurora Deemed University (Hyderabad)",
+    "S-Vyasa (Bangalore)",
+    "Yenepoya University (Mangalore)",
+    "NRI (Vijayawada)",
+    "Annamacharya University",
+    "Chalapathi Institute of Technology (Guntur)",
+    "Malla Reddy (Hyderabad)",
+    "NIAT - Chevella",
+    "NSRIT",
+    "Crescent University (Chennai)",
+    "AMET University (Chennai)",
+)
+
+_SCREENSHOT_CAMPUS_SET = frozenset(SCREENSHOT_CAMPUSES)
+
+_UNASSIGNED_CAMPUS_LABELS = frozenset({"—", "-", "–", "−", "", "unknown", "unassigned", "n/a", "na"})
+
+
+def _campus_key(label: str) -> str:
+    """Case/spacing-insensitive key for campus alias lookup."""
+    s = (label or "").strip().lower()
+    s = s.replace("–", "-").replace("—", "-").replace("−", "-")
+    s = re.sub(r"\s*,\s*", ", ", s)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+# Roster variants / dual-college merges → screenshot campus names.
+_CAMPUS_ALIASES: dict[str, str] = {
+    _campus_key(name): name for name in SCREENSHOT_CAMPUSES
+}
+_CAMPUS_ALIASES.update(
+    {
+        _campus_key("KKH"): "NIAT - KKH (Hyderabad)",
+        _campus_key("NIAT - KKH"): "NIAT - KKH (Hyderabad)",
+        _campus_key("NIAT KKH (Hyderabad)"): "NIAT - KKH (Hyderabad)",
+        _campus_key("CDU"): "CDU (Hyderabad)",
+        _campus_key("CDU, HYD"): "CDU (Hyderabad)",
+        _campus_key("CDU HYD"): "CDU (Hyderabad)",
+        _campus_key("Noida intemational University (Noida)"): "Noida International University (Noida)",
+        _campus_key("Noida International University"): "Noida International University (Noida)",
+        _campus_key("NIAT, VGU Campus"): "Vivekananda Global University (Jaipur)",
+        _campus_key("NIAT, VIVEKANANDA"): "Vivekananda Global University (Jaipur)",
+        _campus_key("NIAT, Vivekananda Global University"): "Vivekananda Global University (Jaipur)",
+        _campus_key("NIAT, Aurora"): "Aurora Deemed University (Hyderabad)",
+        _campus_key("NIAT, Aurora Deemed University"): "Aurora Deemed University (Hyderabad)",
+        _campus_key("NIAT X NRI"): "NRI (Vijayawada)",
+        _campus_key("NIAT, NRI"): "NRI (Vijayawada)",
+        _campus_key("NIAT , CHALAPATHI"): "Chalapathi Institute of Technology (Guntur)",
+        _campus_key("NIAT, CHALAPATHI"): "Chalapathi Institute of Technology (Guntur)",
+        _campus_key("NIAT, Chalapathi Institute of Technology"): "Chalapathi Institute of Technology (Guntur)",
+        _campus_key("NIAT, AMET University"): "AMET University (Chennai)",
+        _campus_key("NIAT, AMET"): "AMET University (Chennai)",
+        _campus_key("AMET University ( Chennai)"): "AMET University (Chennai)",
+        _campus_key("AMET University"): "AMET University (Chennai)",
+    }
+)
+
+
+def _normalize_campus(campus: str) -> str:
+    """Fold roster aliases / dual-college labels into the screenshot campus name."""
+    label = (campus or "").strip()
+    if not label:
+        return "—"
+    if label in _UNASSIGNED_CAMPUS_LABELS or label.lower() in _UNASSIGNED_CAMPUS_LABELS:
+        return "—"
+    return _CAMPUS_ALIASES.get(_campus_key(label), label)
+
 
 def _campus(profile: Profile) -> str:
-    """Prefer roster university, then explicit campus insights."""
+    """Prefer roster university, then explicit campus insights — always canonicalized."""
     student = getattr(profile, "student", None) or {}
     for key in ("university", "campus", "college"):
         raw = student.get(key) if isinstance(student, dict) else None
         if isinstance(raw, str) and raw.strip():
-            return raw.strip()
+            return _normalize_campus(raw)
 
     insights = profile.insights or {}
     raw = insights.get("campus") or insights.get("spark_campus") or insights.get("school")
     if isinstance(raw, str) and raw.strip():
-        return raw.strip()
+        return _normalize_campus(raw)
 
     key = (profile.username or str(profile.id) or "spark").lower().encode("utf-8")
-    return SPARK_CAMPUSES[sum(key) % len(SPARK_CAMPUSES)]
+    return _normalize_campus(SPARK_CAMPUSES[sum(key) % len(SPARK_CAMPUSES)])
 
 
 def month_keys_inclusive(start: datetime, end: datetime) -> list[str]:
@@ -137,15 +215,27 @@ def month_keys_inclusive(start: datetime, end: datetime) -> list[str]:
     return keys
 
 
-_UNASSIGNED_CAMPUS_LABELS = frozenset({"—", "-", "–", "−", "", "unknown", "unassigned", "n/a", "na"})
-
-
 def _is_named_campus(campus: str) -> bool:
-    """True for real roster campuses — hide orphan / unmatched upload buckets."""
-    label = (campus or "").strip()
-    if not label:
+    """True for screenshot campuses only — hide orphans and unmerged leftovers."""
+    label = _normalize_campus(campus)
+    if not label or label == "—" or label in _UNASSIGNED_CAMPUS_LABELS:
         return False
-    return label.lower() not in _UNASSIGNED_CAMPUS_LABELS and label not in _UNASSIGNED_CAMPUS_LABELS
+    return label in _SCREENSHOT_CAMPUS_SET
+
+
+def _collapse_campus_map(store: dict[str, dict[str, int]], months: list[str]) -> dict[str, dict[str, int]]:
+    """Merge alias keys into canonical screenshot campuses; drop orphans."""
+    empty = {m: 0 for m in months}
+    out: dict[str, dict[str, int]] = {}
+    for raw, by_month in store.items():
+        campus = _normalize_campus(raw)
+        if not _is_named_campus(campus):
+            continue
+        row = out.setdefault(campus, dict(empty))
+        for m, n in by_month.items():
+            if m in empty:
+                row[m] = int(row.get(m, 0)) + int(n or 0)
+    return out
 
 
 def _boards_from_campus_maps(
@@ -156,10 +246,12 @@ def _boards_from_campus_maps(
     def empty() -> dict[str, int]:
         return {m: 0 for m in months}
 
-    # Drop the "—" unmatched-profile bucket so the board is campus-wise only
-    # (same shape admins export from the cleaned sheet).
+    # Fold dual-college / typo roster labels into the screenshot campus list.
+    ig = _collapse_campus_map(ig, months)
+    yt = _collapse_campus_map(yt, months)
+
     campuses = sorted(
-        (c for c in (set(ig) | set(yt)) if _is_named_campus(c)),
+        set(ig) | set(yt),
         key=lambda c: (
             -(sum(ig.get(c, {}).values()) + sum(yt.get(c, {}).values())),
             c.lower(),
@@ -231,11 +323,11 @@ def build_campus_uploads(
 
     for post in posts:
         pid = str(getattr(post, "profile_id", "") or "")
-        campus = campus_by_pid.get(pid) or "—"
+        campus = _normalize_campus(campus_by_pid.get(pid) or "—")
         bump(ig, campus, getattr(post, "posted_at", None))
     for video in videos:
         pid = str(getattr(video, "profile_id", "") or "")
-        campus = campus_by_pid.get(pid) or "—"
+        campus = _normalize_campus(campus_by_pid.get(pid) or "—")
         bump(yt, campus, getattr(video, "published_at", None))
 
     return _boards_from_campus_maps(ig, yt, months)
@@ -310,7 +402,7 @@ async def get_campus_uploads(org_id: str | None = None) -> dict[str, Any]:
 
     def fold(src: dict[str, dict[str, int]], dest: dict[str, dict[str, int]]) -> None:
         for pid, by_month in src.items():
-            campus = campus_by_pid.get(pid) or "—"
+            campus = _normalize_campus(campus_by_pid.get(pid) or "—")
             row = dest.setdefault(campus, empty())
             for month, n in by_month.items():
                 if month in month_set:

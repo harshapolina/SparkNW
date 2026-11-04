@@ -17,11 +17,11 @@ type EditRow = {
 
 const HINT: Record<Platform, string> = {
   instagram:
-    "Instagram uploads by named campus — posts, reels, and carousels. July counts from 15 Jul. Unassigned uploads are excluded.",
+    "Instagram uploads by campus — dual-college roster labels are merged into the cleaned campus list. July counts from 15 Jul.",
   youtube:
-    "YouTube uploads by named campus — videos and Shorts. July counts from 15 Jul. Unassigned uploads are excluded.",
+    "YouTube uploads by campus — dual-college roster labels are merged into the cleaned campus list. July counts from 15 Jul.",
   overall:
-    "Instagram + YouTube uploads combined, by named campus and month. July counts from 15 Jul. Unassigned uploads are excluded.",
+    "Instagram + YouTube uploads by campus — merged into the cleaned campus-wise list. July counts from 15 Jul.",
 };
 
 const TITLE: Record<Platform, string> = {
